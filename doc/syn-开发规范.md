@@ -368,10 +368,16 @@ async fn setup(
 | `[syn] reload-duration`（轮询快照） | 刷新信号：写库后发 `refresh.syn.task`，各副本收到就重建 | 配置生效有最长一个轮询周期的延迟；白查库 |
 | `[syn] self-schedule`（进程内调度） | jobx 计划任务 | 多副本各自调度，同一批数据被拉多次 |
 
-对应的落地位置：`syn-svr/src/registry.rs`（服务发现）、`syn-svr/src/store.rs`（刷新信号）、
-`syn-svr/src/wkr/pull_wkr.rs`（默认自注册的取数计划）。
+对应的落地位置：`robotech::micro_svc::instance_resolver`（共享选址）+ `syn-svr/src/registry.rs`
+（薄适配）、`syn-svr/src/store.rs`（刷新信号）、`syn-svr/src/wkr/pull_wkr.rs`（默认自注册的取数计划）。
 
 配置里**该有**的是业务策略：投递语义、超时、下游库账号（一个下游一个账号，权限最小）。
+
+同一份机制在业务服务里出现第二遍，就说明它该下沉到框架。服务发现、缓存、轮转属于框架；
+业务侧只留自己的策略（这里只有 5s TTL 与「解析不到即 fatal」）。下沉的边界是**能力**不是
+**契约**：`FeignApiClient` 的 `Ro<E>` 响应、非 2xx 即错误、失败自动换实例重试，与 syn 要把
+原始 status/body 交给 `outcomes` 判定、一次投递只许一个结论相冲突，所以共用的是选址层，
+不是整个 HTTP 客户端。
 
 ---
 
@@ -660,7 +666,7 @@ feat(syn): 五段规则与记录转发
 | 部署形态联调（consul 配置中心 + 业务库隔离表） | ✅ | `tests/env/run.sh` 一次跑 50 条断言，验的是「不加 `-c`、走默认 `syn-svr.toml` + consul KV 覆盖」这条路；见 §15.5 |
 | jobx 计划任务自动注册（取数心跳） | ✅ | 首次启动注册 `executor-code=syn.pull`，撞唯一键只确认分组；实测 6 个批次共 297 拍、0 失败，见 §15.7 |
 | 多副本游标乐观锁（CAS） | ✅ | `tests/env/concurrent-pull.sh` 起两副本抢同一批 300 行：水位只涨一轮、败方 `position` 为空且有 warn、重复投递由下游 upsert 吸收；见 §15.6 |
-| 下游地址走服务发现（`target.service`） | ✅ | `syn-svr/src/registry.rs`：`discover_service` + 5s TTL 缓存 + 轮转；生产 3 副本实测 HTTP 投递到 `dtw-rs-svr` 得 200，配置里没有一处地址 |
+| 下游地址走服务发现（`target.service`） | ✅ | `robotech::micro_svc::instance_resolver`：按服务名共享实例快照，TTL / 空结果负缓存 / 每服务轮转 / 失败保留旧实例，Feign 与 syn 共用同一份；`syn-svr/src/registry.rs` 只留服务名校验与「0 实例 → fatal」。生产 3 副本实测 HTTP 投递到 `dtw-rs-svr` 得 200，配置里没有一处地址 |
 | 任务快照跨副本刷新（`refresh.syn.task`） | ✅ | 写库提交后 publish，各副本 subscribe 后重建；生产 3 副本同一毫秒（15:27:23.783）都从 0 变 1、删除后又都回落 0。框架另有 60s 兜底重建（`[refresh] rebuild-interval`），不是本服务的轮询 |
 | 雪花 node 与端口的自动分配 | ✅ | 生产 3 副本分别拿到 node 13/26/28（注册中心 `id-node`），端口 44552/42417/36829 由框架随机分配并登记，配置里两者都没有 |
 

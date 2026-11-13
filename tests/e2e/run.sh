@@ -154,9 +154,9 @@ assert_eq "游标累计行数" 4 "$(q syn_it 'select rows_synced from syn_cursor
 
 # ---- 幂等 -----------------------------------------------------------------
 say "幂等：首次执行 / 命中短路 / 失败不记账"
-sync() { # key body -> 输出 "http_code body"
+sync() { # key body [topic] -> 输出 "http_code body"
   curl -sS -o "${TMPDIR:-/tmp}/syn-it-sync-body.json" -w '%{http_code}' \
-    -X POST "$API/syn/sync/source:it_person" -H 'Content-Type: application/json' \
+    -X POST "$API/syn/sync/${3:-source:it_person}" -H 'Content-Type: application/json' \
     -H "X-Idempotency-Key: $1" --data-binary "$2"
 }
 idem_rec='{"op":"r","after":{"id":999,"name":"idem-first","updated_at":"2026-11-12T23:00:00Z"}}'
@@ -191,6 +191,38 @@ assert_eq "overview total" 2 "$(printf '%s' "$overview" | jq -r '.extra.total')"
 # 桶必须覆盖当前小时：曲线里所有 success 之和要等于合计，不能把刚发生的记账漏掉
 assert_eq "小时桶 success 之和" 2 "$(printf '%s' "$overview" | jq -r '[.extra.series[].success] | add')"
 assert_eq "reload 生效任务数" 1 "$(curl -fsS -X POST "$API/syn/task/reload" | jq -r '.extra')"
+
+# ---- 服务发现负向路径 ------------------------------------------------------
+# 联调配置里没有注册中心。http 任务必须显式 fatal：解析不到实例是部署问题，
+# 不能猜一个地址把数据发出去。连投两条再验框架的负缓存：注册中心只被问一次。
+say "服务发现不可用：http 任务必须 TARGET_UNRESOLVED"
+unresolved_resp=$(curl -fsS -X POST "$API/syn/task" -H 'Content-Type: application/json' \
+  -H 'X-User-Id: 1' --data-binary @"$E2E/task-http-unresolved.json")
+unresolved_id=$(printf '%s' "$unresolved_resp" | jq -r '.extra.id')
+[ -n "$unresolved_id" ] && [ "$unresolved_id" != "null" ] \
+  || fail "http 任务创建失败：$unresolved_resp"
+assert_eq "reload 后生效任务数" 2 "$(curl -fsS -X POST "$API/syn/task/reload" | jq -r '.extra')"
+
+unresolved_rec='{"op":"r","after":{"id":2001,"name":"unresolved"}}'
+assert_eq "服务发现失败 HTTP" 400 \
+  "$(sync it-http-1 "$unresolved_rec" source:it_http_unresolved)"
+assert_eq "结论 fatal" "fatal" \
+  "$(jq -r '.result' "${TMPDIR:-/tmp}/syn-it-sync-body.json")"
+assert_eq "分类码 TARGET_UNRESOLVED" "TARGET_UNRESOLVED" \
+  "$(jq -r '.code' "${TMPDIR:-/tmp}/syn-it-sync-body.json")"
+assert_eq "停在 action 段（没发出 HTTP）" "action" \
+  "$(jq -r '.stage' "${TMPDIR:-/tmp}/syn-it-sync-body.json")"
+grep -q '注册中心' "${TMPDIR:-/tmp}/syn-it-sync-body.json" \
+  || fail "失败原因没指向注册中心"
+
+assert_eq "第二条记录同样 fatal" 400 \
+  "$(sync it-http-2 "$unresolved_rec" source:it_http_unresolved)"
+assert_eq "第二条也是 TARGET_UNRESOLVED" "TARGET_UNRESOLVED" \
+  "$(jq -r '.code' "${TMPDIR:-/tmp}/syn-it-sync-body.json")"
+# 框架选址层的失败节流 / 空结果负缓存：两条记录只查一次注册中心
+hits=$(grep -c 'service discovery: syn-it-no-such-svr refresh failed' "$LOG" || true)
+assert_eq "注册中心只被查 1 次" 1 "$hits"
+assert_eq "fatal 不记幂等台账" 2 "$(q syn_it 'select count(*) from syn_idem')"
 
 say "全部通过"
 printf '  服务日志：%s\n' "$LOG"

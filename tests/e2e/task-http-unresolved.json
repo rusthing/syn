@@ -1,0 +1,42 @@
+{
+  "name": "联调-服务发现不可用",
+  "remark": "e2e: 注册中心不可用时 http 投递必须 fatal，绝不猜地址把数据发出去",
+  "spec": {
+    "id": "it_http_unresolved",
+    "topic": "source:it_http_unresolved",
+    "priority": 100,
+    "enabled": true,
+    "exclusive": true,
+    "target": {
+      "kind": "http",
+      "service": "syn-it-no-such-svr",
+      "base": "/unresolved"
+    },
+    "match": [],
+    "mapping": {
+      "omit_null": true,
+      "rows": [
+        { "to": "id", "from": "$.after.id" },
+        { "to": "name", "from": "$.after.name" }
+      ]
+    },
+    "actions": [
+      { "op": "r", "method": "POST", "path": "", "body": "mapped" }
+    ],
+    "guards": [],
+    "outcomes": [
+      {
+        "scope": "status",
+        "assert": [{ "op": "in", "value": [200] }],
+        "verdict": "success",
+        "code": "HTTP_OK"
+      },
+      {
+        "scope": "status",
+        "assert": [{ "op": "in", "value": [0] }],
+        "verdict": "fatal",
+        "code": "HTTP_UNEXPECTED"
+      }
+    ]
+  }
+}

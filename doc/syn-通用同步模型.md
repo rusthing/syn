@@ -198,4 +198,6 @@ P1 先做，因为它是纯本地的、当天能验收的，而且「不经下�
 3. **`syn_idem` 的键由谁生成**：sink 侧传 `X-Idempotency-Key`（`topic:partition:offset`），
    syn 不自己拼；不带键就不记账，不猜。
 
-下游地址不在配置里：`target.service` 只是服务名，运行时从注册中心发现（`syn-svr/src/registry.rs`）。
+下游地址不在配置里：`target.service` 只是服务名，运行时由框架的共享选址层解析
+（`robotech::micro_svc::instance_resolver`，Feign 客户端也用同一份实例快照）；
+`syn-svr/src/registry.rs` 只做服务名校验与「0 实例 → fatal」的适配。
