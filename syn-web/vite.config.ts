@@ -34,6 +34,12 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           rewrite: (path) => path.replace(/^\/api/, ""),
         },
+        // adm 统一身份接口：AUTH_BASE=/adm → /adm/auth/login。
+        // 与其余六站同口径；两个服务不在同一端口时用 VITE_ADM_TARGET 覆盖。
+        "/adm": {
+          target: env.VITE_ADM_TARGET?.trim() || "http://127.0.0.1:9007",
+          changeOrigin: true,
+        },
       },
     },
     preview: {

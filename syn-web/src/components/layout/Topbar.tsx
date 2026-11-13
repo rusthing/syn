@@ -1,7 +1,8 @@
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useIsFetching, useQueryClient } from "@tanstack/react-query";
 import { useMutation } from "@tanstack/react-query";
-import { CircleUser, RefreshCw, RotateCw, Zap } from "lucide-react";
+import { CircleUser, LogOut, RefreshCw, RotateCw, Zap } from "lucide-react";
+import { AUTH_REQUIRED, logoutRemote, readSession } from "@/lib/auth-core";
 import { cn } from "@/lib/utils";
 import { formatTime } from "@/lib/time";
 import { tasks } from "@/lib/api";
@@ -18,8 +19,18 @@ export function Topbar() {
   const queryClient = useQueryClient();
   const now = useNow(1_000);
   const toast = useToast();
+  const navigate = useNavigate();
+  const session = readSession();
+  const displayName = session?.nickName || session?.name || "系统账号";
+  const userId = session?.userId ?? "0";
 
   const title = TITLES[location.pathname] ?? "同步总览";
+
+  /** 登出先让 adm-svr 作废令牌，再清本地并回登录页 */
+  async function signOut() {
+    await logoutRemote();
+    navigate("/login", { replace: true });
+  }
 
   /**
    * 重载快照是**唯一**能让线上生效的动作：配置改在库里，进程里还是旧的那份。
@@ -84,11 +95,23 @@ export function Topbar() {
 
         <span
           className="hidden h-8 items-center gap-1.5 rounded-lg border border-line bg-surface pl-1.5 pr-2 text-[12px] font-medium text-ink-soft sm:flex"
-          title="写操作的 X-User-Id。生产由统一登录态提供，这里固定 0"
+          title={`当前登录账号：${displayName}（写操作的 X-User-Id: ${userId}）`}
         >
           <CircleUser className="size-4 text-muted" strokeWidth={1.7} />
-          <span className="tnum">操作人 #0</span>
+          <span className="tnum">{displayName}</span>
         </span>
+
+        {AUTH_REQUIRED && (
+          <button
+            type="button"
+            onClick={() => void signOut()}
+            title="登出并作废当前令牌（七个控制台共用登录态）"
+            aria-label="登出"
+            className="flex size-8 items-center justify-center rounded-lg border border-line bg-surface text-muted transition-colors hover:border-line-strong hover:text-ink"
+          >
+            <LogOut className="size-3.5" strokeWidth={1.8} />
+          </button>
+        )}
       </div>
     </header>
   );

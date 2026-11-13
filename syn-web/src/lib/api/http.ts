@@ -8,6 +8,7 @@
  * 把它们塞进同一个解析器，出错时永远说不清是谁的问题。
  */
 
+import { authHeaders, handleUnauthorized } from "../auth-core";
 import type { SyncReply } from "./types";
 
 const RAW_API_BASE = (import.meta.env.VITE_API_BASE ?? "").trim();
@@ -63,7 +64,8 @@ export function describeApiError(
   msg: string | undefined,
   detail: string | undefined,
 ): string {
-  if (status === 401 || status === 403) return "令牌缺失或无权访问该接口";
+  if (status === 401) return "登录状态已失效，请重新登录";
+  if (status === 403) return "无权访问该接口";
   if (status === 404 || status === 405) {
     return `接口不存在（HTTP ${status}）：syn-svr 尚未提供该能力，或网关前缀没配对`;
   }
@@ -103,10 +105,11 @@ async function rawFetch(
   const timeout = AbortSignal.timeout(timeoutMs);
   const composed = signal ? AbortSignal.any([signal, timeout]) : timeout;
 
+  // 与其余六站同口径：required 模式带 Bearer + 真实 X-User-Id，
+  // disabled（开发）模式固定系统账号 0。X-Syn-Token 是执行器自己的业务令牌，与会话无关。
   const headers: Record<string, string> = {
     Accept: "application/json",
-    // 写操作要带操作人；同步入口用的是它自己的 token，没有用户概念
-    "X-User-Id": "0",
+    ...authHeaders(),
   };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (token && TOKEN) headers["X-Syn-Token"] = TOKEN;
@@ -122,6 +125,13 @@ async function rawFetch(
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     throw new ApiError(timeout.aborted ? "请求超时" : "无法连接到 syn 服务", 0);
+  }
+
+  // 401 不是业务结论：清掉本地会话并广播，由 AuthGate 统一送回登录页。
+  // 同步入口 /syn/sync/{topic} 的非 2xx 也是结论，但 401 必须例外。
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new ApiError("登录状态已失效，请重新登录", 401);
   }
 
   return { response, text: await response.text() };
@@ -146,6 +156,12 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       `服务返回了非 JSON 响应（HTTP ${response.status}），检查 ${API_BASE || "接口前缀"} 是否被正确反代`,
       response.status,
     );
+  }
+
+  // 网关可能把令牌失效包成 200 + ADM00005，也要走同一套清会话流程。
+  if (payload.code === "ADM00005") {
+    handleUnauthorized();
+    throw new ApiError("登录状态已失效，请重新登录", 401, payload.code);
   }
 
   if (!response.ok || payload.result !== 1) {

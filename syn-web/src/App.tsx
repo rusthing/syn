@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/reac
 import { BrowserRouter, HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "@/components/layout/AppShell";
 import { ToastProvider } from "@/components/ui/Toast";
+import { AuthGate } from "@/auth/AuthGate";
 import { LoginPage } from "@/pages/LoginPage";
 import { subscribeDataMode } from "@/lib/api";
 import { OverviewPage } from "@/features/overview/OverviewPage";
@@ -56,9 +57,15 @@ export default function App() {
         <Router basename={BASENAME || undefined}>
           <DataModeBridge />
           <Routes>
-            {/* 访问入口：与其余六站同一套登录视觉，但 syn 暂无账号体系，不拦截主控制台 */}
+            {/* 登录页放在登录门之外；主控制台统一走 adm 会话保护 */}
             <Route path="login" element={<LoginPage />} />
-            <Route element={<AppShell />}>
+            <Route
+              element={
+                <AuthGate>
+                  <AppShell />
+                </AuthGate>
+              }
+            >
               <Route index element={<OverviewPage />} />
               <Route path="tasks" element={<TasksPage />} />
               <Route path="sources" element={<SourcesPage />} />
