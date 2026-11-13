@@ -172,6 +172,28 @@ describe("liveSources", () => {
     expect(source.last_rows).toBe(37);
   });
 
+  it("pull?reset=true：http 全量重跑要带上参数，fullDone 映射成 full_done", async () => {
+    const calls = capture({
+      rows: 0,
+      durationMs: 12,
+      success: 0,
+      skip: 0,
+      fatal: 0,
+      retriable: 0,
+      fullDone: true,
+    });
+    const result = await liveSources.pull("42", true);
+    expect(calls[0]?.url).toContain("/syn/source/42/pull?reset=true");
+    expect(result.full_done).toBe(true);
+  });
+
+  it("pull 不带 reset 时不加查询串，fullDone 缺省为 null", async () => {
+    const calls = capture({ rows: 5, durationMs: 30, success: 5, skip: 0, fatal: 0, retriable: 0 });
+    const result = await liveSources.pull("42");
+    expect(calls[0]?.url).not.toContain("reset");
+    expect(result.full_done).toBeNull();
+  });
+
   it("pull 被卡住时把 stalled 透出来，界面才能说明为什么没继续推进", async () => {
     stubFetch({
       rows: 3,

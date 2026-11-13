@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AlertTriangle, DatabaseZap, Globe, Pencil, Play, Plus, Radio, Timer, Trash2 } from "lucide-react";
+import { AlertTriangle, DatabaseZap, Globe, Pencil, Play, Plus, Radio, RotateCcw, Timer, Trash2 } from "lucide-react";
 import { Button, IconButton } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Panel, PanelHeader, PanelState, Skeleton } from "@/components/ui/Panel";
@@ -25,6 +25,23 @@ export function SourcesPage() {
 
   const list = data ?? [];
   const enabled = list.filter((s) => s.enabled).length;
+
+  const onPulled = (r: { rows: number; duration_ms: number; stalled?: string | null; full_done?: boolean | null }) => {
+    if (r.stalled) {
+      toast.info(
+        `已拉取 ${r.rows} 行，游标停在失败记录前`,
+        `耗时 ${r.duration_ms} ms；${r.stalled}。修好这一条之前不会继续推进`,
+      );
+    } else if (r.full_done) {
+      toast.success("全量同步完成", `本轮 ${r.rows} 行，翻到底了；之后不再自动拉取，要重跑点「重跑全量」`);
+    } else {
+      toast.success(
+        `已拉取 ${r.rows} 行`,
+        `耗时 ${r.duration_ms} ms；游标已前移，下一轮从新位置继续`,
+      );
+    }
+  };
+  const onPullError = (err: Error) => toast.error("拉取失败", err.message);
   const stalled = list.filter((s) => s.enabled && s.last_error).length;
   const totalRows = list.reduce((acc, s) => acc + (s.cursor?.rows_total ?? 0), 0);
 
@@ -81,23 +98,17 @@ export function SourcesPage() {
             <SourceCard
               key={source.id}
               source={source}
-              pulling={pull.isPending && pull.variables === source.id}
+              pulling={
+                pull.isPending &&
+                (typeof pull.variables === "string"
+                  ? pull.variables === source.id
+                  : pull.variables?.id === source.id)
+              }
               onEdit={() => setEditor({ open: true, source })}
               onRemove={() => setRemoving(source)}
-              onPull={() =>
-                pull.mutate(source.id, {
-                  onSuccess: (r) =>
-                    r.stalled
-                      ? toast.info(
-                          `已拉取 ${r.rows} 行，游标停在失败记录前`,
-                          `耗时 ${r.duration_ms} ms；${r.stalled}。修好这一条之前不会继续推进`,
-                        )
-                      : toast.success(
-                          `已拉取 ${r.rows} 行`,
-                          `耗时 ${r.duration_ms} ms；游标已前移，下一轮从新位置继续`,
-                        ),
-                  onError: (err: Error) => toast.error("拉取失败", err.message),
-                })
+              onPull={() => pull.mutate(source.id, { onSuccess: onPulled, onError: onPullError })}
+              onPullReset={() =>
+                pull.mutate({ id: source.id, reset: true }, { onSuccess: onPulled, onError: onPullError })
               }
               onToggle={(next) =>
                 toggle.mutate(
@@ -150,6 +161,7 @@ export function SourcesPage() {
 function SourceCard({
   source,
   onPull,
+  onPullReset,
   onToggle,
   onEdit,
   onRemove,
@@ -157,6 +169,7 @@ function SourceCard({
 }: {
   source: SyncSource;
   onPull: () => void;
+  onPullReset: () => void;
   onToggle: (next: boolean) => void;
   onEdit: () => void;
   onRemove: () => void;
@@ -189,6 +202,17 @@ function SourceCard({
             <IconButton label="删除来源" tone="danger" onClick={onRemove}>
               <Trash2 className="size-3.5" />
             </IconButton>
+            {source.kind === "http" && (
+              <Button
+                size="xs"
+                variant="ghost"
+                icon={<RotateCcw className="size-3" />}
+                disabled={!source.enabled || pulling}
+                onClick={onPullReset}
+              >
+                重跑全量
+              </Button>
+            )}
             <Button
               size="xs"
               variant="secondary"

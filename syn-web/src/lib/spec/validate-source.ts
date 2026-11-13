@@ -81,6 +81,26 @@ export function validateSource(input: SourceSaveInput): SourceIssue[] {
   } else {
     if (!(spec.url ?? "").trim()) push("spec.url", "http 取数必须写分页地址");
     if (spec.page_size !== undefined && spec.page_size <= 0) push("spec.page_size", "单页条数必须大于 0");
+
+    // 取值路径与后端同一个解析器（只认 `$.a.b[0]`）：写错的后果是每页都取不到数据、
+    // 全量立刻「完成」，比报错更难发现
+    for (const [path, value] of [
+      ["spec.data_path", spec.data_path],
+      ["spec.next_path", spec.next_path],
+    ] as const) {
+      const p = (value ?? "").trim();
+      if (p && !p.startsWith("$")) push(path, "取值路径要以 $ 开头，例如 $.data.list");
+    }
+
+    const method = (spec.method ?? "").trim().toUpperCase();
+    if (method && method !== "GET" && method !== "POST") {
+      push("spec.method", "只支持 GET / POST：全量取数是只读的");
+    }
+
+    // 复制 sql 源的配置改成 http 时最容易留下这些字段：后端按 http 跑会静默忽略
+    if (spec.datasource) push("spec.datasource", "http 取数不使用该字段：分页拉接口没有库表的概念");
+    if (spec.select) push("spec.select", "http 取数不使用该字段：分页拉接口没有取数 SQL");
+    if (spec.cursor_column) push("spec.cursor_column", "http 取数不使用该字段：没有游标列的概念");
   }
 
   return issues;

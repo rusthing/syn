@@ -3,17 +3,31 @@
 //! 对应 `syn_source.spec`（JSONB）。两种取数方式共用一层外壳，`kind` 决定用哪半边：
 //!
 //! ```yaml
-//! # kind = sql：按游标查库
+//! # kind = sql：按游标增量查库
 //! datasource: adm
 //! select: select id, name, updated_at from adm_person where deleted = false
 //! cursor_column: updated_at, id
 //! cursor_type: timestamp
 //!
-//! # kind = http：分页拉接口（P5，当前只做配置与校验）
-//! url: https://crm.example.com/api/person?page={{cursor}}
-//! next_path: $.data.next
+//! # kind = http：全量分页拉接口（首次同步用，一轮翻到底后标记 done）
+//! url: https://crm.example.com/api/person?page={cursor}&size={size}
+//! data_path: $.data.list      # 数据数组在响应里的位置，缺省 $（响应本身就是数组）
+//! next_path: $.data.next      # 有它就按 token 翻页；没有就按页码 1,2,3…
 //! page_size: 200
+//! method: GET                 # 缺省 GET
+//! [headers]                   # 可选，鉴权用；不写进日志
+//! Authorization = "Bearer …"
 //! ```
+//!
+//! ## http 为什么是「全量」而不是「增量」
+//!
+//! HTTP 接口一般只有页码或 token 分页，没有 `(updated_at, id)` 这种稳定水位：
+//! 翻页中途源端插入会让第 2 页漏行或重复，游标 token 还会过期。所以 http 源按
+//! **全量一次性**同步设计：第一轮从第 1 页开始，一轮推一页，翻到底写
+//! `{"full":"done"}`，此后调度跳过；要重跑得显式 reset。
+//!
+//! 这也决定了它的使用前提：**只用于首次同步**，增量交给 dbz。全量叠加 dbz 同时写
+//! 同一张表会让旧快照覆盖新值、删除语义打架，见 `doc/syn-开发规范.md` §11.14。
 //!
 //! ## 为什么游标要声明类型
 //!
@@ -22,11 +36,14 @@
 //! 报 `could not determine data type`。与其猜，不如让配置写明
 //! [`CursorType`]，拼 SQL 时显式加 `::timestamptz` / `::int8` / `::text`。
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::dic::SourceKind;
 use crate::issue::{SpecIssue, SpecIssueKind};
+
 
 /// # 游标列的类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -81,12 +98,21 @@ pub struct SourceSpec {
     /// 行 → 记录的包装方式
     #[serde(default)]
     pub wrap: WrapMode,
-    /// 分页地址模板（http）
+    /// 分页地址模板（http）。占位符：`{cursor}`（页码或 token）、`{size}`（单页条数）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// 下一页游标的取值路径（http）
+    /// 下一页游标的取值路径（http）。有它就按 token 翻页，没有就按页码递增
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_path: Option<String>,
+    /// 数据数组在响应里的取值路径（http）。缺省 `$`，即响应体本身是数组
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_path: Option<String>,
+    /// 请求方法（http），缺省 GET
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    /// 请求头（http），鉴权用。**不进日志**
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers: Option<BTreeMap<String, String>>,
     /// 单页条数（http）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_size: Option<i32>,
@@ -107,6 +133,32 @@ impl SourceSpec {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .collect()
+    }
+
+    /// # 数据数组的取值路径（http），缺省整个响应体
+    pub fn data_path_or_root(&self) -> &str {
+        self.data_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("$")
+    }
+
+    /// # 请求方法（http），缺省 GET
+    pub fn method_or_get(&self) -> &str {
+        self.method
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("GET")
+    }
+
+    /// # 是否按 token 翻页（给了 `next_path` 就是）
+    pub fn token_paging(&self) -> bool {
+        self.next_path
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|s| !s.is_empty())
     }
 
     /// # 结构校验
@@ -206,6 +258,52 @@ impl SourceSpec {
                         "单页条数必须大于 0",
                     ));
                 }
+                // 两个路径都走 syn-core 的同一套解析（只认 `$.a.b[0]`），写错的后果是
+                // 每页都取不到数据、全量立刻「完成」，比报错更难发现
+                for (field, v) in [
+                    ("spec.data_path", self.data_path.as_deref()),
+                    ("spec.next_path", self.next_path.as_deref()),
+                ] {
+                    let Some(p) = v.map(str::trim).filter(|s| !s.is_empty()) else {
+                        continue;
+                    };
+                    if !p.starts_with('$') {
+                        issues.push(SpecIssue::new(
+                            field,
+                            SpecIssueKind::Invalid,
+                            "取值路径要以 $ 开头，例如 $.data.list",
+                        ));
+                    }
+                }
+                if let Some(m) = self
+                    .method
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    && !m.eq_ignore_ascii_case("get")
+                    && !m.eq_ignore_ascii_case("post")
+                {
+                    issues.push(SpecIssue::new(
+                        "spec.method",
+                        SpecIssueKind::Invalid,
+                        "只支持 GET / POST：全量取数是只读的",
+                    ));
+                }
+                // 两种取数的字段混在一起，说明配置是复制来的半成品：按 http 跑会静默
+                // 忽略这些字段，反过来按 sql 跑又缺游标列，早点报出来
+                for (field, present) in [
+                    ("spec.datasource", self.datasource.is_some()),
+                    ("spec.select", self.select.is_some()),
+                    ("spec.cursor_column", self.cursor_column.is_some()),
+                ] {
+                    if present {
+                        issues.push(SpecIssue::new(
+                            field,
+                            SpecIssueKind::Conflict,
+                            "http 取数不使用该字段：分页拉接口没有库表与游标列的概念",
+                        ));
+                    }
+                }
             }
         }
 
@@ -224,4 +322,111 @@ fn is_ident(s: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn check(v: serde_json::Value, kind: SourceKind) -> Vec<(String, SpecIssueKind)> {
+        let spec = serde_json::from_value::<SourceSpec>(v).expect("spec 结构不合法");
+        match spec.validate(kind) {
+            Ok(()) => Vec::new(),
+            Err(issues) => issues.into_iter().map(|i| (i.path, i.kind)).collect(),
+        }
+    }
+
+    #[test]
+    fn http_minimal_ok() {
+        let issues = check(
+            json!({ "url": "https://x/api?page={cursor}&size={size}" }),
+            SourceKind::Http,
+        );
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn http_url_required() {
+        let issues = check(json!({ "page_size": 100 }), SourceKind::Http);
+        assert_eq!(issues, vec![("spec.url".into(), SpecIssueKind::Missing)]);
+    }
+
+    #[test]
+    fn http_paths_must_start_with_dollar() {
+        let issues = check(
+            json!({
+                "url": "https://x/api?page={cursor}",
+                "data_path": "data.list",
+                "next_path": "data.next"
+            }),
+            SourceKind::Http,
+        );
+        let paths: Vec<&str> = issues.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(paths.contains(&"spec.data_path"), "{issues:?}");
+        assert!(paths.contains(&"spec.next_path"), "{issues:?}");
+        assert!(issues.iter().all(|(_, k)| *k == SpecIssueKind::Invalid));
+    }
+
+    #[test]
+    fn http_rejects_write_methods() {
+        let issues = check(
+            json!({ "url": "https://x/api", "method": "PUT" }),
+            SourceKind::Http,
+        );
+        assert_eq!(issues, vec![("spec.method".into(), SpecIssueKind::Invalid)]);
+        // 大小写不敏感
+        assert!(check(json!({ "url": "https://x", "method": "post" }), SourceKind::Http).is_empty());
+    }
+
+    #[test]
+    fn http_rejects_sql_fields() {
+        // 复制 sql 源的配置改成 http 时最容易留下这堆字段：按 http 跑会静默忽略，
+        // 早点报 Conflict 比跑出「0 行」好查
+        let issues = check(
+            json!({
+                "url": "https://x/api?page={cursor}",
+                "datasource": "adm",
+                "select": "select 1",
+                "cursor_column": "id"
+            }),
+            SourceKind::Http,
+        );
+        let paths: Vec<&str> = issues.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(paths.len(), 3, "{issues:?}");
+        assert!(paths.contains(&"spec.datasource"));
+        assert!(paths.contains(&"spec.select"));
+        assert!(paths.contains(&"spec.cursor_column"));
+        assert!(issues.iter().all(|(_, k)| *k == SpecIssueKind::Conflict));
+    }
+
+    #[test]
+    fn http_page_size_must_be_positive() {
+        let issues = check(
+            json!({ "url": "https://x", "page_size": 0 }),
+            SourceKind::Http,
+        );
+        assert_eq!(issues, vec![("spec.page_size".into(), SpecIssueKind::Invalid)]);
+    }
+
+    #[test]
+    fn sql_path_unaffected_by_http_rules() {
+        let issues = check(
+            json!({
+                "datasource": "adm",
+                "select": "select id, updated_at from t",
+                "cursor_column": "updated_at, id"
+            }),
+            SourceKind::Sql,
+        );
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn http_accessors_have_stable_defaults() {
+        let spec = serde_json::from_value::<SourceSpec>(json!({ "url": "https://x" })).unwrap();
+        assert_eq!(spec.data_path_or_root(), "$");
+        assert_eq!(spec.method_or_get(), "GET");
+        assert!(!spec.token_paging(), "没有 next_path 就是页码模式");
+    }
 }

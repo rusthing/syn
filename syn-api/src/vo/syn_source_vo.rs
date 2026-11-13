@@ -134,4 +134,6 @@ pub struct SynSourcePullVo {
     pub position: Option<String>,
     /// 卡住的原因（第一条非 success/skip 的结论），成功一轮为 `null`
     pub stalled: Option<String>,
+    /// 仅 http 全量源：本轮结束后是否已经翻到底。`null` = 不适用（sql 源）
+    pub full_done: Option<bool>,
 }

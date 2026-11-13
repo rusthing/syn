@@ -184,8 +184,14 @@ export interface SourceSpec {
   cursor_column?: string;
   /** http：分页地址模板 */
   url?: string;
-  /** http：取下一页的游标路径 */
+  /** http：取下一页的游标路径；有它就按 token 翻页，没有就按页码 1,2,3… */
   next_path?: string;
+  /** http：数据数组在响应里的取值路径，缺省 `$`（响应体本身就是数组） */
+  data_path?: string;
+  /** http：请求方法，缺省 GET */
+  method?: "GET" | "POST";
+  /** http：请求头，鉴权用（后端不落日志） */
+  headers?: Record<string, string>;
   /** 单页条数 */
   page_size?: number;
   /** 是否把拉到的行包装成虚拟 topic 记录 */
@@ -298,6 +304,8 @@ export interface PullResult {
   stalled?: string | null;
   /** 推进到的水位；一行都没成功为 null */
   position?: string | null;
+  /** 仅 http 全量源：本轮结束后是否已翻到底；sql 源为 null */
+  full_done?: boolean | null;
 }
 
 /** 试跑请求的返回（对应 ctrl 的 reply） */

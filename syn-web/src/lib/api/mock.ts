@@ -14,6 +14,7 @@ import type {
   IdemRecord,
   Overview,
   Page,
+  PullResult,
   SourceSaveInput,
   SyncSource,
   SyncTask,
@@ -361,6 +362,11 @@ let TASKS: SyncTask[] = [
 ];
 
 /* -------------------------------- 来源 -------------------------------- */
+
+/** http 全量源在演示数据里翻几页算完（后端是「翻到空页为止」） */
+const MOCK_HTTP_TOTAL_PAGES = 3;
+/** 每个 http 源已经翻到第几页；reset 时清掉 */
+const MOCK_HTTP_PAGES = new Map<string, number>();
 
 let SOURCES: SyncSource[] = [
   {
@@ -721,17 +727,47 @@ export const mockSources = {
     return null;
   },
 
-  async pull(id: string): Promise<{ rows: number; duration_ms: number }> {
+  /**
+   * 拉取一轮。
+   *
+   * http 全是**全量分页**：一轮推一页，三页翻完标 `full_done`，此后直接返回完成；
+   * `reset` 先把页数清回第一页（对应后端 `pull?reset=true`）。
+   */
+  async pull(id: string, reset = false): Promise<PullResult> {
     const source = SOURCES.find((s) => s.id === id);
     if (!source) throw new Error(`来源 ${id} 不存在`);
     if (!source.enabled) throw new Error("来源已停用，先启用再拉取");
-    const rows = Math.floor(rand() * source.batch_size * 0.4);
+
+    if (source.kind !== "http") {
+      const rows = Math.floor(rand() * source.batch_size * 0.4);
+      SOURCES = SOURCES.map((s) =>
+        s.id === id
+          ? { ...s, last_run_ms: String(Date.now()), last_rows: rows, last_error: null }
+          : s,
+      );
+      return { rows, duration_ms: 120 + Math.floor(rand() * 300), full_done: null };
+    }
+
+    if (reset) MOCK_HTTP_PAGES.delete(id);
+    const page = MOCK_HTTP_PAGES.get(id) ?? 0;
+    if (page >= MOCK_HTTP_TOTAL_PAGES) {
+      return { rows: 0, duration_ms: 40, full_done: true };
+    }
+    const rows = Math.ceil(source.batch_size * 0.3);
+    const next = page + 1;
+    MOCK_HTTP_PAGES.set(id, next);
+    const full_done = next >= MOCK_HTTP_TOTAL_PAGES;
     SOURCES = SOURCES.map((s) =>
       s.id === id
         ? { ...s, last_run_ms: String(Date.now()), last_rows: rows, last_error: null }
         : s,
     );
-    return { rows, duration_ms: 120 + Math.floor(rand() * 300) };
+    return {
+      rows,
+      duration_ms: 120 + Math.floor(rand() * 300),
+      full_done,
+      position: full_done ? '{"http":{"done":true}}' : `{"http":{"next":"${next + 1}"}}`,
+    };
   },
 
   async toggle(id: string, enabled: boolean): Promise<SyncSource> {

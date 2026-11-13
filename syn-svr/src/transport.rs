@@ -19,6 +19,14 @@ static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .unwrap_or_else(|_| reqwest::Client::new())
 });
 
+/// # 共享的 reqwest 客户端
+///
+/// 自拉取数（`poll`）也用它，但会按 `[syn] pull-timeout` 在单次请求上覆盖超时 ——
+/// 拉一页比投递一条慢得多，不能用同一个 3 秒。
+pub fn client() -> &'static reqwest::Client {
+    &CLIENT
+}
+
 /// # HTTP 传输
 pub struct HttpTransport;
 

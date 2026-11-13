@@ -109,6 +109,7 @@ interface WirePull {
   retriable: number;
   position?: string | null;
   stalled?: string | null;
+  fullDone?: boolean | null;
 }
 
 interface WireDelivery {
@@ -408,8 +409,11 @@ export const liveSources = {
   remove: (id: string): Promise<null> =>
     request<void>(`/syn/source/${encodeURIComponent(id)}`, { method: "DELETE" }).then(() => null),
 
-  pull: (id: string): Promise<PullResult> =>
-    request<WirePull>(`/syn/source/${encodeURIComponent(id)}/pull`, { method: "POST" }).then(
+  pull: (id: string, reset = false): Promise<PullResult> =>
+    request<WirePull>(
+      `/syn/source/${encodeURIComponent(id)}/pull${reset ? "?reset=true" : ""}`,
+      { method: "POST" },
+    ).then(
       (r) => {
         const rows = num(r?.rows);
         lastPullRows.set(id, rows);
@@ -418,6 +422,7 @@ export const liveSources = {
           duration_ms: num(r?.durationMs),
           stalled: r?.stalled ?? null,
           position: r?.position ?? null,
+          full_done: r?.fullDone ?? null,
         };
       },
     ),

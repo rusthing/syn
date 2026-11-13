@@ -202,6 +202,16 @@ impl SynSourceSvc {
     pub async fn pull(id: U64) -> Result<SynSourcePullVo, SvcError> {
         poll::pull_once(id).await
     }
+
+    /// # 立即拉取；`reset` 为真时先把水位清零
+    ///
+    /// 只对 http 全量源有意义（翻到底之后要重跑），sql 源调用等价于「从头拉一遍」。
+    pub async fn pull_with_reset(id: U64, reset: bool) -> Result<SynSourcePullVo, SvcError> {
+        if reset {
+            poll::reset_full(id).await?;
+        }
+        poll::pull_once(id).await
+    }
 }
 
 /// # 解析并校验取数定义

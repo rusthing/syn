@@ -295,9 +295,13 @@ export function SourceEditorDrawer({
             </>
           ) : (
             <>
-              <div className="flex items-start gap-2 rounded-lg bg-warn-soft/70 px-3 py-2 text-[11.5px] leading-snug text-warn">
+              <div className="flex items-start gap-2 rounded-lg bg-sunken/70 px-3 py-2 text-[11.5px] leading-snug text-muted">
                 <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-                <span>HTTP 分页取数（P5）目前只做配置与校验，运行时明确报错「尚未实现」。能存，但「立即拉取」不会成功。</span>
+                <span>
+                  全量分页取数：一轮推一页，翻到底自动标记完成、此后不再拉。只用于
+                  <b className="font-semibold text-ink">首次同步</b>
+                  ——增量交给 dbz，两边别同时写同一张表。
+                </span>
               </div>
               <Field label="分页地址" required error={err("spec.url")} hint="用 {cursor} / {size} 占位">
                 <Input
@@ -308,7 +312,23 @@ export function SourceEditorDrawer({
                 />
               </Field>
               <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="下一页游标路径">
+                <Field
+                  label="数据数组路径"
+                  error={err("spec.data_path")}
+                  hint="响应里放行的位置，缺省 $（响应本身是数组）"
+                >
+                  <Input
+                    value={spec.data_path ?? ""}
+                    placeholder="$.data.list"
+                    className="font-mono text-[12.5px]"
+                    onChange={(e) => patchSpec({ data_path: e.target.value })}
+                  />
+                </Field>
+                <Field
+                  label="下一页游标路径"
+                  error={err("spec.next_path")}
+                  hint="不填就按页码 1,2,3… 翻，空页即结束"
+                >
                   <Input
                     value={spec.next_path ?? ""}
                     placeholder="$.extra.nextCursor"
@@ -316,7 +336,18 @@ export function SourceEditorDrawer({
                     onChange={(e) => patchSpec({ next_path: e.target.value })}
                   />
                 </Field>
-                <Field label="单页条数" error={err("spec.page_size")}>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="请求方法" error={err("spec.method")}>
+                  <Select
+                    value={spec.method ?? "GET"}
+                    onChange={(e) => patchSpec({ method: e.target.value as "GET" | "POST" })}
+                  >
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                  </Select>
+                </Field>
+                <Field label="单页条数" error={err("spec.page_size")} hint="缺省用上面的单批行数">
                   <Input
                     type="number"
                     min={1}

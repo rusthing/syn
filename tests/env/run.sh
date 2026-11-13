@@ -11,6 +11,7 @@
 #   tests/env/run.sh --cleanup  # 只清理联调数据与隔离表，不启动服务
 #
 # 跨副本的游标 CAS 不在这个脚本里（单实例撞不上），见 `tests/env/concurrent-pull.sh`。
+# http 全量分页也不在这里（要一个分页假接口），见 `tests/env/http-full.sh`。
 #
 # 安全边界：只碰这三处，绝不改任何已有业务表、任何其它 consul 键：
 #   1. consul KV `dev/syn-svr.toml`

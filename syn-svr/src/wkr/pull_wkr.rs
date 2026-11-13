@@ -16,8 +16,14 @@
 //! 首次启动 `job.add`，撞唯一键（重复启动/换副本）时按名字回查并补齐分组，不报错。
 //! 这与 dtw 的 `setup_region_alarm_wkr`、alarm 的补发任务是同一套写法。
 //!
-//! 配了 `[syn.pull-job]` 但注册失败**让启动失败**：既然配了，就是期望它跑；静默
-//! 降级会变成「进程看着正常，但一个源都不拉」，比起不来难查得多。不想注册就别配这段。
+//! ## 注册失败不拖死整个服务
+//!
+//! `[syn.pull-job]` 的**配置错误**（缺 `[api.jobx]` / 缺 `[redis]` / 间隔不合法）在启动时
+//! 直接失败 —— 那是写错了，越早发现越好。
+//!
+//! 但 **jobx 不可达**只 `error!` 一条然后继续跑：sink 推送才是主链路，让它因为调度器
+//! 没起而整体不可用，等于把 jobx 的可用性变成 syn 的启动前提。代价是这种情况下不会有
+//! 自动取数（`POST /syn/source/{id}/pull` 仍可手工或由其它调度打），日志里留了明确一行。
 
 use async_trait::async_trait;
 use jobx_api::vo::JobxTaskVo;
@@ -30,7 +36,7 @@ use robotech::api::RO_CODE_WARNING_DUPLICATE_KEY;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::config::PullJobConfig;
 use crate::poll;
@@ -61,12 +67,6 @@ pub async fn setup_pull_wkr(
     apis: &HashMap<String, robotech::api_client::ApiClientConfig>,
     changed: &Option<HashMap<String, config::Value>>,
 ) -> anyhow::Result<()> {
-    if changed.is_some() {
-        set_jobx_executor_config(executor_config(cfg)?);
-        info!("取数心跳任务的执行器配置已更新: executor={}", cfg.executor_code);
-        return Ok(());
-    }
-
     // jobx 客户端是注册计划的前提；没配 `[api.jobx]` 时这里就报错，而不是等到注册时
     if !apis.contains_key("jobx") {
         anyhow::bail!(
@@ -74,13 +74,40 @@ pub async fn setup_pull_wkr(
              要么补上 jobx 客户端配置，要么删掉 [syn.pull-job] 改用 self-schedule（仅单副本）"
         );
     }
+    // 配置本身的问题（间隔、保留时长写错）在连 jobx 之前就查出来，别等到对方返回才暴露
+    let exec = executor_config(cfg)?;
+    let job = job_config(cfg)?;
+
+    if changed.is_some() {
+        set_jobx_executor_config(exec);
+        info!("取数心跳任务的执行器配置已更新: executor={}", cfg.executor_code);
+        return Ok(());
+    }
+
     setup_jobx_api_client(apis.clone(), changed).await?;
 
-    init_jobx_executor(executor_config(cfg)?, Arc::new(PullTickHandler)).await?;
+    // 从这一步开始都是「对端/中间件」的问题：jobx 没起、Redis 连不上、分组建不了。
+    // 记一条 error 就继续 —— sink 推送不依赖调度器，不该被它拖死。
+    if let Err(e) = register(cfg, exec, job).await {
+        error!(
+            "取数心跳未注册，本次启动不启用自动取数（sink 推送不受影响，\
+             `POST /syn/source/{{id}}/pull` 仍可手工触发）：{e:#}"
+        );
+    }
+    Ok(())
+}
+
+/// 起执行器 + 建分组 + 注册计划。容忍「已存在」，其余一律返回错误由调用方降级
+async fn register(
+    cfg: &PullJobConfig,
+    exec: JobxExecutorConfig,
+    job: JobxJobConfig,
+) -> anyhow::Result<()> {
+    init_jobx_executor(exec, Arc::new(PullTickHandler)).await?;
 
     let group_id = ensure_job_group(&cfg.group_name, Some("syn 通用同步服务的周期任务")).await?;
     let client = get_jobx_api_client()?;
-    let mut add_dto: jobx_api::dto::JobxJobAddDto = job_config(cfg)?.into();
+    let mut add_dto: jobx_api::dto::JobxJobAddDto = job.into();
     add_dto.group_id = Some(Some(robotech::api::U64::from(group_id)));
 
     match client.job.add(&add_dto).await {
@@ -95,10 +122,8 @@ pub async fn setup_pull_wkr(
                 cfg.name, cfg.group_name
             );
         }
-        // 配了就是期望它跑：注册失败直接让启动失败。静默降级会变成
-        // 「进程看着正常，却一个源都不拉」，比启动不起来难查得多
-        Ok(ro) => anyhow::bail!("取数心跳计划注册失败: {ro:?}"),
-        Err(e) => anyhow::bail!("取数心跳计划注册失败: {e:?}"),
+        Ok(ro) => anyhow::bail!("jobx 拒绝了计划: {ro:?}"),
+        Err(e) => anyhow::bail!("调用 jobx 失败: {e:?}"),
     }
 
     Ok(())

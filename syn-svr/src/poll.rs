@@ -1,4 +1,4 @@
-//! # 自拉入口（poll-sql）
+//! # 自拉入口（poll-sql / poll-http）
 //!
 //! 「poll 入口」是一个 **HTTP 端点**：`POST /syn/source/{id}/pull`。调度不属于 syn ——
 //! 按 `doc/syn-通用同步模型.md` §2.3，由 jobx 定时打这个端点，天然单点触发、有执行
@@ -7,22 +7,31 @@
 //! ## 一轮做什么
 //!
 //! ```text
-//! 读 syn_source → 读 syn_cursor（没有就建）→ 按水位查源库 → 每行包成虚拟 topic 记录
+//! 读 syn_source → 读 syn_cursor（没有就建）→ 取数 → 每行包成虚拟 topic 记录
 //!   → 逐行走 sync_svc::handle（和 sink 推送完全同一条链路）
 //!   → 只有连续成功的行才推进水位；遇到 fatal / retriable 立刻停，下一轮从断点重跑
 //! ```
+//!
+//! ## 两种取数的节奏不一样
+//!
+//! - **sql**：按 `(updated_at, id)` 复合游标取一批，一轮一批，天然增量。
+//! - **http**：全量分页，**一轮推一页**。翻到底写 `{"http":{"done":true}}`，此后调度
+//!   跳过；要重跑得显式 reset（`POST /syn/source/{id}/pull?reset=true`）。一轮一页是
+//!   为了断点可续：页与页之间进程挂了，下一轮从上次的下一页继续，不用从头再来。
 //!
 //! ## 四条边界（不是待办，是轮询的固有性质）
 //!
 //! 1. **复合游标 + 5 秒重叠**：`(updated_at, id)` 两列比较，且只取 `updated_at <= now()-5s`
 //!    的行，避免读到还没提交的事务。重复行由下游 upsert 吸收。
-//! 2. **删除捕获不到**：查不到已删的行。要软删标记或 P5 的全量对账，不能假装支持。
+//! 2. **删除捕获不到**：查不到已删的行。要软删标记或全量对账，不能假装支持。
+//!    http 全量同样只是 upsert，**不按「缺失」删**（见 §11.14）。
 //! 3. **单写者**：jobx 单点触发；进程内另有一把锁挡住「按钮连点」。两个副本同时拉会
 //!    重复投递并互相覆盖水位，所以游标更新带 `update_ms` 乐观条件，输了的一轮作废。
 //! 4. **游标存 syn 库**：不污染业务库；游标推进与下游投递**不同事务**，中间挂了会重投
 //!    少量行，靠下游幂等/upsert 吸收。
 //!
-//! `kind = http` 目前只做配置与校验（P5），调用时明确报错，不假装跑通。
+//! http 全量的使用前提：**只用于首次同步**，增量交给 dbz。两边同时写同一张表会让旧
+//! 快照覆盖新值、删除语义打架 —— 四条前提见 `doc/syn-开发规范.md` §11.14。
 
 use robotech::api::U64;
 use robotech::db::get_db_conn;
@@ -33,6 +42,7 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use syn_api::{CursorType, SourceKind, SourceSpec, SynSourcePullVo, Verdict, WrapMode};
+use syn_core::get_path;
 use sqlx::Row;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -51,6 +61,9 @@ static IN_FLIGHT: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(|| Mutex::new(Ha
 
 /// 重叠窗口：只取 5 秒前的行，避开正在提交的事务
 const OVERLAP_SECONDS: u32 = 5;
+
+/// 页码模式的安全上限：接口若忽略 `{cursor}`，取数会永远「有数据」
+const MAX_PAGES: u32 = 100_000;
 
 /// # 拉一轮
 ///
@@ -88,7 +101,15 @@ async fn pull(id: U64) -> Result<SynSourcePullVo, SvcError> {
     })?;
 
     let cursor = load_cursor(source.id, db.as_ref()).await?;
-    let mut out = SynSourcePullVo {
+
+    match kind {
+        SourceKind::Sql => pull_sql(&source, &spec, cursor, run_ms, started).await,
+        SourceKind::Http => pull_http(&source, &spec, cursor, run_ms, started).await,
+    }
+}
+
+fn empty_pull_vo() -> SynSourcePullVo {
+    SynSourcePullVo {
         rows: 0,
         duration_ms: 0,
         success: 0,
@@ -97,14 +118,21 @@ async fn pull(id: U64) -> Result<SynSourcePullVo, SvcError> {
         retriable: 0,
         position: None,
         stalled: None,
-    };
+        full_done: None,
+    }
+}
 
-    let fetched: Result<(Vec<FetchedRow>, Option<String>), String> = match kind {
-        SourceKind::Sql => fetch_sql(&source, &spec, cursor.cursor_value.as_deref()).await,
-        SourceKind::Http => Err("poll-http 尚未实现（P5）：当前只落地了 sql 取数".to_string()),
-    };
+/// # sql：按水位取一批
+async fn pull_sql(
+    source: &SourceModel,
+    spec: &SourceSpec,
+    cursor: CursorModel,
+    run_ms: i64,
+    started: Instant,
+) -> Result<SynSourcePullVo, SvcError> {
+    let mut out = empty_pull_vo();
 
-    let (rows, position) = match fetched {
+    let fetched = match fetch_sql(source, spec, cursor.cursor_value.as_deref()).await {
         Ok(v) => v,
         Err(e) => {
             warn!("数据源 {} 拉取失败: {e}", source.code);
@@ -114,26 +142,8 @@ async fn pull(id: U64) -> Result<SynSourcePullVo, SvcError> {
         }
     };
 
-    // 一行一条记录，逐条走与 sink 推送相同的链路
-    for row in &rows {
-        let outcome = handle(&source.topic, &row.record, None).await;
-        match outcome.verdict {
-            Verdict::Success => out.success += 1,
-            Verdict::Skip => out.skip += 1,
-            Verdict::Fatal => out.fatal += 1,
-            Verdict::Retriable => out.retriable += 1,
-        }
-        if matches!(outcome.verdict, Verdict::Fatal | Verdict::Retriable) {
-            out.stalled = Some(format!(
-                "{} / {}: {}",
-                outcome.code,
-                outcome.task.clone().unwrap_or_default(),
-                outcome.detail.clone().unwrap_or_default()
-            ));
-            break;
-        }
-        out.rows += 1;
-    }
+    let (rows, position) = fetched;
+    deliver(&source.topic, &rows, &mut out).await;
 
     // 只有连续成功的行能推进水位：最后一行失败时停在上一个成功行的位置，
     // 下一轮重跑失败行及其后所有行（重复由下游 upsert 吸收）
@@ -171,6 +181,134 @@ async fn pull(id: U64) -> Result<SynSourcePullVo, SvcError> {
         source.code, out.rows, out.success, out.skip, out.fatal, out.retriable, out.position
     );
     Ok(out)
+}
+
+/// # http：全量，一轮推一页
+///
+/// 状态全在 `syn_cursor.cursor_value` 里，进程重启也能接着翻：
+///
+/// ```json
+/// {"http":{"next":"2","rows":300}}      // 下一页的游标，以及已投递行数
+/// {"http":{"done":true,"rows":1200}}    // 翻到底了，调度器此后跳过
+/// ```
+///
+/// 一轮只推一页是刻意的：页与页之间进程挂了，下一轮从 `next` 继续，不用从头再来。
+/// 代价是全量完成时间 = 页数 × 调度间隔；未完成的全量源在调度里不看 `interval`，
+/// 每拍都推，所以实际是「每拍一页」。
+async fn pull_http(
+    source: &SourceModel,
+    spec: &SourceSpec,
+    cursor: CursorModel,
+    run_ms: i64,
+    started: Instant,
+) -> Result<SynSourcePullVo, SvcError> {
+    let mut out = empty_pull_vo();
+    let state = parse_http_cursor(cursor.cursor_value.as_deref());
+
+    if let HttpCursor::Done { rows } = state {
+        // 已完成：直接返回，不去打源接口。手工改库或 reset 才能重跑
+        info!("数据源 {} 的全量已完成（{} 行），本轮跳过", source.code, rows);
+        out.full_done = Some(true);
+        out.duration_ms = started.elapsed().as_millis() as u64;
+        return Ok(out);
+    }
+
+    let (start_cursor, carried) = match &state {
+        HttpCursor::Start => (
+            if spec.token_paging() {
+                String::new()
+            } else {
+                "1".to_string()
+            },
+            0,
+        ),
+        HttpCursor::Next { cursor, rows } => (cursor.clone(), *rows),
+        HttpCursor::Done { .. } => unreachable!("上面已 return"),
+    };
+
+    let page = match fetch_http_page(source, spec, &start_cursor).await {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("数据源 {} 拉取失败: {e}", source.code);
+            save_error(cursor, run_ms, Some(e.as_str())).await?;
+            out.duration_ms = started.elapsed().as_millis() as u64;
+            out.full_done = Some(false);
+            return Ok(with_stalled(out, e));
+        }
+    };
+
+    deliver(&source.topic, &page.rows, &mut out).await;
+
+    // 有行被卡住：水位不动，下一轮重拉同一页（重复由下游 upsert 吸收）
+    if out.stalled.is_some() {
+        save_error(cursor, run_ms, out.stalled.as_deref()).await?;
+        out.full_done = Some(false);
+        out.duration_ms = started.elapsed().as_millis() as u64;
+        return Ok(out);
+    }
+
+    let total = carried + out.rows;
+    let (new_value, done) = match page.next {
+        Some(next) => (http_next_cursor(&next, total), false),
+        None => (http_done_cursor(total, run_ms), true),
+    };
+
+    // 与 sql 同一条 CAS：多副本抢同一页时只有一方推进
+    if !advance_cursor(cursor, Some(&new_value), out.rows as i64, run_ms, None).await? {
+        warn!(
+            "数据源 {} 的游标被并发更新，本轮不回写（下游重复由幂等吸收）",
+            source.code
+        );
+        out.position = None;
+        out.full_done = Some(false);
+        out.duration_ms = started.elapsed().as_millis() as u64;
+        return Ok(out);
+    }
+
+    out.position = Some(new_value);
+    out.full_done = Some(done);
+    out.duration_ms = started.elapsed().as_millis() as u64;
+    if done {
+        info!(
+            "数据源 {} 全量同步完成：累计 {} 行（本轮 {} 行）",
+            source.code, total, out.rows
+        );
+    } else {
+        info!(
+            "数据源 {} 全量同步推进：本轮 {} 行，累计 {} 行，下一页游标 {:?}",
+            source.code,
+            out.rows,
+            total,
+            out.position.as_deref().and_then(|p| p.strip_prefix("{\"http\":{\"next\":"))
+        );
+    }
+    Ok(out)
+}
+
+/// # 逐行走投递链路
+///
+/// 与 sink 推送完全同一条链路（`svc::handle`）。遇到第一条 fatal / retriable 就停，
+/// 把原因记进 `stalled`；调用方据此决定「水位不动」。
+async fn deliver(topic: &str, rows: &[FetchedRow], out: &mut SynSourcePullVo) {
+    for row in rows {
+        let outcome = handle(topic, &row.record, None).await;
+        match outcome.verdict {
+            Verdict::Success => out.success += 1,
+            Verdict::Skip => out.skip += 1,
+            Verdict::Fatal => out.fatal += 1,
+            Verdict::Retriable => out.retriable += 1,
+        }
+        if matches!(outcome.verdict, Verdict::Fatal | Verdict::Retriable) {
+            out.stalled = Some(format!(
+                "{} / {}: {}",
+                outcome.code,
+                outcome.task.clone().unwrap_or_default(),
+                outcome.detail.clone().unwrap_or_default()
+            ));
+            break;
+        }
+        out.rows += 1;
+    }
 }
 
 fn with_stalled(mut out: SynSourcePullVo, reason: String) -> SynSourcePullVo {
@@ -300,6 +438,198 @@ async fn fetch_sql(
     Ok((out, last_position))
 }
 
+/// # http 全量的进度状态
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HttpCursor {
+    /// 还没开始：页码模式从第 1 页来，token 模式从空游标来
+    Start,
+    /// 下一页的游标，以及已经投递过的行数
+    Next { cursor: String, rows: u64 },
+    /// 翻到底了
+    Done { rows: u64 },
+}
+
+/// 解析 `syn_cursor.cursor_value` 里的 http 状态。
+///
+/// 认不出来的值（历史脏数据、别的形态）一律当「没开始」：重跑一遍全量是安全的
+/// （下游 upsert），比卡在那里不动强。
+fn parse_http_cursor(raw: Option<&str>) -> HttpCursor {
+    let Some(raw) = raw else {
+        return HttpCursor::Start;
+    };
+    let Ok(v) = serde_json::from_str::<Value>(raw) else {
+        return HttpCursor::Start;
+    };
+    let Some(h) = v.get("http") else {
+        return HttpCursor::Start;
+    };
+    let rows = h.get("rows").and_then(Value::as_u64).unwrap_or(0);
+    if h.get("done").and_then(Value::as_bool).unwrap_or(false) {
+        return HttpCursor::Done { rows };
+    }
+    match h.get("next").and_then(Value::as_str) {
+        Some(n) if !n.is_empty() => HttpCursor::Next {
+            cursor: n.to_string(),
+            rows,
+        },
+        _ => HttpCursor::Start,
+    }
+}
+
+fn http_next_cursor(next: &str, rows: u64) -> String {
+    json!({ "http": { "next": next, "rows": rows } }).to_string()
+}
+
+fn http_done_cursor(rows: u64, at_ms: i64) -> String {
+    json!({ "http": { "done": true, "rows": rows, "at": at_ms } }).to_string()
+}
+
+/// 这个游标值是不是「全量已完成」——调度器据此跳过 http 源
+pub(crate) fn is_http_done(raw: Option<&str>) -> bool {
+    matches!(parse_http_cursor(raw), HttpCursor::Done { .. })
+}
+
+/// # 填分页地址
+///
+/// 占位符 `{cursor}` / `{size}`（也容忍双花括号）。**没有 `{cursor}` 模板就只拉一页**：
+/// 固定地址意味着接口本身就是「全量一个响应」，再翻页只会拿到同一批数据。
+fn fill_url(template: &str, cursor: &str, size: i32) -> String {
+    let size = size.to_string();
+    template
+        .replace("{{cursor}}", cursor)
+        .replace("{{size}}", &size)
+        .replace("{cursor}", cursor)
+        .replace("{size}", &size)
+}
+
+fn url_is_paged(template: &str) -> bool {
+    template.contains("{cursor}") || template.contains("{{cursor}}")
+}
+
+/// # 分页拉一页（http 全量）
+struct HttpPage {
+    rows: Vec<FetchedRow>,
+    /// 下一页的游标；`None` 表示这是最后一页
+    next: Option<String>,
+}
+
+async fn fetch_http_page(
+    source: &SourceModel,
+    spec: &SourceSpec,
+    cursor: &str,
+) -> Result<HttpPage, String> {
+    let template = spec
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or("spec.url 缺失")?;
+    // 单页条数：spec 没写就用源自己的「单批行数」（console 上那个 batch_size），
+    // 两者都没有时 batch_size 的列默认值兜底
+    let size = spec
+        .page_size
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| source.batch_size.max(1));
+    let url = fill_url(template, cursor, size);
+    let paged = url_is_paged(template);
+
+    let method_name = spec.method_or_get().to_ascii_uppercase();
+    let method = reqwest::Method::from_bytes(method_name.as_bytes())
+        .map_err(|e| format!("spec.method 不合法: {e}"))?;
+    let timeout = get_app_config()
+        .map(|c| c.syn.pull_timeout())
+        .unwrap_or(Duration::from_secs(30));
+
+    let mut req = crate::transport::client()
+        .request(method, &url)
+        .timeout(timeout);
+    if let Some(headers) = &spec.headers {
+        for (k, v) in headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+    }
+    // POST 给一个空对象：不少接口不接受完全空的 body
+    if spec.method_or_get().eq_ignore_ascii_case("post") {
+        req = req.json(&json!({}));
+    }
+
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("请求源接口失败: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "源接口返回 {status}: {}",
+            truncate(&text, 200)
+        ));
+    }
+    let body: Value =
+        serde_json::from_str(&text).map_err(|e| format!("源接口返回的不是 JSON: {e}"))?;
+
+    let data_path = spec.data_path_or_root();
+    let data = get_path(&body, data_path)
+        .ok_or_else(|| format!("响应里没有 {data_path} 指向的数据"))?;
+    let arr = data
+        .as_array()
+        .ok_or_else(|| format!("{data_path} 不是数组：http 全量按数组逐行投递"))?;
+
+    let wrap = spec.wrap;
+    let mut rows = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        if !item.is_object() && wrap == WrapMode::Cdc {
+            return Err(format!("第 {i} 行不是 JSON 对象，wrap=cdc 需要 op/after 形态"));
+        }
+        let record = match wrap {
+            WrapMode::Row => json!({ "op": "r", "after": item }),
+            WrapMode::Cdc => item.clone(),
+        };
+        rows.push(FetchedRow { record });
+    }
+
+    // 下一页：token 模式看 next_path；页码模式「空页即结束」。
+    // 固定地址（没有 {cursor} 占位）时永远是最后一页。
+    let next = if !paged {
+        None
+    } else if spec.token_paging() {
+        let path = spec.next_path.as_deref().unwrap_or("");
+        get_path(&body, path).and_then(value_as_cursor)
+    } else if arr.is_empty() {
+        None
+    } else {
+        let page: u32 = cursor
+            .parse()
+            .map_err(|_| format!("页码游标必须是正整数，实际是 {cursor:?}"))?;
+        if page >= MAX_PAGES {
+            // 接口若忽略页码，这里会一直「有数据」，靠上限兜住而不是跑飞
+            return Err(format!(
+                "页码超过 {MAX_PAGES} 页仍未结束，检查 url 的 {{cursor}} 是否生效"
+            ));
+        }
+        Some((page + 1).to_string())
+    };
+
+    Ok(HttpPage { rows, next })
+}
+
+/// 下一页游标的取值：字符串直接用，数字转字符串，其余当没有
+fn value_as_cursor(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max).collect();
+    format!("{head}…")
+}
+
 /// # 读数据源
 async fn load_source<C: sea_orm::ConnectionTrait>(
     id: i64,
@@ -341,6 +671,27 @@ async fn load_cursor<C: sea_orm::ConnectionTrait>(
     am.create_ms = sea_orm::ActiveValue::Set(now);
     am.update_ms = sea_orm::ActiveValue::Set(now);
     Ok(SynCursorDao::insert(am, db).await?)
+}
+
+/// # 把全量进度清回起点（`pull?reset=true` 用）
+///
+/// 只清 `cursor_value` 与累计行数，保留 `last_run_ms`：调度节奏不该因为一次重跑被改。
+/// sql 源也能调，效果是「水位清零重新拉全库」—— 同一条语义，不做特判。
+pub async fn reset_full(id: U64) -> Result<(), SvcError> {
+    let db = get_db_conn()?;
+    let cursor = load_cursor(id.value() as i64, db.as_ref()).await?;
+    let now = now_ms() as i64;
+    let statement = Statement::from_sql_and_values(
+        DbBackend::Postgres,
+        "update syn_cursor set cursor_value = null, rows_synced = 0, last_error = null, \
+         update_ms = $1, updater_id = 0 where id = $2",
+        vec![now.into(), cursor.id.into()],
+    );
+    db.execute_raw(statement)
+        .await
+        .map_err(|e| SvcError::Runtime(anyhow::anyhow!(e.to_string())))?;
+    info!("数据源 {id} 的全量进度已清零，下一轮从第一页重新开始");
+    Ok(())
 }
 
 /// # 推进水位（乐观并发控制）
@@ -442,17 +793,31 @@ pub async fn poll_due_sources() -> (usize, usize) {
             Ok(d) => d,
             Err(_) => break,
         };
-        let last = match SynCursorDao::get_by_condition::<_, CursorModel>(
+        let cursor = match SynCursorDao::get_by_condition::<_, CursorModel>(
             Condition::all().add(CursorColumn::SourceId.eq(s.id)),
             db.as_ref(),
         )
         .await
         {
-            Ok(v) => v.and_then(|c| c.last_run_ms).unwrap_or(0),
+            Ok(v) => v,
             Err(_) => continue,
         };
-        if now - last < period {
-            continue;
+
+        // http 全量源不按 interval 排：翻页期间每拍都推一页，推完就永久跳过。
+        // 按 interval 排队的话，一次 10 万行的全量要跑几天。
+        if SourceKind::from_i16(s.kind).unwrap_or_default() == SourceKind::Http {
+            if cursor
+                .as_ref()
+                .and_then(|c| c.cursor_value.as_deref())
+                .is_some_and(|v| is_http_done(Some(v)))
+            {
+                continue;
+            }
+        } else {
+            let last = cursor.as_ref().and_then(|c| c.last_run_ms).unwrap_or(0);
+            if now - last < period {
+                continue;
+            }
         }
         let id = U64::from(s.id);
         match pull_once(id).await {
@@ -461,4 +826,68 @@ pub async fn poll_due_sources() -> (usize, usize) {
         }
     }
     (scanned, pulled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_cursor_roundtrip() {
+        let next = http_next_cursor("3", 600);
+        assert_eq!(
+            parse_http_cursor(Some(&next)),
+            HttpCursor::Next {
+                cursor: "3".into(),
+                rows: 600
+            }
+        );
+
+        let done = http_done_cursor(1200, 1_764_000_000_000);
+        assert_eq!(parse_http_cursor(Some(&done)), HttpCursor::Done { rows: 1200 });
+        assert!(is_http_done(Some(&done)));
+        assert!(!is_http_done(Some(&next)));
+    }
+
+    #[test]
+    fn http_cursor_treats_unknown_as_start() {
+        // sql 源的水位（JSON 数组）、脏值、空串都当成「没开始」：重跑一遍是安全的
+        assert_eq!(parse_http_cursor(None), HttpCursor::Start);
+        assert_eq!(parse_http_cursor(Some("")), HttpCursor::Start);
+        assert_eq!(
+            parse_http_cursor(Some(r#"["2026-11-13 00:40:22+00","4"]"#)),
+            HttpCursor::Start
+        );
+        assert_eq!(parse_http_cursor(Some("{oops")), HttpCursor::Start);
+        assert_eq!(parse_http_cursor(Some(r#"{"http":{"next":""}}"#)), HttpCursor::Start);
+    }
+
+    #[test]
+    fn fill_url_supports_single_and_double_braces() {
+        assert_eq!(
+            fill_url("https://x/api?page={cursor}&size={size}", "2", 100),
+            "https://x/api?page=2&size=100"
+        );
+        assert_eq!(
+            fill_url("https://x/api?page={{cursor}}", "7", 100),
+            "https://x/api?page=7"
+        );
+        // 没有占位符：原样返回，调用方据此判定「只有一页」
+        assert_eq!(fill_url("https://x/api/all", "1", 100), "https://x/api/all");
+    }
+
+    #[test]
+    fn url_is_paged_detects_placeholder() {
+        assert!(url_is_paged("https://x?page={cursor}"));
+        assert!(url_is_paged("https://x?page={{cursor}}"));
+        assert!(!url_is_paged("https://x/all"));
+    }
+
+    #[test]
+    fn next_cursor_accepts_string_and_number() {
+        assert_eq!(value_as_cursor(&json!("abc")), Some("abc".to_string()));
+        assert_eq!(value_as_cursor(&json!(2)), Some("2".to_string()));
+        assert_eq!(value_as_cursor(&json!("")), None);
+        assert_eq!(value_as_cursor(&Value::Null), None);
+    }
 }

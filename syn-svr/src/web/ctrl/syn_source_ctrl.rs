@@ -91,10 +91,28 @@ pub async fn del_by_id(
     Ok(empty("数据源已删除"))
 }
 
+/// `pull` 的查询参数
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct PullQuery {
+    /// 先清零水位再拉：http 全量源「翻到底」之后要重跑时用
+    #[serde(default)]
+    pub reset: bool,
+}
+
 #[utoipa::path(post, path = "/syn/source/{id}/pull",
+    params(
+        ("id" = u64, Path, description = "数据源 ID"),
+        ("reset" = Option<bool>, Query, description = "先清零水位再拉（http 全量重跑）")
+    ),
     responses((status = OK, body = Ro<SynSourcePullVo>)))]
 #[debug_handler]
 #[log_call]
-pub async fn pull(Path(id): Path<U64>) -> Result<Json<Ro<SynSourcePullVo>>, CtrlError> {
-    Ok(ok("本轮拉取完成", SynSourceSvc::pull(id).await?))
+pub async fn pull(
+    Path(id): Path<U64>,
+    Query(q): Query<PullQuery>,
+) -> Result<Json<Ro<SynSourcePullVo>>, CtrlError> {
+    Ok(ok(
+        "本轮拉取完成",
+        SynSourceSvc::pull_with_reset(id, q.reset).await?,
+    ))
 }

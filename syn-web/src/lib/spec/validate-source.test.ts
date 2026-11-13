@@ -75,6 +75,42 @@ describe("validateSource", () => {
     expect(paths(input)).toContain("spec.cursor_column[0]");
   });
 
+  it("http 全量：路径要以 $ 开头、方法只许 GET/POST", () => {
+    const input = valid();
+    input.kind = "http";
+    input.spec = {
+      url: "http://upstream/page?cursor={cursor}&size={size}",
+      data_path: "data.list",
+      next_path: "data.next",
+      // 类型上只允许 GET/POST，这里模拟「从接口/旧数据里带进来的非法值」
+      method: "PUT" as "GET",
+    };
+    const p = paths(input);
+    expect(p).toContain("spec.data_path");
+    expect(p).toContain("spec.next_path");
+    expect(p).toContain("spec.method");
+
+    input.spec.data_path = "$.data.list";
+    input.spec.next_path = "$.data.next";
+    input.spec.method = "POST";
+    expect(validateSource(input)).toEqual([]);
+  });
+
+  it("http 源里残留 sql 字段要报冲突，不能静默忽略", () => {
+    const input = valid();
+    input.kind = "http";
+    input.spec = {
+      url: "http://upstream/page?cursor={cursor}",
+      datasource: "adm",
+      select: "select 1",
+      cursor_column: "id",
+    };
+    const p = paths(input);
+    expect(p).toContain("spec.datasource");
+    expect(p).toContain("spec.select");
+    expect(p).toContain("spec.cursor_column");
+  });
+
   it("间隔 < 1s、批大小越界都要在保存前挡住", () => {
     expect(paths({ ...valid(), intervalDuration: "500ms" })).toContain("intervalDuration");
     expect(paths({ ...valid(), batchSize: 0 })).toContain("batchSize");

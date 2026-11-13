@@ -115,8 +115,8 @@ export const sources = {
         : liveSources.create(input),
   remove: (id: string): Promise<null> =>
     isMock() ? mockSources.remove(id) : liveSources.remove(id),
-  pull: (id: string): Promise<PullResult> =>
-    isMock() ? mockSources.pull(id) : liveSources.pull(id),
+  pull: (id: string, reset = false): Promise<PullResult> =>
+    isMock() ? mockSources.pull(id, reset) : liveSources.pull(id, reset),
   toggle: (id: string, enabled: boolean): Promise<SyncSource> =>
     isMock() ? mockSources.toggle(id, enabled) : liveSources.toggle(id, enabled),
 };

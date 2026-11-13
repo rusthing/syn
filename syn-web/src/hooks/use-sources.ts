@@ -31,7 +31,9 @@ export function useSourceMutations() {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: sourceKeys.all });
 
   const pull = useMutation({
-    mutationFn: (id: string) => sources.pull(id),
+    // 允许传 `{ id, reset }`：http 全量源「翻到底」之后靠 reset 从头再拉
+    mutationFn: (arg: string | { id: string; reset?: boolean }) =>
+      typeof arg === "string" ? sources.pull(arg) : sources.pull(arg.id, arg.reset),
     onSuccess: () => void invalidate(),
   });
 
