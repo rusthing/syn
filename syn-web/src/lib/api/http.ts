@@ -19,8 +19,6 @@ export const API_BASE = (RAW_API_BASE || "").replace(/\/+$/, "");
 /** 是否配了后端地址。没配就整站走演示数据 */
 export const HAS_API = RAW_API_BASE.length > 0;
 
-const TOKEN = (import.meta.env.VITE_SYN_TOKEN ?? "").trim();
-
 export interface Ro<T> {
   result: 1 | -1 | -2 | -3;
   msg?: string;
@@ -99,20 +97,19 @@ function buildUrl(path: string, query?: Record<string, QueryValue>): string {
 
 async function rawFetch(
   path: string,
-  options: RequestOptions & { token?: boolean } = {},
+  options: RequestOptions = {},
 ): Promise<{ response: Response; text: string }> {
-  const { method = "GET", query, body, signal, timeoutMs = 15_000, token } = options;
+  const { method = "GET", query, body, signal, timeoutMs = 15_000 } = options;
   const timeout = AbortSignal.timeout(timeoutMs);
   const composed = signal ? AbortSignal.any([signal, timeout]) : timeout;
 
   // 与其余六站同口径：required 模式带 Bearer + 真实 X-User-Id，
-  // disabled（开发）模式固定系统账号 0。X-Syn-Token 是执行器自己的业务令牌，与会话无关。
+  // disabled（开发）模式固定系统账号 0。
   const headers: Record<string, string> = {
     Accept: "application/json",
     ...authHeaders(),
   };
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (token && TOKEN) headers["X-Syn-Token"] = TOKEN;
 
   let response: Response;
   try {
@@ -184,7 +181,6 @@ export async function syncRecord(topic: string, record: unknown): Promise<SyncRe
   const { response, text } = await rawFetch(`/syn/sync/${encodeURIComponent(topic)}`, {
     method: "POST",
     body: record,
-    token: true,
     timeoutMs: 30_000,
   });
 

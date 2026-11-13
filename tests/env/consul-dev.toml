@@ -3,9 +3,13 @@
 # 写入：curl -X PUT --data-binary @tests/env/consul-dev.toml \
 #         http://127.0.0.1:8500/v1/kv/dev/syn-svr.toml
 #
-# 键的来由：bootstrap! 的 profile = "dev" → group = dev；
-# svc_name 默认取配置文件名 syn-svr；文件格式 toml → data_id = syn-svr.toml。
+# 键的来由：bootstrap! 的 profile = "dev" → group = dev；默认 svc_name 取配置文件
+# 文件名 syn-svr；文件格式 toml → data_id = syn-svr.toml。
 # 框架按 `ConfigKey::to_string()` 拼成 `dev/syn-svr.toml`。
+#
+# 这里只放「本机测试环境必须覆盖的东西」：库连接串、jobx 的直连地址、外部源/目标库。
+# 端口、雪花 node、快照刷新、下游地址一律不写 —— 端口在仓库自带的
+# `syn-svr/syn-svr.toml` 里（vite 代理写死 9007），其余由框架负责。
 #
 # 这里的 [db] 用 syn 账号（syn 库 owner，迁移建表需要的就是它）；
 # [syn.datasources.*] 是**外部源/目标库**，测试环境复用 postgres 账号。
@@ -14,40 +18,18 @@
 [db]
 url = "postgresql://syn:syn@pgsql:5432/syn"
 
-[web]
-port = 9007
-
-# 与已注册的开发实例错开；node-bits=6，合法范围 0..=63
-[id-worker]
-node = 3
-
 [syn]
-# 快照巡检快一点，联调时改完任务不用等 10s
-reload-duration = "5s"
-# 周期拉取归 jobx 单实例；本地不自起调度器
-self-schedule = false
+# 本机调试时改完任务想立刻看到结果，拉一页也别等太久
 pull-timeout = "10s"
 
-[syn.targets]
-# 覆盖仓库 toml 里的 gatexrs（本地不可达）。local-mock 是联调用的本地 HTTP 下游，
-# 没起服务时只有 kind=http 的任务会失败，不影响 DB 直写链路。
-dtw-rs-svr = "http://127.0.0.1:19099"
-local-mock = "http://127.0.0.1:19099"
-
-# 取数心跳：启动时自动注册成 jobx 计划任务（与 dtw 的报警判定、alarm 的补发同一套）。
-# 一个计划扫所有启用的源，实际精度 = max(5s, 源的 interval-duration)。
-[syn.pull-job]
-name = "syn 取数心跳"
-executor-code = "syn.pull"
-interval-duration = "5s"
-task-expire-duration = "1h"
-group-name = "syn"
+# 取数心跳不用配：默认就有（name=「syn 取数心跳」、executor-code=syn.pull、
+# interval=5s、group=syn、保留 1h），启动即注册。踩坑见 syn-开发规范 §5.1。
 
 # jobx 客户端。**本机用 Simple 直连**：这套开发环境的 consul 里，每个 rs 服务都挂了一个
 # `service:alias-*` 检查且状态是 critical，而框架的服务发现带 `?passing=true`，
 # 于是 `MicroSvc` 永远是「发现 0 个实例」—— 不是 jobx 没起，是它在这套 consul 里
 # 按 passing 过滤后不可见。生产环境 alias 正常时应改回：
-#   [api.jobx] type = "MicroSvc"  svc-name = "dev-jobx-svr"   # 实际名 = {group}-{svc-name}
+#   [api.jobx] type = "MicroSvc"  svc-name = "jobx-svr"
 [api.jobx]
 type = "Simple"
 base-url = "http://127.0.0.1:9001"
@@ -58,8 +40,9 @@ timeout = "3s"
 url = "redis://:xxxxxxxx@redis:6379"
 
 # 配置中心 + 注册中心。**registry 段必须存在**：它同时启用「向 consul 注册自己」和
-# 「发现别人」，而 jobx 客户端走的是后者。只配 config 段时发现永远返回 0 个实例，
-# 报错是 `NoAvailableInstance`，看起来像 jobx 没起，其实是本地没初始化 registry 后端。
+# 「发现别人」，而 HTTP 投递的 `target.service` 解析、jobx 客户端都走后者。
+# 只配 config 段时发现永远返回 0 个实例，报错是 `NoAvailableInstance`，
+# 看起来像下游没起，其实是本地没初始化 registry 后端。
 [micro-svc.consul]
 base-url = "http://consul:8500"
 config.file-format = "toml"

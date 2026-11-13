@@ -132,9 +132,9 @@ for _ in $(seq 1 30); do
 done
 if ! nc -z -G 1 127.0.0.1 9007 2>/dev/null; then fail "syn-svr 没在 9007 起来"; fi
 ok "服务已就绪"
-# reload-duration=5s 只有 consul 里有，用日志间接确认配置中心真的生效
-grep -q "间隔 5s" "$LOG" || fail "快照间隔不是 5s：consul 配置没生效"
-ok "consul 覆盖生效（快照巡检 5s）"
+# consul 覆盖是否生效，看下面「可选数据源」：adm / dtw 只在 KV 里有，
+# 仓库自带的 syn-svr.toml 一个数据源都没有，能列出来就说明 KV 真的合进来了。
+if grep -q "settings not found" "$LOG"; then fail "启动日志里有配置缺失告警"; fi
 
 say "数据源连接清单（只读，连接串不外泄）"
 assert_eq "清单接口" "200" "$(req GET /syn/datasource/list)"

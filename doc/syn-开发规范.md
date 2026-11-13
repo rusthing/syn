@@ -477,7 +477,6 @@ pub async fn sync(Path(topic): Path<String>, headers: HeaderMap, body: Bytes) ->
 |---|---|---|
 | `X-User-Id` | 写操作必需 | 审计列的 `creater_id` / `updater_id` |
 | `X-Current-Ms` | 可选 | 一次请求内多次写共用同一个时间戳；不传由服务端取当前时间 |
-| `X-Syn-Token` | `POST /syn/sync/{topic}` 配了 `[syn] token` 时必需 | 鉴权的是 sink，不是用户；缺失返回 401 `UNAUTHORIZED` |
 | `X-Idempotency-Key` | 可选 | 同步入口的幂等键，形如 `topic:partition:offset`。**不带就不记账**，行为与老版本一致（不是丢数据） |
 
 `get_current_user_id` / `get_current_ms`（`robotech::web::ctrl_utils`）已经把「缺头」「格式错」都做成带期望值与实际值的 `ValidationError`，不要再自己解析。
@@ -566,7 +565,7 @@ feat(syn): 五段规则与记录转发
 4. **运行时表（`syn_idem` / `syn_cursor`）也带审计四列**。不是为了让它们「像配置表」，而是 `#[crud_dto]` / `#[dao]` 假定存在；少列编译不过。
 5. **游标独立成 `syn_cursor`**。它每轮都在写，`syn_source` 是低频配置；混在一张表里会让「读配置」和「推水位」争同一行。
 6. **`syn` 的迁移只有 `pgsql`**。`mysql` / `sqlite` 目录留着占位，真的要多库时再补 PDM 与迁移，不提前造。
-7. **自拉调度不放在进程里**。`POST /syn/source/{id}/pull` 是 jobx 计划任务与运维按钮**同一个**入口：定时跑的和手动跑的不存在两套实现，单写者、执行历史、失败可见都由 jobx 给。`[syn] self_schedule` 默认 `false`，只在单副本本地开发时打开；开了又部署多副本会互相把游标推乱。进程内只留每副本的任务快照缓存与一把防连点的锁（`store.rs` / `poll.rs`）。
+7. **自拉调度不放在进程里**。`POST /syn/source/{id}/pull` 是 jobx 计划任务与运维按钮**同一个**入口：定时跑的和手动跑的不存在两套实现，单写者、执行历史、失败可见都由 jobx 给。进程内不再有调度器，也没有开它的开关（曾经有 `self-schedule`，开了又部署多副本会互相把游标推乱，已于 §5.1 一并删除）；进程内只留每副本的任务快照缓存与一把防连点的锁（`store.rs` / `poll.rs`）。
 8. **一轮拉取不因一条坏数据整体失败**。`SynSourcePullVo` 同时给 `rows` / `success` / `skip` / `fatal` / `retriable` / `position` / `stalled`：游标只推进到第一条非 success/skip 之前，`stalled` 说明卡在哪。界面必须把 `stalled` 显示出来，否则「没数据」和「被卡住」看起来一样。
 9. **`target.kind: db` 只换最后一步**。匹配 / 映射 / 校验 / 判定四段与 HTTP 目标完全共用，直写发生在动作段之后；`insert ... on conflict` 的 `c` / `r` / `u` 与按冲突键删除的 `d` 由 `db_sink.rs` 负责。表名与列名**不信任配置**：启动时从 `information_schema.columns` 读列白名单，拼 SQL 前再校验一次标识符合法，值一律绑参数。
 10. **`syn_idem` 只记终态，不记逐次投递**。一个 `(task_id, idem_key)` 只有一行，重投命中直接返回上次结论并刷新 `update_ms`；没有「命中次数」「耗时」「中间轨迹」这几列。控制台的「投递记录」是这张表的投影，`op` / `detail` 恒为 `null`、`latency_ms` / `p95_ms` 恒为 `0`。要看逐次轨迹得先改 LDM 建明细表，**不要凭空编一列**。
@@ -612,7 +611,7 @@ feat(syn): 五段规则与记录转发
 
 1. `Cargo.toml` 的 `[package]` 名字、`build.rs`、`{pkg}.toml`、`log.toml`、`migrations/{mysql,pgsql,sqlite}` 一起建。
 2. `main.rs` 用 `bootstrap!` + `setup`，`setup` 顺序固定：**`db_migrate!` → 装配置 → `setup_id_worker` → 连库 → 预加载缓存 → 起 web → 挂后台任务**。迁移脚本自己连库，必须在连接池之前；`#[dao]::insert` 依赖 ID 生成器，它必须在任何写库之前。
-3. `[id-worker] node` 只能取 **0..=63**（`node-bits=6`），多副本各配一个不同值。写 77 这类数会在启动期直接报 `ID worker node error`，不会等到第一次插入。
+3. `[id-worker] node` **不要配**：框架按实例自动分配并把结果记进注册中心的 `id-node`，多副本各自不同。只有「不注册注册中心、又要跑两个进程」这种测试场景才显式钉住（见 `tests/env/syn-svr-{a,b}.toml`）。真要配时取值 **0..=63**（`node-bits=6`），写 77 会在启动期直接报 `ID worker node error`。
 4. 启动阶段能失败的就让它失败（连不上库、端口占用），只有「数据还没准备好」才降级并告警。
 5. 跑一次 `cargo run`，确认 `target/<profile>/` 下真的出现了配置、`log.toml` 与 `migrations`；再按 §15 接一次真库，光看编译通过不算验完。
 
@@ -649,7 +648,7 @@ feat(syn): 五段规则与记录转发
 | `syn-api/src/mo`（五个实体） | ✅ | 与 PDM 逐列对齐，`store.rs` 已改走 `dao` |
 | `dto` / `vo` / `dic`（`SyncVerdict`、`SourceKind`） | ✅ | 全部手写，理由见 §6.2；字典列是 `INT2` + `@enum` |
 | `dao` / `svc` / `ctrl` / `router` / `api_doc` 五件套 | ✅ | 五个资源共 7+8+1+1+1 个手写接口，`api_doc` 逐个列全 |
-| `POST /syn/source/{id}/pull`（poll 入口，`kind=sql`） | ✅ | 复合游标 + 5 秒重叠窗口 + 批量 + `wrap`；jobx 与运维按钮共用一条实现，`self_schedule=false`，见 §11.7 |
+| `POST /syn/source/{id}/pull`（poll 入口，`kind=sql`） | ✅ | 复合游标 + 5 秒重叠窗口 + 批量 + `wrap`；jobx 与运维按钮共用一条实现，进程内无调度器，见 §11.7 |
 | poll 的 `kind=http` 全量分页取数 | ✅ | 一轮推一页，空页/无 next 即收尾，翻到底写 `{"http":{"done":true}}`、此后调度跳过；`pull?reset=true` 重跑。页模式与 token 模式都验过，见 §15.8 |
 | `syn_idem` 记账 / `target.kind: db` 直写 | ✅ | `X-Idempotency-Key` 只记终态；DB sink 有 `information_schema` 列白名单，见 §11.9 / §11.10 |
 | `syn-web`（控制台） | ✅ | 总览 / 任务（五段编辑器，含 `http`↔`db` 目标切换）/ 来源 / 试跑 / 投递 / 幂等；演示数据可独立运行 |
@@ -661,6 +660,9 @@ feat(syn): 五段规则与记录转发
 | 部署形态联调（consul 配置中心 + 业务库隔离表） | ✅ | `tests/env/run.sh` 一次跑 50 条断言，验的是「不加 `-c`、走默认 `syn-svr.toml` + consul KV 覆盖」这条路；见 §15.5 |
 | jobx 计划任务自动注册（取数心跳） | ✅ | 首次启动注册 `executor-code=syn.pull`，撞唯一键只确认分组；实测 6 个批次共 297 拍、0 失败，见 §15.7 |
 | 多副本游标乐观锁（CAS） | ✅ | `tests/env/concurrent-pull.sh` 起两副本抢同一批 300 行：水位只涨一轮、败方 `position` 为空且有 warn、重复投递由下游 upsert 吸收；见 §15.6 |
+| 下游地址走服务发现（`target.service`） | ✅ | `syn-svr/src/registry.rs`：`discover_service` + 5s TTL 缓存 + 轮转；生产 3 副本实测 HTTP 投递到 `dtw-rs-svr` 得 200，配置里没有一处地址 |
+| 任务快照跨副本刷新（`refresh.syn.task`） | ✅ | 写库提交后 publish，各副本 subscribe 后重建；生产 3 副本同一毫秒（15:27:23.783）都从 0 变 1、删除后又都回落 0。框架另有 60s 兜底重建（`[refresh] rebuild-interval`），不是本服务的轮询 |
+| 雪花 node 与端口的自动分配 | ✅ | 生产 3 副本分别拿到 node 13/26/28（注册中心 `id-node`），端口 44552/42417/36829 由框架随机分配并登记，配置里两者都没有 |
 
 ## 14. 前端规范（`syn-web`）
 
@@ -803,7 +805,7 @@ tests/e2e/run.sh --cleanup      # 停服务 + 删掉三个联调库
 
 配置是 `tests/e2e/syn-svr-it.toml`，用 `syn-svr -c <绝对路径>` 加载，**不改
 `syn-svr.toml`**：`bootstrap!` 的 `-c` 优先于默认配置文件，配置中心没初始化只会打一条
-warn。端口 19007，`self-schedule=false`，jobx 不参与。
+warn。端口 19007（单进程联调，显式写死好让脚本连），jobx 不参与。
 
 ### 15.2 断言清单
 
@@ -872,7 +874,7 @@ tests/env/run.sh --cleanup  # 只清联调数据，不启动服务
 3. `syn` 库里 `code` 精确等于 `adm_person` / `adm_person_to_dtw` / `tmp_delete_me` 的配置行。
 
 **不改任何已有业务表**，也不动 consul 的其它键。断言分 10 组、共 50 条：
-配置中心生效（日志出现「快照巡检已启动，间隔 5s」）→ 数据源清单 → 来源 CRUD 与编码保护
+数据源清单（`adm` / `dtw` 只存在于 KV，能列出来即证明配置中心生效）→ 来源 CRUD 与编码保护
 → 任务与 reload 快照 → poll 三轮（含 `on conflict` 覆盖脏行）→ 幂等台账四条 →
 控制台六类接口 → 小时桶末桶。
 
@@ -882,12 +884,13 @@ tests/env/run.sh --cleanup  # 只清联调数据，不启动服务
 #### 这一轮暴露的坑
 
 - **`[micro-svc.consul]` 段缺了，KV 就永远读不到**：`bootstrap!` 只在配置里声明了
-  consul 段时才去拉 KV，缺段不报错、不告警，只是「配置中心好像没生效」。判断依据是
-  日志里**没有**「快照巡检已启动」那一行 —— 不要靠改一个值再猜。
+  consul 段时才去拉 KV，缺段不报错、不告警，只是「配置中心好像没生效」。判断依据放两个：
+  启动日志里**没有**「任务快照刷新订阅已建立」，或者 `GET /syn/datasource/list` 是空的
+  （数据源只存在于 KV 里）—— 不要靠改一个值再猜。
 - **`[config] common-configs = ["log.toml"]`** 才挂日志配置，否则日志级别与输出目标
   都走默认，`grep` 断言会静默落空。
-- **`node=77` 起不来**（同 §15.3）：真实环境的 toml 与 consul KV 两处都要落在 `0..=63`，
-  改一处忘另一处就是启动失败。
+- **`node=77` 起不来**（同 §15.3）：真要在配置里写 node，toml 与 consul KV 两处都要落在
+  `0..=63`，改一处忘另一处就是启动失败。正常情况根本不用写 —— 框架自动分配。
 - **业务库里的隔离表要自己建**：真实环境不会替你跑 `create-table`，`syn_it_person`
   由脚本 `drop table if exists` + `create table` 重建，避免上一次的残留行让断言假绿。
 
@@ -909,9 +912,13 @@ ROWS=500 tests/env/concurrent-pull.sh   # batch_size=500，一轮取完才能测
 | A | 9007 | 3 | `tests/env/syn-svr-a.toml` |
 | B | 9008 | 4 | `tests/env/syn-svr-b.toml` |
 
-**两边都不带 `[micro-svc.consul]`、都不配 `[syn.pull-job]`**，这是刻意的：KV 里的取数心跳
-是 5 秒一次，jobx 会在测试窗口里把新行先拉走，「两副本抢同一批」就退化成「一先一后」，
-竞态测不出来。
+这里的 `node` 是**测试专用的权宜之计**，不代表生产要配：两个进程不接注册中心，框架
+拿不到「同服务已占用」列表，自动分配会双双回退 0，雪花 ID 撞不撞就全看运气。生产三副本
+实测自动分配为 13/26/28（见 §13 表），配置里一个字都没有。
+
+**两边都不带 `[micro-svc.consul]`、都不配 `[api.jobx]` / `[redis]`**，这是刻意的：有了
+jobx 就有默认的取数心跳（5 秒一次），jobx 会在测试窗口里把新行先拉走，「两副本抢同一批」
+就退化成「一先一后」，竞态测不出来。
 
 断言 8 条（实测两轮全绿）：
 

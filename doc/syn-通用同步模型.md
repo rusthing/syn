@@ -189,11 +189,13 @@ P1 先做，因为它是纯本地的、当天能验收的，而且「不经下�
 
 ---
 
-## 9. 待拍板
+## 9. 已拍板的取舍
 
-1. **调度用 jobx 打端点**（推荐）还是 syn 自己起定时器？
-2. **DB 直写的账号粒度**：一个下游一个数据源（推荐，权限最小），还是共享一个高权账号？
-3. **`syn_idem` 的键由谁生成**：sink 侧传 `X-Idempotency-Key`（推荐，`topic:partition:offset`），
-   还是 syn 自己从记录里拼？前者准确，但要改 sink 配置。
+1. **调度用 jobx 打端点** —— 已按 §2.3 的 b 落地：`POST /syn/source/{id}/pull` 由 jobx
+   计划任务按 5s 打一拍，进程内没有调度器，也没有打开它的开关。
+2. **DB 直写的账号粒度**：一个下游一个数据源（权限最小）。`[syn.datasources.<name>]`
+   是唯一入口，控制台只存名字不存连接串。
+3. **`syn_idem` 的键由谁生成**：sink 侧传 `X-Idempotency-Key`（`topic:partition:offset`），
+   syn 不自己拼；不带键就不记账，不猜。
 
-在拍板之前，P0/P1 不受影响，可以继续。
+下游地址不在配置里：`target.service` 只是服务名，运行时从注册中心发现（`syn-svr/src/registry.rs`）。

@@ -1,7 +1,7 @@
 # 第一副本配置 —— 与 `syn-svr-b.toml` 完全对称，只差端口与 node。
 #
 # 为什么不用默认的 `syn-svr.toml`：那份带 `[micro-svc.consul]`，会读 KV
-# `dev/syn-svr.toml`，而那里配了 `[syn.pull-job]`（间隔 5s）。jobx 每 5 秒打一次
+# `dev/syn-svr.toml`，而那里配了 jobx 取数心跳（默认 5s）。jobx 每 5 秒打一次
 # 心跳，会在并发测试的窗口里把新行拉走，让「两副本抢同一批」变成「一先一后」，
 # 竞态测不出来。这里两个副本都不碰配置中心、都不注册计划，只验游标 CAS 本身。
 #
@@ -15,18 +15,14 @@ url = "postgresql://syn:syn@pgsql:5432/syn"
 [web]
 port = 9007
 
+# 只此一处显式钉 node，**只因为这个测试的特殊性**：两个进程不配 consul、
+# 不注册注册中心，自动分配拿不到「同服务已占用」列表，会双双回退 0 号 —— 雪花 ID
+# 撞不撞全看运气，测游标 CAS 就变成偶发失败。生产与普通联调都不要抄这一段。
 [id-worker]
-# node-bits=6，取值 0..=63；两副本必须不同，否则雪花 ID 撞主键
 node = 3
 
 [syn]
-reload-duration = "5s"
-self-schedule = false
 pull-timeout = "10s"
-
-[syn.targets]
-dtw-rs-svr = "http://127.0.0.1:19099"
-local-mock = "http://127.0.0.1:19099"
 
 [syn.datasources.adm]
 url = "postgresql://postgres:postgres@pgsql:5432/admrs"
