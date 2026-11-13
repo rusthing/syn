@@ -1,0 +1,17 @@
+# 日志级别与模块过滤。由 build.rs 拷到 target/<profile>/log.toml。
+#
+# 同步执行器每次请求都打一条 info（task / verdict / code / 耗时），默认 info 足够；
+# 要复现「这条记录为什么被判成 fatal」时临时调 debug。
+level = "info"
+
+[modules]
+# 下游是内网单体接口，hyper/h2 的 debug 只会把连接复用刷满屏
+"h2::codec" = "info"
+"h2::proto" = "info"
+"tower::buffer" = "info"
+"hyper_util::client" = "info"
+"reqwest::connect" = "warn"
+# 配置文件加载的逐键 trace 在启动时刷几百行，只在查配置来源时才需要
+"robotech::cfg::cfg_utils" = "error"
+"robotech::micro_svc::hub_client::hub_client" = "error"
+"robotech::web::server::web_server_utils" = "warn"

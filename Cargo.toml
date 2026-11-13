@@ -1,0 +1,52 @@
+[workspace]
+members = ["syn-api", "syn-core", "syn-svr"]
+resolver = "3"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+authors = ["zbz"]
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+derive_setters = "0.1.9"
+typed-builder = "0.23.2"
+tracing = "0.1.44"
+clap = "4.6.7"
+chrono = "0.4.45"
+config = "0.15.27"
+arc-swap = "1.9.3"
+serde = "1.0.229"
+serde_json = "1.0.154"
+serde_with = "3.24.0"
+o2o = "0.5.5"
+validator = "0.21.0"
+strum = "0.28.0"
+utoipa = "6.0.0"
+utoipa-swagger-ui = "10.0.2"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+tokio = "1"
+tokio-util = "0.7.19"
+axum = "0.8.9"
+sqlx = "0.9.0"
+sea-orm = "2.0.4"
+regex = "1.13.1"
+linkme = "0.3.37"
+async-trait = "0.1.92"
+thiserror = "2.0.17"
+humantime = "2.4.0"
+
+wheel-rs = "1.14.0"
+idworker = { version = "1.4.0", features = ["utils"] }
+robotech = { version = "1.17.0", features = ["db", "config-center", "registry-center", "macros", "redis"] }
+
+syn-api = { path = "./syn-api" }
+syn-core = { path = "./syn-core" }
+
+# 与同机其它服务保持同一份本地补丁：框架的几个未发布改动只存在于本地仓库
+[patch.crates-io]
+wheel-rs = { path = "../wheel-rs" }
+idworker = { path = "../idworker" }
+robotech = { path = "../robotech-rs/robotech" }
+robotech-macros = { path = "../robotech-rs/robotech-macros" }

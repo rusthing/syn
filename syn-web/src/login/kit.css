@@ -1,0 +1,651 @@
+/* ==========================================================================
+   Robotech Suite · 统一登录骨架
+   --------------------------------------------------------------------------
+   七个控制台共用同一份文件，禁止在单个项目里改这份样式。
+   站点差异只有三处：--sl-accent 主题色（按 data-brand 选择）、业务图形、文案。
+   其余（栅格、字号阶梯、控件、圆角、间距、动效）完全一致。
+   ========================================================================== */
+
+.sl-shell,
+.sl-shell *,
+.sl-shell *::before,
+.sl-shell *::after {
+  box-sizing: border-box;
+}
+
+/* antd 项目的 body 可能带默认 margin；登录页是全屏画面，这里兜底清掉 */
+body:has(.sl-shell) {
+  margin: 0;
+}
+
+.sl-shell {
+  --sl-accent: #5b7cf5;
+  --sl-rgb: 91, 124, 245;
+  --sl-dark: #0c131e;
+  --sl-ink: #141a23;
+  --sl-ink-soft: #4a5565;
+  --sl-muted: #7b8798;
+  --sl-line: #e1e6ee;
+  --sl-canvas: #f6f8fb;
+  --sl-paper: #ffffff;
+  --sl-font: ui-sans-serif, -apple-system, "SF Pro Text", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --sl-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo,
+    Consolas, monospace;
+
+  display: grid;
+  grid-template-columns: minmax(0, 1.06fr) minmax(400px, 0.94fr);
+  min-height: 100vh;
+  width: 100%;
+  background: var(--sl-canvas);
+  color: var(--sl-ink);
+  font-family: var(--sl-font);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 七套主题：只改强调色，深色底与中性色保持完全一致 */
+.sl-shell[data-brand="adm"]   { --sl-accent: #5b7cf5; --sl-rgb: 91, 124, 245; }
+.sl-shell[data-brand="jobx"]  { --sl-accent: #2eab7f; --sl-rgb: 46, 171, 127; }
+.sl-shell[data-brand="msg"]   { --sl-accent: #3b9ae1; --sl-rgb: 59, 154, 225; }
+.sl-shell[data-brand="alarm"] { --sl-accent: #ef7040; --sl-rgb: 239, 112, 64; }
+.sl-shell[data-brand="dbz"]   { --sl-accent: #9070e8; --sl-rgb: 144, 112, 232; }
+.sl-shell[data-brand="dtw"]   { --sl-accent: #18a3a3; --sl-rgb: 24, 163, 163; }
+.sl-shell[data-brand="syn"]   { --sl-accent: #d9a02b; --sl-rgb: 217, 160, 43; }
+
+/* ---------------------------------------------------------------- 左：叙事栏 */
+
+.sl-story {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 28px;
+  overflow: hidden;
+  padding: 44px clamp(32px, 4.4vw, 68px);
+  background: var(--sl-dark);
+  color: #fff;
+}
+
+.sl-story-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: linear-gradient(160deg, #000 0%, transparent 78%);
+}
+
+.sl-story-glow {
+  position: absolute;
+  top: -190px;
+  right: -120px;
+  width: 620px;
+  height: 620px;
+  pointer-events: none;
+  background: radial-gradient(circle, rgba(var(--sl-rgb), 0.24) 0%, transparent 66%);
+}
+
+.sl-story > *:not(.sl-story-grid):not(.sl-story-glow) {
+  position: relative;
+  z-index: 1;
+}
+
+.sl-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sl-mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: none;
+  place-items: center;
+  border: 1px solid rgba(var(--sl-rgb), 0.55);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(var(--sl-rgb), 0.32), rgba(var(--sl-rgb), 0.08));
+  color: #fff;
+  font-family: var(--sl-mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.sl-brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.sl-brand-text b {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.sl-brand-text small {
+  color: rgba(255, 255, 255, 0.42);
+  font-family: var(--sl-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.sl-suite {
+  margin-left: auto;
+  padding: 5px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.42);
+  font-family: var(--sl-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+.sl-story-main {
+  max-width: 620px;
+}
+
+.sl-visual {
+  position: relative;
+  overflow: hidden;
+  padding: 14px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 78% 12%, rgba(var(--sl-rgb), 0.1), transparent 52%),
+    rgba(255, 255, 255, 0.018);
+}
+
+.sl-visual::after {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  content: "";
+  background: linear-gradient(180deg, transparent 62%, rgba(12, 19, 30, 0.34));
+}
+
+.sl-visual svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.sl-glyph text {
+  font-family: var(--sl-mono);
+}
+
+.sl-glyph .g-box {
+  fill: rgba(255, 255, 255, 0.035);
+  stroke: rgba(255, 255, 255, 0.2);
+  stroke-width: 1;
+}
+
+.sl-glyph .g-box-accent {
+  fill: rgba(var(--sl-rgb), 0.16);
+  stroke: var(--sl-accent);
+  stroke-width: 1.2;
+}
+
+.sl-glyph .g-grid {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 1;
+}
+
+.sl-glyph .g-area {
+  fill: rgba(var(--sl-rgb), 0.12);
+  stroke: var(--sl-accent);
+  stroke-width: 1.4;
+}
+
+.sl-glyph .g-line {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.24);
+  stroke-width: 1.2;
+}
+
+.sl-glyph .g-line-accent {
+  fill: none;
+  stroke: var(--sl-accent);
+  stroke-width: 1.5;
+}
+
+.sl-glyph .g-flow {
+  fill: none;
+  stroke: var(--sl-accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 8;
+  animation: sl-dash 2.8s linear infinite;
+}
+
+.sl-glyph .g-dash {
+  fill: none;
+  stroke: rgba(var(--sl-rgb), 0.55);
+  stroke-width: 1;
+  stroke-dasharray: 4 5;
+}
+
+.sl-glyph .g-dot {
+  fill: var(--sl-accent);
+}
+
+.sl-glyph .g-dot-dim {
+  fill: rgba(255, 255, 255, 0.3);
+}
+
+.sl-glyph .g-ring {
+  fill: none;
+  stroke: var(--sl-accent);
+  stroke-width: 1.2;
+}
+
+.sl-glyph .g-pulse {
+  fill: var(--sl-accent);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: sl-pulse 2.4s ease-in-out infinite;
+}
+
+.sl-glyph .g-txt {
+  fill: rgba(255, 255, 255, 0.66);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.sl-glyph .g-txt-dim {
+  fill: rgba(255, 255, 255, 0.36);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+}
+
+.sl-glyph .g-txt-accent {
+  fill: var(--sl-accent);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+}
+
+.sl-headline {
+  margin: 30px 0 0;
+  font-size: clamp(25px, 2.35vw, 34px);
+  font-weight: 600;
+  line-height: 1.28;
+  letter-spacing: -0.025em;
+}
+
+.sl-headline em {
+  color: var(--sl-accent);
+  font-style: normal;
+}
+
+.sl-desc {
+  max-width: 470px;
+  margin: 14px 0 0;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 13px;
+  line-height: 1.85;
+}
+
+.sl-features {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+  margin: 24px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sl-features li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.sl-features li::before {
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-radius: 1px;
+  background: var(--sl-accent);
+  content: "";
+}
+
+.sl-story-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  color: rgba(255, 255, 255, 0.34);
+  font-family: var(--sl-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+/* ------------------------------------------------------------ 右：表单栏 */
+
+.sl-pane {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px clamp(24px, 4vw, 64px);
+  background: var(--sl-canvas);
+}
+
+.sl-panel {
+  width: 100%;
+  max-width: 396px;
+}
+
+.sl-mobile-brand {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 34px;
+}
+
+.sl-mobile-brand .sl-mark {
+  width: 36px;
+  height: 36px;
+  border-color: rgba(var(--sl-rgb), 0.5);
+  background: rgba(var(--sl-rgb), 0.12);
+  color: var(--sl-accent);
+  font-size: 11px;
+}
+
+.sl-mobile-brand b {
+  color: var(--sl-ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.sl-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--sl-accent);
+  font-family: var(--sl-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.sl-eyebrow::after {
+  width: 28px;
+  height: 1px;
+  background: rgba(var(--sl-rgb), 0.45);
+  content: "";
+}
+
+.sl-title {
+  margin: 18px 0 0;
+  color: var(--sl-ink);
+  font-size: 25px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+.sl-sub {
+  margin: 8px 0 0;
+  color: var(--sl-muted);
+  font-size: 12.5px;
+  line-height: 1.75;
+}
+
+.sl-banner {
+  margin-top: 20px;
+  padding: 10px 13px;
+  border: 1px solid rgba(var(--sl-rgb), 0.28);
+  border-radius: 10px;
+  background: rgba(var(--sl-rgb), 0.07);
+  color: var(--sl-ink-soft);
+  font-size: 12px;
+}
+
+.sl-form {
+  display: flex;
+  flex-direction: column;
+  gap: 17px;
+  margin-top: 30px;
+}
+
+.sl-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sl-field > .sl-label {
+  color: var(--sl-ink-soft);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.sl-field > .sl-label i {
+  margin-left: 3px;
+  color: var(--sl-accent);
+  font-style: normal;
+}
+
+.sl-input-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.sl-input {
+  display: block;
+  width: 100%;
+  height: 46px;
+  margin: 0;
+  padding: 0 44px 0 14px;
+  border: 1px solid var(--sl-line);
+  border-radius: 10px;
+  outline: none;
+  background: var(--sl-paper);
+  color: var(--sl-ink);
+  font-family: var(--sl-font);
+  font-size: 13.5px;
+  line-height: 44px;
+  transition: border-color 0.16s, box-shadow 0.16s;
+}
+
+.sl-input::placeholder {
+  color: #a6b0bf;
+}
+
+.sl-input:focus {
+  border-color: var(--sl-accent);
+  box-shadow: 0 0 0 3px rgba(var(--sl-rgb), 0.13);
+}
+
+.sl-input:disabled {
+  background: #f4f6f9;
+  cursor: not-allowed;
+}
+
+.sl-eye {
+  position: absolute;
+  top: 0;
+  right: 6px;
+  display: grid;
+  width: 36px;
+  height: 46px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #9aa5b4;
+  cursor: pointer;
+}
+
+.sl-eye:hover {
+  color: var(--sl-accent);
+}
+
+.sl-error {
+  padding: 10px 13px;
+  border: 1px solid #f0c7c2;
+  border-radius: 10px;
+  background: #fdf1ef;
+  color: #a83c30;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.sl-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  width: 100%;
+  height: 46px;
+  margin-top: 4px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--sl-accent);
+  box-shadow: 0 8px 18px -10px rgba(var(--sl-rgb), 0.8);
+  color: #fff;
+  font-family: var(--sl-font);
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: filter 0.16s, transform 0.16s;
+}
+
+.sl-submit:hover:not(:disabled) {
+  filter: brightness(1.07);
+  transform: translateY(-1px);
+}
+
+.sl-submit:disabled {
+  opacity: 0.68;
+  cursor: not-allowed;
+}
+
+.sl-spinner {
+  animation: sl-spin 0.9s linear infinite;
+}
+
+.sl-note {
+  margin-top: 26px;
+  padding: 13px 15px;
+  border: 1px solid var(--sl-line);
+  border-radius: 12px;
+  background: #fbfcfe;
+}
+
+.sl-note b {
+  display: block;
+  color: var(--sl-ink-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.sl-note p {
+  margin: 5px 0 0;
+  color: var(--sl-muted);
+  font-size: 11.5px;
+  line-height: 1.75;
+}
+
+.sl-extra {
+  margin-top: 12px;
+  color: var(--sl-muted);
+  font-size: 11.5px;
+  line-height: 1.75;
+}
+
+.sl-extra b {
+  color: var(--sl-ink-soft);
+  font-weight: 600;
+}
+
+.sl-extra code {
+  color: var(--sl-ink-soft);
+  font-family: var(--sl-mono);
+  font-size: 11px;
+}
+
+.sl-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 34px;
+  padding-top: 16px;
+  border-top: 1px solid var(--sl-line);
+  color: #9aa5b4;
+  font-family: var(--sl-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+}
+
+/* ------------------------------------------------------------------ 动效 */
+
+@keyframes sl-dash {
+  to { stroke-dashoffset: -39; }
+}
+
+@keyframes sl-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.72); }
+  50% { opacity: 1; transform: scale(1.28); }
+}
+
+@keyframes sl-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sl-glyph .g-flow,
+  .sl-glyph .g-pulse,
+  .sl-spinner {
+    animation: none;
+  }
+  .sl-submit:hover:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* -------------------------------------------------------------- 响应式 */
+
+@media (max-width: 1080px) {
+  .sl-shell {
+    grid-template-columns: 1fr;
+  }
+  .sl-story {
+    display: none;
+  }
+  .sl-mobile-brand {
+    display: flex;
+  }
+  .sl-pane {
+    min-height: 100vh;
+    padding: 40px 24px;
+  }
+}
+
+@media (max-width: 480px) {
+  .sl-title {
+    font-size: 22px;
+  }
+  .sl-features li {
+    white-space: normal;
+  }
+}

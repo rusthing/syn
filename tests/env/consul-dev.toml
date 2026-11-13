@@ -1,0 +1,45 @@
+# syn-svr 测试环境配置 —— consul KV `dev/syn-svr.toml`
+#
+# 写入：curl -X PUT --data-binary @tests/env/consul-dev.toml \
+#         http://127.0.0.1:8500/v1/kv/dev/syn-svr.toml
+#
+# 键的来由：bootstrap! 的 profile = "dev" → group = dev；
+# svc_name 默认取配置文件名 syn-svr；文件格式 toml → data_id = syn-svr.toml。
+# 框架按 `ConfigKey::to_string()` 拼成 `dev/syn-svr.toml`。
+#
+# 这里的 [db] 用 syn 账号（syn 库 owner，迁移建表需要的就是它）；
+# [syn.datasources.*] 是**外部源/目标库**，测试环境复用 postgres 账号。
+# 生产必须改成每个下游一个最小权限账号，别照抄这一段。
+
+[db]
+url = "postgresql://syn:syn@pgsql:5432/syn"
+
+[web]
+port = 9007
+
+# 与已注册的开发实例错开；node-bits=6，合法范围 0..=63
+[id-worker]
+node = 3
+
+[syn]
+# 快照巡检快一点，联调时改完任务不用等 10s
+reload-duration = "5s"
+# 周期拉取归 jobx 单实例；本地不自起调度器
+self-schedule = false
+pull-timeout = "10s"
+
+[syn.targets]
+# 覆盖仓库 toml 里的 gatexrs（本地不可达）。local-mock 是联调用的本地 HTTP 下游，
+# 没起服务时只有 kind=http 的任务会失败，不影响 DB 直写链路。
+dtw-rs-svr = "http://127.0.0.1:19099"
+local-mock = "http://127.0.0.1:19099"
+
+# 源库：admrs（人员主数据）。联调只新建 syn_it_* 隔离表，不碰任何业务表。
+[syn.datasources.adm]
+url = "postgresql://postgres:postgres@pgsql:5432/admrs"
+max-connections = 4
+
+# 下游库：dtwrs_ui。DB sink 把 upsert 写进 public.syn_it_person。
+[syn.datasources.dtw]
+url = "postgresql://postgres:postgres@pgsql:5432/dtwrs_ui"
+max-connections = 4

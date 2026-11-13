@@ -1,0 +1,39 @@
+# syn-svr 端到端联调配置，只给 tests/e2e/run.sh 用。
+#
+# 用 `syn-svr -c <绝对路径>` 显式加载，不改 syn-svr.toml，也不依赖配置中心。
+# 三个库都在同一个本地 PG 实例里，但互相独立：
+#   syn_it      —— 服务库，由 db_migrate! 自动建 syn_* 五张表
+#   syn_it_src  —— 源库，poll 从 demo_person 按 (updated_at, id) 拉增量
+#   syn_it_dst  —— 下游库，target.kind=db 把行 upsert 进 demo_person
+#
+# 联调库只由 run.sh 创建/清理，和生产库不共用账号以外的任何东西。
+
+app-name = "syn-svr-it"
+
+[db]
+url = "postgresql://postgres:postgres@localhost:5432/syn_it"
+
+[web]
+port = 19007
+
+# 与开发实例错开，避免雪花 ID 撞车。
+# node-bits=6，合法范围只有 0..=63，写 77 会在启动时直接报错
+[id-worker]
+node = 37
+
+[syn]
+# 快照巡检快一点，省得调试时等 10s
+reload-duration = "2s"
+# 调度归 jobx：联调脚本自己打 pull 端点，不启进程内调度器
+self-schedule = false
+pull-timeout = "10s"
+
+# 源库：poll 取数
+[syn.datasources.src]
+url = "postgresql://postgres:postgres@localhost:5432/syn_it_src"
+max-connections = 4
+
+# 下游库：DB sink 写数
+[syn.datasources.dst]
+url = "postgresql://postgres:postgres@localhost:5432/syn_it_dst"
+max-connections = 4

@@ -1,0 +1,37 @@
+[package]
+name = "syn-svr"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "syn 执行器：接收 sink 推送或自拉取的数据，按五段规则投递到下游 HTTP 接口或库表"
+
+[dependencies]
+anyhow = { workspace = true }
+tracing = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+config = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "signal"] }
+axum = { workspace = true, features = ["macros"] }
+# sqlx 只用于「外部库」：自拉数据源的源库、DB 直写的目标库。syn 自己的库走框架的 sea-orm
+sqlx = { workspace = true, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "json"] }
+sea-orm = { workspace = true, features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+reqwest = { workspace = true }
+arc-swap = { workspace = true }
+async-trait = { workspace = true }
+linkme = { workspace = true }
+humantime = { workspace = true }
+validator = { workspace = true }
+utoipa = { workspace = true, features = ["axum_extras"] }
+utoipa-swagger-ui = { workspace = true, features = ["axum", "vendored"] }
+
+wheel-rs = { workspace = true }
+idworker = { workspace = true, features = ["utils"] }
+
+syn-api = { workspace = true, features = ["server"] }
+syn-core = { workspace = true }
+
+robotech = { workspace = true }

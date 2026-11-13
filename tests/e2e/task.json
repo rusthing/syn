@@ -1,0 +1,45 @@
+{
+  "name": "联调-人员表直写",
+  "remark": "e2e: poll -> db sink",
+  "spec": {
+    "id": "it_person_db",
+    "topic": "source:it_person",
+    "priority": 100,
+    "enabled": true,
+    "exclusive": true,
+    "target": {
+      "kind": "db",
+      "datasource": "dst",
+      "table": "public.demo_person",
+      "key": ["id"],
+      "on_conflict": "update"
+    },
+    "match": [],
+    "mapping": {
+      "omit_null": true,
+      "rows": [
+        { "to": "id", "from": "$.after.id" },
+        { "to": "name", "from": "$.after.name" },
+        { "to": "updated_at", "from": "$.after.updated_at" }
+      ]
+    },
+    "actions": [
+      { "op": "r", "method": "POST", "path": "", "body": "mapped" }
+    ],
+    "guards": [],
+    "outcomes": [
+      {
+        "scope": "body",
+        "assert": [{ "field": "$.affected", "op": "gt", "value": 0 }],
+        "verdict": "success",
+        "code": "DB_OK"
+      },
+      {
+        "scope": "status",
+        "assert": [{ "op": "in", "value": [200] }],
+        "verdict": "fatal",
+        "code": "DB_NO_ROW"
+      }
+    ]
+  }
+}

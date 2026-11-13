@@ -1,0 +1,56 @@
+# syn-svr 配置文件
+#
+# 由 build.rs 拷到 target/<profile>/，`profile` 决定再叠一层 `syn-svr-{profile}.toml`。
+# 生产以配置中心 KV `syn-svr.toml` 为准，本文件会被它覆盖，两处要保持一致。
+profile = "dev"
+
+[db]
+url = "postgresql://syn:syn@localhost:5432/syn"
+
+[web]
+port = 9007
+
+# 雪花 ID 的节点号。`#[dao]::insert` 依赖它生成主键；**多副本必须各不相同**，
+# 否则两台机器会算出同一个 ID，插 syn_task 直接撞主键。单副本留 1 即可。
+[id-worker]
+node = 1
+
+# 同步执行器自身配置（对应 AppConfig::syn）
+[syn]
+# token：配了之后请求必须带 `X-Syn-Token`。生产必须配 —— 这个端点能直接写下游库，
+#        裸跑等于给内网任何进程一个「任意表任意行写入」的入口。
+# token = "xxxxxxxx"
+# 快照巡检间隔：每隔这么久比对一次 syn_task 的「条数 + 最大 update_ms」，变了就重载。
+# 多副本下靠它让每个副本都跟上别人的修改（没有注册中心广播，重载按钮只打到其中一台）。
+reload-duration = "10s"
+# 自拉调度：false = 由 jobx 定时打 POST /syn/source/{id}/pull（推荐，天然单点）。
+# 只有单副本本地开发才设 true，多副本打开会重复拉数。
+self-schedule = false
+
+# 服务名 → 真实地址。配置里只有服务名，URL 只存在于这一张表里，
+# 换环境不用改任务配置。
+[syn.targets]
+dtw-rs-svr = "http://gatexrs:80"
+
+# DB 直写下场：`target.kind = db` 的 `target.datasource` 就是这里的键。
+#
+# 一个下游一个账号（权限最小）。不要共用高权账号：syn 的配置本身能被改，
+# 共用账号等于「改一条任务配置就能写任何库任何表」。
+#
+# [syn.datasources.dtw]
+# url = "postgresql://syn_dtw:xxxxxxxx@10.0.0.12:5432/dtw"
+# max-connections = 4
+
+# 配置中心。本地用容器名（/etc/hosts 或 Docker DNS 能解析），生产由环境变量
+# 或部署侧覆盖。`profile = "dev"` 决定 group，应用配置的 key 是
+# `dev/syn-svr.toml`；框架还会额外拉 `dev/refresh-scope.toml`。
+#
+# 只配 config、不配 registry：syn 是被动接请求 + 被 jobx 打端点，
+# 没有服务间发现需求，注册进 consul 反而多一份要清理的实例。
+[micro-svc.consul]
+base-url = "http://consul:8500"
+
+[micro-svc.consul.config]
+# 空数组 = 不拉公共配置。common-configs 里的每个 key 都必须真实存在：
+# get_configs() 只要有一个拉不到就整体返回 Err，连应用配置一起失效。
+common-configs = []

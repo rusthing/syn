@@ -1,0 +1,9 @@
+# pnpm 9 把存在 pnpm-workspace.yaml 的目录当 workspace 根，缺 packages 会直接
+# 报 "packages field missing or empty" 并拒绝执行任何 script。单包工程写 `.`。
+packages:
+  - .
+
+allowBuilds:
+  esbuild: true
+#minimumReleaseAge: 0   # 完全禁用（不推荐长期使用）
+minimumReleaseAge: 720 # 缩短为12小时

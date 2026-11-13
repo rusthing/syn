@@ -1,0 +1,16 @@
+{
+  "code": "adm_person",
+  "name": "人员主数据增量（admrs）",
+  "kind": 0,
+  "enabled": true,
+  "intervalDuration": "60s",
+  "batchSize": 500,
+  "remark": "env 联调：admrs.public.syn_it_person，topic 留空由服务端生成",
+  "spec": {
+    "datasource": "adm",
+    "select": "select id, name, updated_at from public.syn_it_person",
+    "cursor_column": "updated_at, id",
+    "cursor_type": "timestamp",
+    "wrap": "row"
+  }
+}

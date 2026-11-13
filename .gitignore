@@ -1,0 +1,18 @@
+/target
+.idea
+storage
+
+# PowerDesigner 的自动备份文件，不从模型派生，不入库
+*.ldb
+*.pjb
+*.pdb
+
+Cargo.lock
+.DS_Store
+
+# 前端：依赖与产物都不入库
+node_modules
+syn-web/dist
+
+# 临时备份文件（如 Cargo.lock.bak）不入库
+*.bak

@@ -1,0 +1,45 @@
+{
+  "name": "人员表 DB 直写（dtwrs_ui）",
+  "remark": "env 联调：poll -> db sink on conflict do update",
+  "spec": {
+    "id": "adm_person_to_dtw",
+    "topic": "source:adm_person",
+    "priority": 100,
+    "enabled": true,
+    "exclusive": true,
+    "target": {
+      "kind": "db",
+      "datasource": "dtw",
+      "table": "public.syn_it_person",
+      "key": ["id"],
+      "on_conflict": "update"
+    },
+    "match": [],
+    "mapping": {
+      "omit_null": true,
+      "rows": [
+        { "to": "id", "from": "$.after.id" },
+        { "to": "name", "from": "$.after.name" },
+        { "to": "updated_at", "from": "$.after.updated_at" }
+      ]
+    },
+    "actions": [
+      { "op": "r", "method": "POST", "path": "", "body": "mapped" }
+    ],
+    "guards": [],
+    "outcomes": [
+      {
+        "scope": "body",
+        "assert": [{ "field": "$.affected", "op": "gt", "value": 0 }],
+        "verdict": "success",
+        "code": "DB_OK"
+      },
+      {
+        "scope": "status",
+        "assert": [{ "op": "in", "value": [200] }],
+        "verdict": "fatal",
+        "code": "DB_NO_ROW"
+      }
+    ]
+  }
+}

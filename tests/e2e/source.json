@@ -1,0 +1,16 @@
+{
+  "code": "it_person",
+  "name": "联调-人员源表",
+  "kind": 0,
+  "enabled": true,
+  "intervalDuration": "60s",
+  "batchSize": 500,
+  "remark": "e2e: 复合游标 (updated_at, id)",
+  "spec": {
+    "datasource": "src",
+    "select": "select id, name, updated_at from public.demo_person",
+    "cursor_column": "updated_at, id",
+    "cursor_type": "timestamp",
+    "wrap": "row"
+  }
+}
