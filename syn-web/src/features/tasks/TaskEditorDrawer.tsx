@@ -395,14 +395,20 @@ export function TaskEditorDrawer({
           <datalist id="syn-datasource-options">
             {datasourceOptions.map((d) => (
               <option key={d.id ?? d.code} value={d.code}>
-                {d.target ? `${d.name} · ${d.target}` : d.name}
+                {d.code} · {d.name}
               </option>
             ))}
           </datalist>
+          {/*
+            下拉里显示的是 option 的文本，不是 value：这里必须把**服务名**本身写进
+            文本，否则每条都退化成同一句说明，31 条候选看上去像一条。
+            后端只回 name（健康实例数要逐个服务查，代价不值得），所以健康数只在
+            确实给了的时候做后缀。
+          */}
           <datalist id="syn-service-options">
             {serviceOptions.map((s) => (
               <option key={s.name} value={s.name}>
-                {s.healthy ? `${s.healthy} 个健康实例` : "注册中心已登记"}
+                {s.healthy ? `${s.name} · ${s.healthy} 个健康实例` : s.name}
               </option>
             ))}
           </datalist>
@@ -545,6 +551,13 @@ export function TaskEditorDrawer({
             <p className="text-[11px] leading-relaxed text-muted">
               当前没有拉到注册中心的服务清单（可能是注册中心未配置或暂时不可达）。直接手输服务名即可，
               配置不依赖「编辑时注册中心里有什么」。
+            </p>
+          )}
+
+          {spec.target.kind === "http" && serviceOptions.length > 0 && (
+            <p className="text-[11px] leading-relaxed text-muted">
+              候选来自注册中心，共 {serviceOptions.length} 个（只有向注册中心登记过的服务才会出现；
+              未登记的照旧手输）。点输入框或输入片段即可筛选。
             </p>
           )}
         </div>
