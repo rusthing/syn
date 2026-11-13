@@ -9,12 +9,13 @@ use config::Value;
 use robotech::app::setup_id_worker;
 use robotech::db::setup_db_conn;
 use robotech::macros::{bootstrap, db_migrate, log_call};
+use robotech::mq::nats::setup_nats_client;
 use robotech::redis::setup_redis_conn;
 use robotech::web::setup_web_server;
 use std::collections::HashMap;
 use std::sync::Arc;
 use syn_svr::config::{AppConfig, setup_app_config};
-use syn_svr::{poll, store, wkr};
+use syn_svr::{store, wkr};
 
 bootstrap!(AppConfig);
 
@@ -32,12 +33,18 @@ async fn setup(
     setup_id_worker(app_config.id_worker.clone(), changed).await?;
     setup_db_conn(app_config.db.clone(), changed).await?;
 
+    // 刷新信号走 NATS：没配就退化成「只有写的那台重载」，单副本够用
+    match app_config.nats.clone() {
+        Some(nats) => setup_nats_client(nats, changed).await?,
+        None => tracing::warn!("没有 [nats] 配置，任务刷新信号不可用（多副本需配）"),
+    }
+
     // 预加载失败不阻止启动：库刚建好时表是空的，也可能正在导配置。
     // 服务起来后调一次 `/syn/task/reload` 即可，这比让容器起不来好排查。
     if app_config.syn.load_on_start {
-        match store::reload().await {
-            Ok(n) => tracing::info!("启动加载任务 {n} 个"),
-            Err(e) => tracing::warn!("启动加载任务失败，服务继续运行，可调 /syn/task/reload: {e}"),
+        // 先订阅刷新信号再首次加载：顺序反了会漏掉「加载到订阅建立之间」的写入
+        if let Err(e) = store::setup().await {
+            tracing::warn!("启动加载任务失败，服务继续运行，可调 /syn/task/reload: {e}");
         }
     } else {
         tracing::warn!("[syn] load-on-start=false，启动时未加载任务");
@@ -45,28 +52,18 @@ async fn setup(
 
     setup_web_server(app_config.web.clone(), port, old_pid, changed).await?;
 
-    // 后台任务只在首次启动时挂：配置热更新会再走一遍 setup，重复 spawn 会变成
-    // 两个巡检 / 两套调度器同时推进同一个游标。
-    if changed.is_none() {
-        store::spawn_watcher(app_config.syn.reload_interval());
-        // 生产由 jobx 打 pull 端点，这里默认不启；配置里显式打开才跑进程内调度
-        if app_config.syn.self_schedule {
-            poll::spawn_scheduler();
-        }
-    }
-
-    // 取数心跳：配了 [syn.pull-job] 才注册，不配就不碰 jobx（本地单机照常跑）。
+    // 取数心跳默认就注册，不需要配置；缺 jobx/redis 的环境里自动跳过。
     // 注册需要 Redis（jobx 执行器订阅 Stream）与 jobx 客户端，两者都在这里就绪。
     // 热更新只换执行器配置，不重复订阅 Stream、不重复注册计划。
-    if let Some(pull_job) = app_config.syn.pull_job.clone() {
-        match app_config.redis.clone() {
-            Some(redis) => setup_redis_conn(redis, changed).await?,
-            None => anyhow::bail!(
-                "配了 [syn.pull-job] 但缺少 [redis]：jobx 执行器从 Redis Stream 收任务，\
-                 没有 Redis 就收不到；要么补 [redis]，要么删掉 [syn.pull-job]"
-            ),
-        }
-        wkr::setup_pull_wkr(&pull_job, &app_config.api, changed).await?;
+    match app_config.redis.clone() {
+        Some(redis) => setup_redis_conn(redis, changed).await?,
+        None => tracing::warn!(
+            "没有 [redis] 配置，跳过取数心跳：jobx 执行器从 Redis Stream 收任务，\
+             没有 Redis 就收不到；sink 推送与手工 pull 不受影响"
+        ),
+    }
+    if app_config.redis.is_some() {
+        wkr::setup_pull_wkr(&app_config.syn.pull_job, &app_config.api, changed).await?;
     }
     Ok(())
 }

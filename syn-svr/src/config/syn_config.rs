@@ -8,64 +8,59 @@ use std::time::Duration;
 ///
 /// ```toml
 /// [syn]
-/// token = "xxxxxxxx"
-/// reload-duration = "10s"
-///
-/// # 服务名 → 真实地址。执行器只认这个表，不查服务发现，也不让配置里出现 URL
-/// [syn.targets]
-/// dtw-rs-svr = "http://gatexrs:80"
+/// # 只有想覆盖默认值时才写，一般整个段落都不需要出现
+/// pull-timeout = "30s"
 ///
 /// # DB 直写的数据源。一个下游一个账号
 /// [syn.datasources.dtw]
 /// url = "postgresql://syn_dtw:xxx@10.0.0.12:5432/dtw"
 /// ```
+///
+/// 这里**只有业务策略**：投递语义、下游库账号。
+/// 环境相关与框架已负责的东西一律不进来 ——
+/// - HTTP 目标地址不配：`target.service` 是注册中心里的服务名，
+///   运行时按名字查（见 `crate::registry`），换环境不改配置；
+/// - 端口不配：监听端口由框架给（随机），真实端口登记在注册中心；
+/// - 雪花 node 不配：框架按实例自动分配（见 `robotech::app::setup_id_worker`）；
+/// - 快照刷新不配间隔：任务写库后发刷新信号，各副本收到就重建（见 `crate::store`）；
+/// - 取数计划不配：默认就向 jobx 注册，见 [`PullJobConfig`]；
+/// - sink 入口不加自制令牌：边界是 overlay 内网 + 网关，和 dtw / msg / alarm 一致。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct SynConfig {
-    /// 共享令牌。配置了就要求请求带 `X-Syn-Token`，不配则只允许内网裸跑
-    #[serde(default)]
-    pub token: Option<String>,
-    /// 目标服务地址表，键是 `target.service`
-    #[serde(default)]
-    pub targets: HashMap<String, String>,
     /// DB 直写的数据源表，键是 `target.datasource`
     #[serde(default)]
     pub datasources: HashMap<String, DataSourceConfig>,
     /// 是否启动时预加载快照（关掉方便空库启动）
     #[serde(default = "default_true")]
     pub load_on_start: bool,
-    /// 快照巡检间隔：比对「任务条数 + 最大更新时间」，变了就重载。
-    /// 多副本时靠它让每个副本都跟上别人的修改（重载按钮只打到其中一台）
-    #[serde(default = "default_reload")]
-    pub reload_duration: String,
     /// 拉取数据源时的单次查询超时
     #[serde(default = "default_pull_timeout")]
     pub pull_timeout: String,
-    /// 是否在进程内自起 poll 调度器。**默认关闭**：写库类周期任务归 jobx，
-    /// 由它定时打 `POST /syn/source/{id}/pull`（见 `syn-通用同步模型.md` §2.3）。
-    /// 打开只用于单副本本地开发，多副本会重复拉数。
+    /// 取数心跳计划。**默认就注册**，不需要在配置里出现：
+    /// 周期取数归 jobx 管（多副本下一轮只跑一次），缺省一套参数即可跑。
+    /// 只有想改参数或显式关掉时才写 `[syn.pull-job]`，见 [`PullJobConfig`]。
     #[serde(default)]
-    pub self_schedule: bool,
-    /// 取数心跳计划：配了就在启动时注册成 jobx 计划任务，由调度器保证多副本下
-    /// 一轮只跑一次。**不配就不注册**（本地开发、没有 jobx 的环境照常跑）。
-    /// 见 `crate::wkr`。
-    #[serde(default)]
-    pub pull_job: Option<PullJobConfig>,
+    pub pull_job: PullJobConfig,
 }
 
 /// # 取数心跳计划
 ///
-/// ```toml
-/// [syn.pull-job]
-/// name = "syn 取数心跳"
-/// executor-code = "syn.pull"
-/// interval-duration = "5s"
-/// ```
+/// **默认就有**，不需要写进配置：
+///
+/// | 项 | 默认值 |
+/// |----|--------|
+/// | `enabled` | `true` |
+/// | `name` | `syn 取数心跳` |
+/// | `executor-code` | `syn.pull` |
+/// | `interval-duration` | `5s` |
+/// | `group-name` | `syn` |
+/// | `task-expire-duration` | `1h` |
 ///
 /// 一个计划扫**所有**启用的数据源，而不是一个来源一个计划：来源是控制台随时增删的
 /// 配置，一个来源一个计划就得在业务写库里同步调 jobx、失败还要补偿；而且来源的
 /// `interval-duration` 最小 1s，jobx 的计划粒度撑不住。所以这里只负责「隔一会儿打一拍」，
-/// 「哪个源到点了」由 `poll::poll_due_sources` 判断，与进程内调度器同一段逻辑。
+/// 「哪个源到点了」由 `poll::poll_due_sources` 判断。
 ///
 /// 因此**实际精度 = max(interval-duration, 每个源的 interval-duration)**；计划是 5s 时，
 /// 源配 1s 也只会 5s 拉一次。要更快就把这里的间隔调小，但高频计划的 `jobx_task`
@@ -73,6 +68,9 @@ pub struct SynConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct PullJobConfig {
+    /// 是否注册。默认开；显式 `enabled = false` 可关掉（本地不想连 jobx 时用）
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     /// 计划名称。同名视为同一个计划，重复启动撞唯一键后只补分组
     #[serde(default = "default_pull_job_name")]
     pub name: String,
@@ -111,34 +109,33 @@ fn default_max_connections() -> u32 {
 impl Default for SynConfig {
     fn default() -> Self {
         Self {
-            token: None,
-            targets: HashMap::new(),
             datasources: HashMap::new(),
             load_on_start: true,
-            reload_duration: default_reload(),
             pull_timeout: default_pull_timeout(),
-            self_schedule: false,
-            pull_job: None,
+            pull_job: PullJobConfig::default(),
+        }
+    }
+}
+
+impl Default for PullJobConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            name: default_pull_job_name(),
+            executor_code: default_pull_job_executor(),
+            interval_duration: default_pull_job_interval(),
+            group_name: default_pull_job_group(),
+            task_expire_duration: default_pull_job_expire(),
+            remark: None,
         }
     }
 }
 
 impl SynConfig {
-    /// 快照巡检间隔。下限 1s：比这更密就是在空转查库
-    pub fn reload_interval(&self) -> Duration {
-        humantime::parse_duration(&self.reload_duration)
-            .unwrap_or(Duration::from_secs(10))
-            .max(Duration::from_secs(1))
-    }
-
     /// 拉取超时
     pub fn pull_timeout(&self) -> Duration {
         humantime::parse_duration(&self.pull_timeout).unwrap_or(Duration::from_secs(30))
     }
-}
-
-fn default_reload() -> String {
-    "10s".to_string()
 }
 
 fn default_pull_timeout() -> String {

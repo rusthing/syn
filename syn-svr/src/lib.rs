@@ -22,6 +22,7 @@ pub mod config;
 pub mod dao;
 pub mod db_sink;
 pub mod poll;
+pub mod registry;
 pub mod store;
 pub mod svc;
 pub mod transport;

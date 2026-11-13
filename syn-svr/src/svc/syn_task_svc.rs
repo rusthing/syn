@@ -113,9 +113,8 @@ impl SynTaskSvc {
 
         info!("任务 {code} 已创建（id={}）", model.id);
         // 本副本立即生效；别的副本靠 store 的巡检在下一拍跟上
-        if let Err(e) = store::reload().await {
-            tracing::warn!("任务已保存，但本地快照重载失败（下次巡检会补上）: {e}");
-        }
+        // 发刷新信号：所有副本（含本副本）收到后各自重建快照，见 crate::store
+        store::on_task_changed().await;
         Ok(SynTaskVo::from(model))
     }
 
@@ -162,9 +161,8 @@ impl SynTaskSvc {
         tx.commit().await.map_err(db_err)?;
 
         info!("任务 {} 已更新到 v{version}", model.code);
-        if let Err(e) = store::reload().await {
-            tracing::warn!("任务已保存，但本地快照重载失败（下次巡检会补上）: {e}");
-        }
+        // 发刷新信号：所有副本（含本副本）收到后各自重建快照，见 crate::store
+        store::on_task_changed().await;
         Ok(SynTaskVo::from(model))
     }
 
@@ -191,9 +189,7 @@ impl SynTaskSvc {
         am.update_ms = sea_orm::ActiveValue::Set(now_ms() as i64);
         let model = SynTaskDao::update(am, db.as_ref()).await?;
 
-        if let Err(e) = store::reload().await {
-            tracing::warn!("启停已保存，但本地快照重载失败（下次巡检会补上）: {e}");
-        }
+        store::on_task_changed().await;
         Ok(SynTaskVo::from(model))
     }
 
@@ -209,9 +205,7 @@ impl SynTaskSvc {
         let code = model.code.clone();
         SynTaskDao::delete(model.into_active_model(), db.as_ref()).await?;
         info!("任务 {code} 已删除");
-        if let Err(e) = store::reload().await {
-            tracing::warn!("任务已删除，但本地快照重载失败（下次巡检会补上）: {e}");
-        }
+        store::on_task_changed().await;
         Ok(())
     }
 }

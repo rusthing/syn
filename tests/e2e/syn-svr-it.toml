@@ -16,16 +16,10 @@ url = "postgresql://postgres:postgres@localhost:5432/syn_it"
 [web]
 port = 19007
 
-# 与开发实例错开，避免雪花 ID 撞车。
-# node-bits=6，合法范围只有 0..=63，写 77 会在启动时直接报错
-[id-worker]
-node = 37
+# [id-worker] 不配：单进程联调由框架自动分配（分配不到会回退 0 并 warn）
 
 [syn]
-# 快照巡检快一点，省得调试时等 10s
-reload-duration = "2s"
-# 调度归 jobx：联调脚本自己打 pull 端点，不启进程内调度器
-self-schedule = false
+# 调度归 jobx：联调脚本自己打 pull 端点；没有 jobx/redis 时取数心跳会自动跳过
 pull-timeout = "10s"
 
 # 源库：poll 取数

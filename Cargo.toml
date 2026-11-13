@@ -39,7 +39,7 @@ humantime = "2.4.0"
 
 wheel-rs = "1.14.0"
 idworker = { version = "1.4.0", features = ["utils"] }
-robotech = { version = "1.17.0", features = ["db", "config-center", "registry-center", "macros", "redis"] }
+robotech = { version = "1.17.0", features = ["db", "config-center", "registry-center", "macros", "redis", "refresh"] }
 
 # 取数心跳注册成 jobx 计划任务：执行器（jobx-wkr）+ 注册用的 API 客户端。与 dtw 同一套。
 jobx-api = "1.0.0"

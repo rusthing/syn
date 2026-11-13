@@ -18,12 +18,16 @@
 //!
 //! ## 注册失败不拖死整个服务
 //!
-//! `[syn.pull-job]` 的**配置错误**（缺 `[api.jobx]` / 缺 `[redis]` / 间隔不合法）在启动时
-//! 直接失败 —— 那是写错了，越早发现越好。
+//! 取数心跳是**默认可用的能力**，不需要配置就注册（见 `PullJobConfig` 的默认值）。
+//! 但它依赖集群里的 jobx 与 Redis，本地单机、联调环境没有这两样：
 //!
-//! 但 **jobx 不可达**只 `error!` 一条然后继续跑：sink 推送才是主链路，让它因为调度器
-//! 没起而整体不可用，等于把 jobx 的可用性变成 syn 的启动前提。代价是这种情况下不会有
-//! 自动取数（`POST /syn/source/{id}/pull` 仍可手工或由其它调度打），日志里留了明确一行。
+//! - **缺 `[api.jobx]` / `[redis]`**：只 `warn!` 一条并跳过 —— 环境里没有调度器，
+//!   不是配置写错，更不该让服务起不来；
+//! - **jobx 不可达**：`error!` 一条然后继续跑 —— sink 推送才是主链路，让它因为调度器
+//!   没起而整体不可用，等于把 jobx 的可用性变成 syn 的启动前提。
+//!
+//! 两种情况下都不会自动取数（`POST /syn/source/{id}/pull` 仍可手工或由其它调度打），
+//! 日志里各留了明确一行。
 
 use async_trait::async_trait;
 use jobx_api::vo::JobxTaskVo;
@@ -67,12 +71,17 @@ pub async fn setup_pull_wkr(
     apis: &HashMap<String, robotech::api_client::ApiClientConfig>,
     changed: &Option<HashMap<String, config::Value>>,
 ) -> anyhow::Result<()> {
-    // jobx 客户端是注册计划的前提；没配 `[api.jobx]` 时这里就报错，而不是等到注册时
+    if !cfg.enabled {
+        info!("[syn.pull-job] enabled=false，不注册取数心跳（手工 pull 仍可用）");
+        return Ok(());
+    }
+    // 环境里没有 jobx（本地单机 / 联调）不是配置写错：跳过即可
     if !apis.contains_key("jobx") {
-        anyhow::bail!(
-            "配了 [syn.pull-job] 但缺少 [api.jobx]：无法注册取数计划任务，\
-             要么补上 jobx 客户端配置，要么删掉 [syn.pull-job] 改用 self-schedule（仅单副本）"
+        warn!(
+            "没有 [api.jobx] 客户端配置，跳过取数心跳注册：sink 推送不受影响，\
+             自动取数需手工 POST /syn/source/{{id}}/pull"
         );
+        return Ok(());
     }
     // 配置本身的问题（间隔、保留时长写错）在连 jobx 之前就查出来，别等到对方返回才暴露
     let exec = executor_config(cfg)?;

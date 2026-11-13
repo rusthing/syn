@@ -39,19 +39,22 @@ pub struct AppConfig {
     /// Web 服务器
     #[serde(default = "WebServerConfig::default")]
     pub web: WebServerConfig,
-    /// ID 生成器。**多副本必须各配一个不同的 `node`**，否则两台机器会算出同一个雪花 ID，
-    /// `syn_task` 主键直接撞车。见 `syn-svr.toml` 的 `[id-worker]`
+    /// ID 生成器。`node` 留空由框架按实例自动分配（注册中心里记 `id-node`），
+    /// 多副本不会撞号；只有「分配不到就回退 0」这种极端情况才需要显式指定
     #[serde(default = "IdWorkerConfig::default")]
     pub id_worker: IdWorkerConfig,
     /// syn 自身配置
     #[serde(default = "SynConfig::default")]
     pub syn: SynConfig,
-    /// API 客户端表（键是逻辑名，如 `jobx`）。只有 `[syn.pull-job]` 配了才用得上，
-    /// 未配时保持空表，不影响 sink 推送与本地开发。
+    /// API 客户端表（键是逻辑名，如 `jobx`）。取数心跳向 jobx 注册计划时用；
+    /// 没配时跳过注册，sink 推送与手工 pull 照常。
     #[serde(default)]
     pub api: HashMap<String, robotech::api_client::ApiClientConfig>,
-    /// Redis。只有 `[syn.pull-job]` 配了才用得上（jobx 执行器从 Stream 收任务）；
-    /// 不配时 syn 完全不碰 Redis。
+    /// Redis。取数心跳的执行器从 Stream 收任务；没配时跳过注册。
     #[serde(default)]
     pub redis: Option<robotech::redis::RedisConfig>,
+    /// NATS。任务写库后在这里发刷新信号，所有副本收到就重建快照；
+    /// 没配时退化为「只有写的那台重载」，单副本开发/联调够用。
+    #[serde(default)]
+    pub nats: Option<robotech::mq::nats::NatsConfig>,
 }

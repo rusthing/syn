@@ -745,27 +745,6 @@ async fn save_error(
     Ok(())
 }
 
-/// # 进程内调度（默认关闭，仅单副本开发用）
-///
-/// 生产让 jobx 打 `POST /syn/source/{id}/pull`。开了这个开关又部署多副本，就会有两个
-/// 进程同时拉 —— 水位有乐观条件兜着，但下游会被重复打，所以启动时明确 warn。
-///
-/// 与 [`poll_due_sources`] 是同一段逻辑：进程内调度只是「自己打拍子」的那一层，
-/// jobx 计划任务（`crate::wkr`）打拍子时走的是同一个函数。
-pub fn spawn_scheduler() {
-    warn!("[syn] self-schedule 已开启：进程内调度只适用于单副本开发，生产请让 jobx 打 pull 端点");
-    tokio::spawn(async move {
-        // 1s 一拍只看「到没到点」，不查源库；真正的间隔由每个源的 interval_duration 决定
-        let mut ticker = tokio::time::interval(Duration::from_secs(1));
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            poll_due_sources().await;
-        }
-    });
-    info!("[syn] 进程内 poll 调度已启动（1s 巡检）");
-}
-
 /// # 扫一遍「该跑的数据源」并各拉一轮
 ///
 /// 只做一件事：读启用的源 + 各源水位，`now - last_run_ms >= interval` 的就拉。

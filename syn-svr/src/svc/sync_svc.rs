@@ -24,7 +24,6 @@ use syn_api::{SyncVerdict, TaskSpec, Verdict};
 use syn_core::{Execution, Stage};
 use wheel_rs::time_utils::now_ms;
 
-use crate::config::get_app_config;
 use crate::dao::{SynIdemDao, SynTaskDao};
 use crate::db_sink::DbSinks;
 use crate::mo::syn_idem::{ActiveModel as IdemActive, Column as IdemColumn};
@@ -130,21 +129,15 @@ pub async fn handle(topic: &str, record: &Value, idem_key: Option<&str>) -> Sync
         let execution = if task.target.is_db() {
             syn_core::execute_db(task, record, &DbSinks).await
         } else {
-            let config = match get_app_config() {
-                Ok(c) => c,
+            // 服务名 → 实例地址走注册中心，配置里不出现 URL（见 crate::registry）
+            let base_url = match crate::registry::resolve_base_url(&task.target.service).await {
+                Ok(url) => url,
+                // 部署配置问题，不是数据问题：必须显式失败，不能猜一个地址发出去
                 Err(e) => {
-                    return SyncOutcome::fatal("CONFIG_NOT_READY", Stage::Action, e.to_string());
+                    return SyncOutcome::fatal("TARGET_UNRESOLVED", Stage::Action, e);
                 }
             };
-            let Some(base_url) = config.syn.targets.get(&task.target.service) else {
-                // 部署配置问题，不是数据问题：必须显式失败，不能猜一个地址发出去
-                return SyncOutcome::fatal(
-                    "TARGET_UNRESOLVED",
-                    Stage::Action,
-                    format!("[syn.targets] 缺少服务 {}", task.target.service),
-                );
-            };
-            syn_core::execute(task, record, base_url, &HttpTransport).await
+            syn_core::execute(task, record, &base_url, &HttpTransport).await
         };
         if let Some(key) = idem_key {
             remember(task, key, &execution).await;

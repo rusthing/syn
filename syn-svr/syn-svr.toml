@@ -1,62 +1,50 @@
-# syn-svr 配置文件
+# syn-svr 配置文件（本地开发）
 #
 # 由 build.rs 拷到 target/<profile>/，`profile` 决定再叠一层 `syn-svr-{profile}.toml`。
-# 生产以配置中心 KV `syn-svr.toml` 为准，本文件会被它覆盖，两处要保持一致。
+# 生产以配置中心 KV `syn-svr.toml` 为准（那里只放 `[db]` 连接串），本文件是本地开发的形态。
+#
+# 原则：**这里只写业务策略与本地便利**。端口、雪花 node、目标地址、取数计划
+# 都不该出现 —— 分别由框架、注册中心、jobx 负责，写进来就会挡住换环境。
 profile = "dev"
 
 [db]
 url = "postgresql://syn:syn@localhost:5432/syn"
 
+# 本地固定端口：syn-web 的 vite 代理写死 9007。
+# 生产不配：端口由框架随机分配，真实端口登记在注册中心。
 [web]
 port = 9007
 
-# 雪花 ID 的节点号。`#[dao]::insert` 依赖它生成主键；**多副本必须各不相同**，
-# 否则两台机器会算出同一个 ID，插 syn_task 直接撞主键。单副本留 1 即可。
-[id-worker]
-node = 1
+# [id-worker] 不配：node 由框架按实例自动分配并把结果记进注册中心的 `id-node`。
+# 只有「自动分配失败回退 0」时才需要显式指定。
 
 # 同步执行器自身配置（对应 AppConfig::syn）
 [syn]
-# token：配了之后请求必须带 `X-Syn-Token`。生产必须配 —— 这个端点能直接写下游库，
-#        裸跑等于给内网任何进程一个「任意表任意行写入」的入口。
-# token = "xxxxxxxx"
-# 快照巡检间隔：每隔这么久比对一次 syn_task 的「条数 + 最大 update_ms」，变了就重载。
-# 多副本下靠它让每个副本都跟上别人的修改（没有注册中心广播，重载按钮只打到其中一台）。
-reload-duration = "10s"
-# 自拉调度：false = 由 jobx 定时打 POST /syn/source/{id}/pull（推荐，天然单点）。
-# 只有单副本本地开发才设 true，多副本打开会重复拉数。
-self-schedule = false
+# 取数超时：拉一页数据的最长等待
+# pull-timeout = "30s"
+# 启动是否预加载任务快照
+# load-on-start = true
 
-# 取数心跳：配了就在启动时注册成 jobx 计划任务，由调度器保证多副本下一轮只跑一次。
-# **不写这段就不注册**，本地没有 jobx 也能起服务（那时用 self-schedule 或手工打端点）。
-#
-# 一个计划扫所有启用的源：「哪个源到点了」由每个源的 interval-duration 决定，
-# 所以实际精度 = max(这里的间隔, 源的间隔)。`jobx_task` 是批次不是「一拍一行」
-# （5s 间隔下每 5 分钟一条、内部跑 60 拍，一天约 288 条），但 task-expire-duration
-# 仍要配 —— 不配就是永久保留。
+# 取数心跳：**默认就注册**（name/executor-code/interval/保留时长都有默认值），
+# 不需要写这段。本地没有 jobx 时会自动跳过并 warn 一条。
+# 想显式关掉：
 # [syn.pull-job]
-# name = "syn 取数心跳"
-# executor-code = "syn.pull"
-# interval-duration = "5s"
-# task-expire-duration = "1h"
-# group-name = "syn"
+# enabled = false
 
-# jobx 客户端。注册计划任务要用；`svc-name` 必须是**注册中心里的服务名原样**，
-# 框架不会再拼 profile 前缀（拼错的表现是「发现 0 个实例」，注册分组时直接失败）。
+# jobx 客户端。注册取数计划要用；`svc-name` 必须是**注册中心里的服务名原样**，
+# 框架不会再拼 profile 前缀（拼错的表现是「发现 0 个实例」，注册分组直接失败）。
 # [api.jobx]
 # type = "MicroSvc"
 # svc-name = "jobx-svr"
 # timeout = "3s"
 
-# jobx 执行器从 Redis Stream 收任务。只在配了 [syn.pull-job] 时用得上，
-# 但两者必须同时配（缺 redis 会在启动时明确报错，不静默降级）。
+# jobx 执行器从 Redis Stream 收任务。没配时跳过取数心跳注册，sink 推送不受影响。
 # [redis]
 # url = "redis://:xxxxxxxx@localhost:6379"
 
-# 服务名 → 真实地址。配置里只有服务名，URL 只存在于这一张表里，
-# 换环境不用改任务配置。
-[syn.targets]
-dtw-rs-svr = "http://gatexrs:80"
+# 任务快照的刷新信号走 NATS。没配时多副本「改了任务只有写的那台生效」。
+# [nats]
+# servers = ["nats://localhost:4222"]
 
 # DB 直写下场：`target.kind = db` 的 `target.datasource` 就是这里的键。
 #
@@ -67,12 +55,11 @@ dtw-rs-svr = "http://gatexrs:80"
 # url = "postgresql://syn_dtw:xxxxxxxx@10.0.0.12:5432/dtw"
 # max-connections = 4
 
-# 配置中心。本地用容器名（/etc/hosts 或 Docker DNS 能解析），生产由环境变量
-# 或部署侧覆盖。`profile = "dev"` 决定 group，应用配置的 key 是
-# `dev/syn-svr.toml`；框架还会额外拉 `dev/refresh-scope.toml`。
+# 配置中心。本地用容器名（/etc/hosts 或 Docker DNS 能解析）。
 #
-# 只配 config、不配 registry：syn 是被动接请求 + 被 jobx 打端点，
-# 没有服务间发现需求，注册进 consul 反而多一份要清理的实例。
+# 两段都要：`config` 拉 `[db]` 与公共配置，`registry` 把自己登记进去 ——
+# HTTP 投递靠它按服务名找下游（`target.service`），网关也靠它做 `/syn-svr/*` 的
+# 服务发现；不登记的话调用方发现 0 个实例。
 [micro-svc.consul]
 base-url = "http://consul:8500"
 
@@ -80,3 +67,5 @@ base-url = "http://consul:8500"
 # 空数组 = 不拉公共配置。common-configs 里的每个 key 都必须真实存在：
 # get_configs() 只要有一个拉不到就整体返回 Err，连应用配置一起失效。
 common-configs = []
+
+[micro-svc.consul.registry]

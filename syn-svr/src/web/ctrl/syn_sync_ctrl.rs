@@ -6,8 +6,10 @@
 //!   2xx 提交 offset、4xx 确定性失败进 DLQ、503 交还重试；
 //! - `POST /syn/task/reload`：改完配置让执行器重新拉快照，不必重启。
 //!
-//! 这个入口**不鉴权用户**，鉴权的是 sink：配了 `[syn] token` 就要求
-//! `X-Syn-Token`。不带用户概念，所以不用框架的 `X-User-Id` 约定。
+//! 这个入口**不做应用层鉴权**，与 dtw / msg / alarm 的写接口一致：边界是
+//! overlay 内网（只有集群内服务能解析到本服务）+ 网关（对外只暴露配置过的前缀）。
+//! 自制共享令牌只会多一份要轮换的配置，挡不住内网调用方，也不是本服务的职责。
+//! 请求头里只有 `X-Idempotency-Key` 是业务语义（幂等键），不是凭据。
 
 use axum::Json;
 use axum::body::Bytes;
@@ -17,7 +19,6 @@ use axum::response::{IntoResponse, Response};
 use robotech::api::Ro;
 use serde_json::json;
 
-use crate::config::get_app_config;
 use crate::store;
 use crate::svc;
 
@@ -45,33 +46,8 @@ fn reply(
     (status, Json(body)).into_response()
 }
 
-/// 校验调用方是否可信
-fn authorized(headers: &HeaderMap) -> bool {
-    let Ok(config) = get_app_config() else {
-        return false;
-    };
-    match &config.syn.token {
-        None => true,
-        Some(expected) => headers
-            .get("x-syn-token")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|got| got == expected),
-    }
-}
-
 /// # 处理一条变更记录
 pub async fn sync(Path(topic): Path<String>, headers: HeaderMap, body: Bytes) -> Response {
-    if !authorized(&headers) {
-        return reply(
-            401,
-            "fatal",
-            "UNAUTHORIZED",
-            None,
-            "match",
-            Some("缺少或错误的 X-Syn-Token"),
-        );
-    }
-
     let record: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {
