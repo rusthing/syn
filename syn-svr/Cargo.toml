@@ -35,3 +35,7 @@ syn-api = { workspace = true, features = ["server"] }
 syn-core = { workspace = true }
 
 robotech = { workspace = true }
+
+jobx-api = { workspace = true }
+jobx-api-client = { workspace = true }
+jobx-wkr = { workspace = true }

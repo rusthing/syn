@@ -26,6 +26,7 @@ pub mod store;
 pub mod svc;
 pub mod transport;
 pub mod web;
+pub mod wkr;
 
 /// 重新导出契约层：控制器与测试写 `crate::spec::TaskSpec`，不写 `syn_api::spec::TaskSpec`
 pub use syn_api::*;

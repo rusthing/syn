@@ -27,6 +27,32 @@ reload-duration = "10s"
 # 只有单副本本地开发才设 true，多副本打开会重复拉数。
 self-schedule = false
 
+# 取数心跳：配了就在启动时注册成 jobx 计划任务，由调度器保证多副本下一轮只跑一次。
+# **不写这段就不注册**，本地没有 jobx 也能起服务（那时用 self-schedule 或手工打端点）。
+#
+# 一个计划扫所有启用的源：「哪个源到点了」由每个源的 interval-duration 决定，
+# 所以实际精度 = max(这里的间隔, 源的间隔)。`jobx_task` 是批次不是「一拍一行」
+# （5s 间隔下每 5 分钟一条、内部跑 60 拍，一天约 288 条），但 task-expire-duration
+# 仍要配 —— 不配就是永久保留。
+# [syn.pull-job]
+# name = "syn 取数心跳"
+# executor-code = "syn.pull"
+# interval-duration = "5s"
+# task-expire-duration = "1h"
+# group-name = "syn"
+
+# jobx 客户端。注册计划任务要用；`svc-name` 必须是**注册中心里的服务名原样**，
+# 框架不会再拼 profile 前缀（拼错的表现是「发现 0 个实例」，注册分组时直接失败）。
+# [api.jobx]
+# type = "MicroSvc"
+# svc-name = "jobx-svr"
+# timeout = "3s"
+
+# jobx 执行器从 Redis Stream 收任务。只在配了 [syn.pull-job] 时用得上，
+# 但两者必须同时配（缺 redis 会在启动时明确报错，不静默降级）。
+# [redis]
+# url = "redis://:xxxxxxxx@localhost:6379"
+
 # 服务名 → 真实地址。配置里只有服务名，URL 只存在于这一张表里，
 # 换环境不用改任务配置。
 [syn.targets]

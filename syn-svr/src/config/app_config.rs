@@ -46,4 +46,12 @@ pub struct AppConfig {
     /// syn 自身配置
     #[serde(default = "SynConfig::default")]
     pub syn: SynConfig,
+    /// API 客户端表（键是逻辑名，如 `jobx`）。只有 `[syn.pull-job]` 配了才用得上，
+    /// 未配时保持空表，不影响 sink 推送与本地开发。
+    #[serde(default)]
+    pub api: HashMap<String, robotech::api_client::ApiClientConfig>,
+    /// Redis。只有 `[syn.pull-job]` 配了才用得上（jobx 执行器从 Stream 收任务）；
+    /// 不配时 syn 完全不碰 Redis。
+    #[serde(default)]
+    pub redis: Option<robotech::redis::RedisConfig>,
 }

@@ -398,6 +398,9 @@ async fn save_error(
 ///
 /// 生产让 jobx 打 `POST /syn/source/{id}/pull`。开了这个开关又部署多副本，就会有两个
 /// 进程同时拉 —— 水位有乐观条件兜着，但下游会被重复打，所以启动时明确 warn。
+///
+/// 与 [`poll_due_sources`] 是同一段逻辑：进程内调度只是「自己打拍子」的那一层，
+/// jobx 计划任务（`crate::wkr`）打拍子时走的是同一个函数。
 pub fn spawn_scheduler() {
     warn!("[syn] self-schedule 已开启：进程内调度只适用于单副本开发，生产请让 jobx 打 pull 端点");
     tokio::spawn(async move {
@@ -406,40 +409,56 @@ pub fn spawn_scheduler() {
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            let sources = match crate::svc::enabled_sources().await {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!("调度器读数据源失败: {e}");
-                    continue;
-                }
-            };
-            let now = now_ms() as i64;
-            for s in sources {
-                let period = humantime::parse_duration(&s.interval_duration)
-                    .unwrap_or(Duration::from_secs(60))
-                    .as_millis() as i64;
-                let db = match get_db_conn() {
-                    Ok(d) => d,
-                    Err(_) => break,
-                };
-                let last = match SynCursorDao::get_by_condition::<_, CursorModel>(
-                    Condition::all().add(CursorColumn::SourceId.eq(s.id)),
-                    db.as_ref(),
-                )
-                .await
-                {
-                    Ok(v) => v.and_then(|c| c.last_run_ms).unwrap_or(0),
-                    Err(_) => continue,
-                };
-                if now - last < period {
-                    continue;
-                }
-                let id = U64::from(s.id);
-                if let Err(e) = pull_once(id).await {
-                    warn!("调度器拉取数据源 {} 失败: {e}", s.code);
-                }
-            }
+            poll_due_sources().await;
         }
     });
     info!("[syn] 进程内 poll 调度已启动（1s 巡检）");
+}
+
+/// # 扫一遍「该跑的数据源」并各拉一轮
+///
+/// 只做一件事：读启用的源 + 各源水位，`now - last_run_ms >= interval` 的就拉。
+/// 调用方决定节奏 —— 进程内调度器 1s 一次，jobx 计划任务按 `[syn.pull-job]` 的间隔。
+///
+/// 返回 `(扫到的源数, 真正拉取的源数)`，给执行器的日志/任务结果用。
+///
+/// **不持有跨源的锁**：单个源失败只 `warn` 并继续下一个，否则一个坏源会让所有源停摆。
+pub async fn poll_due_sources() -> (usize, usize) {
+    let sources = match crate::svc::enabled_sources().await {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("调度器读数据源失败: {e}");
+            return (0, 0);
+        }
+    };
+    let scanned = sources.len();
+    let mut pulled = 0;
+    let now = now_ms() as i64;
+    for s in sources {
+        let period = humantime::parse_duration(&s.interval_duration)
+            .unwrap_or(Duration::from_secs(60))
+            .as_millis() as i64;
+        let db = match get_db_conn() {
+            Ok(d) => d,
+            Err(_) => break,
+        };
+        let last = match SynCursorDao::get_by_condition::<_, CursorModel>(
+            Condition::all().add(CursorColumn::SourceId.eq(s.id)),
+            db.as_ref(),
+        )
+        .await
+        {
+            Ok(v) => v.and_then(|c| c.last_run_ms).unwrap_or(0),
+            Err(_) => continue,
+        };
+        if now - last < period {
+            continue;
+        }
+        let id = U64::from(s.id);
+        match pull_once(id).await {
+            Ok(_) => pulled += 1,
+            Err(e) => warn!("调度器拉取数据源 {} 失败: {e}", s.code),
+        }
+    }
+    (scanned, pulled)
 }

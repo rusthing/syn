@@ -41,6 +41,11 @@ wheel-rs = "1.14.0"
 idworker = { version = "1.4.0", features = ["utils"] }
 robotech = { version = "1.17.0", features = ["db", "config-center", "registry-center", "macros", "redis"] }
 
+# 取数心跳注册成 jobx 计划任务：执行器（jobx-wkr）+ 注册用的 API 客户端。与 dtw 同一套。
+jobx-api = "1.0.0"
+jobx-api-client = "1.0.0"
+jobx-wkr = "1.0.0"
+
 syn-api = { path = "./syn-api" }
 syn-core = { path = "./syn-core" }
 
@@ -50,3 +55,6 @@ wheel-rs = { path = "../wheel-rs" }
 idworker = { path = "../idworker" }
 robotech = { path = "../robotech-rs/robotech" }
 robotech-macros = { path = "../robotech-rs/robotech-macros" }
+jobx-api = { path = "../jobx/jobx-api" }
+jobx-api-client = { path = "../jobx/jobx-api-client" }
+jobx-wkr = { path = "../jobx/jobx-wkr" }

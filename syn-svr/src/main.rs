@@ -9,11 +9,12 @@ use config::Value;
 use robotech::app::setup_id_worker;
 use robotech::db::setup_db_conn;
 use robotech::macros::{bootstrap, db_migrate, log_call};
+use robotech::redis::setup_redis_conn;
 use robotech::web::setup_web_server;
 use std::collections::HashMap;
 use std::sync::Arc;
 use syn_svr::config::{AppConfig, setup_app_config};
-use syn_svr::{poll, store};
+use syn_svr::{poll, store, wkr};
 
 bootstrap!(AppConfig);
 
@@ -52,6 +53,20 @@ async fn setup(
         if app_config.syn.self_schedule {
             poll::spawn_scheduler();
         }
+    }
+
+    // 取数心跳：配了 [syn.pull-job] 才注册，不配就不碰 jobx（本地单机照常跑）。
+    // 注册需要 Redis（jobx 执行器订阅 Stream）与 jobx 客户端，两者都在这里就绪。
+    // 热更新只换执行器配置，不重复订阅 Stream、不重复注册计划。
+    if let Some(pull_job) = app_config.syn.pull_job.clone() {
+        match app_config.redis.clone() {
+            Some(redis) => setup_redis_conn(redis, changed).await?,
+            None => anyhow::bail!(
+                "配了 [syn.pull-job] 但缺少 [redis]：jobx 执行器从 Redis Stream 收任务，\
+                 没有 Redis 就收不到；要么补 [redis]，要么删掉 [syn.pull-job]"
+            ),
+        }
+        wkr::setup_pull_wkr(&pull_job, &app_config.api, changed).await?;
     }
     Ok(())
 }

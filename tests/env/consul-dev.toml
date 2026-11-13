@@ -34,6 +34,38 @@ pull-timeout = "10s"
 dtw-rs-svr = "http://127.0.0.1:19099"
 local-mock = "http://127.0.0.1:19099"
 
+# 取数心跳：启动时自动注册成 jobx 计划任务（与 dtw 的报警判定、alarm 的补发同一套）。
+# 一个计划扫所有启用的源，实际精度 = max(5s, 源的 interval-duration)。
+[syn.pull-job]
+name = "syn 取数心跳"
+executor-code = "syn.pull"
+interval-duration = "5s"
+task-expire-duration = "1h"
+group-name = "syn"
+
+# jobx 客户端。**本机用 Simple 直连**：这套开发环境的 consul 里，每个 rs 服务都挂了一个
+# `service:alias-*` 检查且状态是 critical，而框架的服务发现带 `?passing=true`，
+# 于是 `MicroSvc` 永远是「发现 0 个实例」—— 不是 jobx 没起，是它在这套 consul 里
+# 按 passing 过滤后不可见。生产环境 alias 正常时应改回：
+#   [api.jobx] type = "MicroSvc"  svc-name = "dev-jobx-svr"   # 实际名 = {group}-{svc-name}
+[api.jobx]
+type = "Simple"
+base-url = "http://127.0.0.1:9001"
+timeout = "3s"
+
+# jobx 执行器从 Redis Stream 收任务，与 jobx-svr 同一个实例
+[redis]
+url = "redis://:xxxxxxxx@redis:6379"
+
+# 配置中心 + 注册中心。**registry 段必须存在**：它同时启用「向 consul 注册自己」和
+# 「发现别人」，而 jobx 客户端走的是后者。只配 config 段时发现永远返回 0 个实例，
+# 报错是 `NoAvailableInstance`，看起来像 jobx 没起，其实是本地没初始化 registry 后端。
+[micro-svc.consul]
+base-url = "http://consul:8500"
+config.file-format = "toml"
+
+[micro-svc.consul.registry]
+
 # 源库：admrs（人员主数据）。联调只新建 syn_it_* 隔离表，不碰任何业务表。
 [syn.datasources.adm]
 url = "postgresql://postgres:postgres@pgsql:5432/admrs"

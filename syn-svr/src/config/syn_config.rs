@@ -46,6 +46,51 @@ pub struct SynConfig {
     /// 打开只用于单副本本地开发，多副本会重复拉数。
     #[serde(default)]
     pub self_schedule: bool,
+    /// 取数心跳计划：配了就在启动时注册成 jobx 计划任务，由调度器保证多副本下
+    /// 一轮只跑一次。**不配就不注册**（本地开发、没有 jobx 的环境照常跑）。
+    /// 见 `crate::wkr`。
+    #[serde(default)]
+    pub pull_job: Option<PullJobConfig>,
+}
+
+/// # 取数心跳计划
+///
+/// ```toml
+/// [syn.pull-job]
+/// name = "syn 取数心跳"
+/// executor-code = "syn.pull"
+/// interval-duration = "5s"
+/// ```
+///
+/// 一个计划扫**所有**启用的数据源，而不是一个来源一个计划：来源是控制台随时增删的
+/// 配置，一个来源一个计划就得在业务写库里同步调 jobx、失败还要补偿；而且来源的
+/// `interval-duration` 最小 1s，jobx 的计划粒度撑不住。所以这里只负责「隔一会儿打一拍」，
+/// 「哪个源到点了」由 `poll::poll_due_sources` 判断，与进程内调度器同一段逻辑。
+///
+/// 因此**实际精度 = max(interval-duration, 每个源的 interval-duration)**；计划是 5s 时，
+/// 源配 1s 也只会 5s 拉一次。要更快就把这里的间隔调小，但高频计划的 `jobx_task`
+/// 会按「每天 86400 / 秒数」增长，所以 `task-expire-duration` 必须配。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct PullJobConfig {
+    /// 计划名称。同名视为同一个计划，重复启动撞唯一键后只补分组
+    #[serde(default = "default_pull_job_name")]
+    pub name: String,
+    /// 执行器编码。**必须与执行器配置一致**，否则计划照常分派、没有执行器认领
+    #[serde(default = "default_pull_job_executor")]
+    pub executor_code: String,
+    /// 心跳间隔。真正的「哪个源到点了」由每个源的配置决定
+    #[serde(default = "default_pull_job_interval")]
+    pub interval_duration: String,
+    /// jobx 计划分组名（给人看的归类维度，不存在会自动创建）
+    #[serde(default = "default_pull_job_group")]
+    pub group_name: String,
+    /// 任务记录保留时长。高频计划不配就是永久保留，`jobx_task` 会无限长
+    #[serde(default = "default_pull_job_expire")]
+    pub task_expire_duration: String,
+    /// 备注，只在该计划首次创建时写入
+    #[serde(default)]
+    pub remark: Option<String>,
 }
 
 /// # 一个 DB 直写数据源
@@ -73,6 +118,7 @@ impl Default for SynConfig {
             reload_duration: default_reload(),
             pull_timeout: default_pull_timeout(),
             self_schedule: false,
+            pull_job: None,
         }
     }
 }
@@ -97,6 +143,28 @@ fn default_reload() -> String {
 
 fn default_pull_timeout() -> String {
     "30s".to_string()
+}
+
+fn default_pull_job_name() -> String {
+    "syn 取数心跳".to_string()
+}
+
+fn default_pull_job_executor() -> String {
+    "syn.pull".to_string()
+}
+
+fn default_pull_job_interval() -> String {
+    // 不取 1s：jobx 每个周期落一行 jobx_task，1s 就是每天 8.6 万行，
+    // 而 syn 的源最小间隔本来也是 1s，5s 的误差对「5 秒重叠窗口」无影响
+    "5s".to_string()
+}
+
+fn default_pull_job_group() -> String {
+    "syn".to_string()
+}
+
+fn default_pull_job_expire() -> String {
+    "1h".to_string()
 }
 
 fn default_true() -> bool {

@@ -1,0 +1,38 @@
+# 第二副本配置 —— 只用于验证「多副本并发拉同一个源」时游标乐观锁是否生效。
+#
+# 与 `consul-dev.toml`（第一副本，9007）的区别只有端口与 node：
+# - 端口 9008，避开第一副本；
+# - node = 4，雪花 ID 不撞车（node-bits=6，0..=63）；
+# - 不配 `[micro-svc.consul]`：用 `-c` 加载时完全不碰配置中心，两个副本读各自的配置，
+#   免得第一副本改 KV 时第二副本跟着热更新，干扰下面的并发断言；
+# - 不配 `[syn.pull-job]`：两个副本注册同一个计划会互抢 jobx 任务，这里只验手工触发。
+#
+# 用法：`NO_PROXY=127.0.0.1,localhost ./target/debug/syn-svr -c tests/env/syn-svr-b.toml`
+
+profile = "dev"
+
+[db]
+url = "postgresql://syn:syn@pgsql:5432/syn"
+
+[web]
+port = 9008
+
+[id-worker]
+node = 4
+
+[syn]
+reload-duration = "5s"
+self-schedule = false
+pull-timeout = "10s"
+
+[syn.targets]
+dtw-rs-svr = "http://127.0.0.1:19099"
+local-mock = "http://127.0.0.1:19099"
+
+[syn.datasources.adm]
+url = "postgresql://postgres:postgres@pgsql:5432/admrs"
+max-connections = 4
+
+[syn.datasources.dtw]
+url = "postgresql://postgres:postgres@pgsql:5432/dtwrs_ui"
+max-connections = 4
