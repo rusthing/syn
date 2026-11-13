@@ -29,8 +29,8 @@ pub mod vo;
 
 pub use dic::{SourceKind, SyncVerdict};
 pub use dto::*;
-#[cfg(feature = "server")]
-pub use vo::*;
+// 数据源连接清单 CRUD 入参：显式列出，控制器/服务按 crate 根引用
+pub use dto::{SynDatasourceEnabledDto, SynDatasourceQueryDto, SynDatasourceSaveDto};
 pub use issue::{SpecIssue, SpecIssueKind};
 pub use source_spec::{CursorType, SourceSpec, WrapMode};
 pub use spec::{
@@ -38,3 +38,5 @@ pub use spec::{
     OnConflict, OnEmpty, OnError, Op, Operator, Outcome, Scope, Target, TargetKind, TaskSpec,
     Verdict,
 };
+#[cfg(feature = "server")]
+pub use vo::*;

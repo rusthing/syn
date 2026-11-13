@@ -15,7 +15,7 @@ use robotech::web::setup_web_server;
 use std::collections::HashMap;
 use std::sync::Arc;
 use syn_svr::config::{AppConfig, setup_app_config};
-use syn_svr::{store, wkr};
+use syn_svr::{db_sink, store, wkr};
 
 bootstrap!(AppConfig);
 
@@ -37,6 +37,12 @@ async fn setup(
     match app_config.nats.clone() {
         Some(nats) => setup_nats_client(nats, changed).await?,
         None => tracing::warn!("没有 [nats] 配置，任务刷新信号不可用（多副本需配）"),
+    }
+
+    // 数据源变更广播：控制台改连接串后各副本释放旧连接池，
+    // 否则 3 个副本会各连各的旧库，现象是「改了连接串有的副本还在写旧库」。
+    if let Err(e) = db_sink::setup_datasource_refresh().await {
+        tracing::warn!("数据源刷新订阅未建立，改数据源后需重启生效: {e}");
     }
 
     // 预加载失败不阻止启动：库刚建好时表是空的，也可能正在导配置。

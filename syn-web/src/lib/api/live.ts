@@ -23,12 +23,15 @@
 import { request } from "./http";
 import type {
   DatasourceInfo,
+  DatasourceQuery,
+  DatasourceSaveInput,
   Delivery,
   IdemRecord,
   Op,
   Overview,
   Page,
   PullResult,
+  ServiceOption,
   SourceKind,
   SourceSaveInput,
   SourceSpec,
@@ -93,11 +96,33 @@ interface WireSource {
   updateMs: string;
 }
 
-/** `SynDatasourceVo`：连接串不出现在报文里，只有脱敏目标 */
+/**
+ * `SynDatasourceVo`（camelCase）。`id` 与审计列是 `U64`，序列化成字符串；
+ * **连接串明文不出现在报文里**，只有脱敏后的 `target`。
+ *
+ * 按契约这里的字段是「全集」：真实 VO 目前只保证前六项，remark/version/审计列可能
+ * 缺省。全部标成可选，`toDatasource` 用诚实缺省（0 / null / ""）兜住形状漂移 ——
+ * 后端没给的不编数，界面显示「—」比显示错值有用。
+ */
 interface WireDatasource {
+  id: string;
+  code: string;
   name: string;
   target?: string | null;
-  maxConnections: number;
+  maxConnections: number | string;
+  enabled: boolean;
+  remark?: string | null;
+  version?: number | string;
+  createrId?: string | null;
+  createMs?: string | null;
+  updaterId?: string | null;
+  updateMs?: string | null;
+}
+
+/** `GET /syn/registry/services` 的候选项，已是 camelCase 的简单结构 */
+interface WireService {
+  name: string;
+  healthy?: number | string | null;
 }
 
 interface WirePull {
@@ -256,9 +281,44 @@ function toSource(v: WireSource): SyncSource {
 
 function toDatasource(v: WireDatasource): DatasourceInfo {
   return {
+    // U64 雪花 ID 绝不 Number()：19 位超过 MAX_SAFE_INTEGER
+    id: v.id,
+    code: v.code,
     name: v.name,
     target: v.target ?? null,
     maxConnections: num(v.maxConnections),
+    enabled: v.enabled ?? false,
+    version: num(v.version),
+    remark: v.remark ?? null,
+    // 真实 VO 可能没有审计列：映射成 snake_case，缺省留空串（不编数）
+    creater_id: v.createrId ?? "",
+    create_ms: v.createMs ?? "",
+    updater_id: v.updaterId ?? "",
+    update_ms: v.updateMs ?? "",
+  };
+}
+
+/**
+ * `SynDatasourceSaveDto` 本身就是 camelCase，保存入参同形，可原样发。
+ * 唯一要处理的是 `url`：新增必填；修改留空 / 不传表示「不改连接串」，这时必须
+ * 把字段从 body 里省掉 —— 发空串会被后端当成要清空连接串或过不了长度校验。
+ */
+function toDatasourceSaveBody(input: DatasourceSaveInput) {
+  const url = input.url?.trim();
+  return {
+    code: input.code.trim(),
+    name: input.name.trim(),
+    ...(url ? { url } : {}),
+    maxConnections: num(input.maxConnections),
+    enabled: input.enabled,
+    remark: input.remark?.trim() ?? "",
+  };
+}
+
+function toService(v: WireService): ServiceOption {
+  return {
+    name: v.name,
+    healthy: v.healthy == null ? undefined : num(v.healthy),
   };
 }
 
@@ -382,12 +442,50 @@ export const liveTasks = {
     })),
 };
 
-/** 数据源连接清单：只读，连接串在 toml / consul 里维护 */
+/** 数据源连接的 CRUD：读接口一律是脱敏 VO，写接口才收 `url` 明文 */
 export const liveDatasources = {
   list: (): Promise<DatasourceInfo[]> =>
     request<WireDatasource[]>("/syn/datasource/list").then((rows) =>
       (rows ?? []).map(toDatasource),
     ),
+
+  page: (query: DatasourceQuery = {}): Promise<Page<DatasourceInfo>> =>
+    request<WirePage<WireDatasource>>("/syn/datasource/page", { query: { ...query } }).then((p) =>
+      toPage(p, toDatasource),
+    ),
+
+  get: (id: string): Promise<DatasourceInfo> =>
+    request<WireDatasource>(`/syn/datasource/${encodeURIComponent(id)}`).then(toDatasource),
+
+  create: (input: DatasourceSaveInput): Promise<DatasourceInfo> =>
+    request<WireDatasource>("/syn/datasource", {
+      method: "POST",
+      body: toDatasourceSaveBody(input),
+    }).then(toDatasource),
+
+  update: (id: string, input: DatasourceSaveInput): Promise<DatasourceInfo> =>
+    request<WireDatasource>(`/syn/datasource/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: toDatasourceSaveBody(input),
+    }).then(toDatasource),
+
+  setEnabled: (id: string, enabled: boolean): Promise<DatasourceInfo> =>
+    request<WireDatasource>(`/syn/datasource/${encodeURIComponent(id)}/enabled`, {
+      method: "PUT",
+      body: { enabled },
+    }).then(toDatasource),
+
+  remove: (id: string): Promise<null> =>
+    request<void>(`/syn/datasource/${encodeURIComponent(id)}`, { method: "DELETE" }).then(() => null),
+};
+
+/**
+ * 注册中心里已登记的服务名候选。后端接口还没落地（404）是预期内的：
+ * `useServices` 会把失败兜成空数组，配置页仍可手输服务名，不依赖它。
+ */
+export const liveRegistry = {
+  services: (): Promise<ServiceOption[]> =>
+    request<WireService[]>("/syn/registry/services").then((rows) => (rows ?? []).map(toService)),
 };
 
 export const liveSources = {

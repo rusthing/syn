@@ -15,6 +15,7 @@ import {
   liveDeliveries,
   liveIdem,
   liveOverview,
+  liveRegistry,
   liveSources,
   liveTasks,
 } from "./live";
@@ -261,17 +262,140 @@ describe("liveSources", () => {
 });
 
 describe("liveDatasources", () => {
-  it("只读清单把 camelCase 转成前端实体，脱敏目标原样透出", async () => {
+  /** 完整 VO：U64 字符串、camelCase 审计列、脱敏 target，绝不含 url */
+  const datasourceVo = {
+    id: "18446744073709551615",
+    code: "dtw",
+    name: "定位库",
+    target: "pgsql:5432/dtwrs_ui",
+    maxConnections: 4,
+    enabled: true,
+    remark: "主库，只读账号",
+    version: 3,
+    createrId: "100237",
+    createMs: "1762900000000",
+    updaterId: "100238",
+    updateMs: "1763000001000",
+  };
+
+  it("list：U64 字符串不截断、null 兜住、camelCase 审计列回 snake_case", async () => {
     const calls = capture([
-      { name: "dtw", target: "pgsql:5432/dtwrs_ui", maxConnections: 4 },
-      { name: "adm", target: null, maxConnections: "8" },
+      datasourceVo,
+      // 最小 VO（真实后端只保证六项）+ target 为 null + maxConnections 是字符串
+      { id: "42", code: "adm", name: "人员库", target: null, maxConnections: "8", enabled: false },
     ]);
     const rows = await liveDatasources.list();
     expect(calls[0].url).toBe("/syn/datasource/list");
-    expect(rows).toEqual([
-      { name: "dtw", target: "pgsql:5432/dtwrs_ui", maxConnections: 4 },
-      { name: "adm", target: null, maxConnections: 8 },
+    expect(rows[0]).toEqual({
+      id: "18446744073709551615", // U64 不被 Number 截断
+      code: "dtw",
+      name: "定位库",
+      target: "pgsql:5432/dtwrs_ui",
+      maxConnections: 4,
+      enabled: true,
+      remark: "主库，只读账号",
+      version: 3,
+      creater_id: "100237",
+      create_ms: "1762900000000",
+      updater_id: "100238",
+      update_ms: "1763000001000",
+    });
+    // 形状漂移不报错：后端没给的字段诚实补 0 / null / 空串，界面显示「—」
+    expect(rows[1]).toEqual({
+      id: "42",
+      code: "adm",
+      name: "人员库",
+      target: null,
+      maxConnections: 8,
+      enabled: false,
+      remark: null,
+      version: 0,
+      creater_id: "",
+      create_ms: "",
+      updater_id: "",
+      update_ms: "",
+    });
+    // 读接口一律是脱敏 VO，明文 url 绝不出现在实体里
+    expect(rows[0]).not.toHaveProperty("url");
+  });
+
+  it("page：total 从 U64 字符串转 number，list 逐行走 toDatasource", async () => {
+    stubFetch({ pageNum: "1", total: "2", list: [datasourceVo] });
+    const page = await liveDatasources.page({ pageNum: 1, enabled: true });
+    expect(page.total).toBe(2);
+    expect(page.list[0].id).toBe("18446744073709551615");
+    expect(page.list[0].code).toBe("dtw");
+  });
+
+  it("get 走 /syn/datasource/{id}，返回脱敏 VO（无 url）", async () => {
+    const calls = capture(datasourceVo);
+    const row = await liveDatasources.get("18446744073709551615");
+    expect(calls[0].url).toBe("/syn/datasource/18446744073709551615");
+    expect(row.code).toBe("dtw");
+    expect(row).not.toHaveProperty("url");
+  });
+
+  const saveInput = {
+    code: "dtw",
+    name: "定位库",
+    url: "postgres://user:pwd@db:5432/dtw",
+    maxConnections: 4,
+    enabled: true,
+    remark: "主库",
+  };
+
+  it("create 带 url 明文走 POST；body 是 camelCase，与 DTO 同形", async () => {
+    const calls = capture(datasourceVo);
+    await liveDatasources.create(saveInput);
+    expect(calls[0].url).toBe("/syn/datasource");
+    expect(calls[0].init.method).toBe("POST");
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({
+      code: "dtw",
+      name: "定位库",
+      url: "postgres://user:pwd@db:5432/dtw",
+      maxConnections: 4,
+      enabled: true,
+      remark: "主库",
+    });
+  });
+
+  it("update 编辑态 url 留空 → body 里省掉 url（不修改连接串）", async () => {
+    const calls = capture(datasourceVo);
+    await liveDatasources.update("18446744073709551615", { ...saveInput, url: "" });
+    expect(calls[0].url).toBe("/syn/datasource/18446744073709551615");
+    expect(calls[0].init.method).toBe("PUT");
+    const body = JSON.parse(String(calls[0].init.body));
+    expect(body).not.toHaveProperty("url");
+    expect(body.code).toBe("dtw");
+  });
+
+  it("setEnabled 走 PUT /enabled，body 只带 enabled", async () => {
+    const calls = capture(datasourceVo);
+    await liveDatasources.setEnabled("42", false);
+    expect(calls[0].url).toBe("/syn/datasource/42/enabled");
+    expect(calls[0].init.method).toBe("PUT");
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ enabled: false });
+  });
+
+  it("remove 走 DELETE，Ro<()> 落成 null", async () => {
+    const calls = capture(undefined);
+    await expect(liveDatasources.remove("42")).resolves.toBeNull();
+    expect(calls[0].url).toBe("/syn/datasource/42");
+    expect(calls[0].init.method).toBe("DELETE");
+  });
+});
+
+describe("liveRegistry", () => {
+  it("services：camelCase 原样，healthy 字符串转 number，缺省留 undefined", async () => {
+    const calls = capture([
+      { name: "dtw-rs-svr", healthy: "3" },
+      { name: "alarm-svr" },
     ]);
+    const rows = await liveRegistry.services();
+    expect(calls[0].url).toBe("/syn/registry/services");
+    expect(rows[0]).toEqual({ name: "dtw-rs-svr", healthy: 3 });
+    expect(rows[1].name).toBe("alarm-svr");
+    expect(rows[1].healthy).toBeUndefined();
   });
 });
 

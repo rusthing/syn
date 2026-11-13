@@ -9,6 +9,7 @@ import { subscribeDataMode } from "@/lib/api";
 import { OverviewPage } from "@/features/overview/OverviewPage";
 import { TasksPage } from "@/features/tasks/TasksPage";
 import { SourcesPage } from "@/features/sources/SourcesPage";
+import { DatasourcesPage } from "@/features/datasources/DatasourcesPage";
 import { PlaygroundPage } from "@/features/playground/PlaygroundPage";
 import { DeliveriesPage } from "@/features/deliveries/DeliveriesPage";
 import { IdemPage } from "@/features/idem/IdemPage";
@@ -69,6 +70,7 @@ export default function App() {
               <Route index element={<OverviewPage />} />
               <Route path="tasks" element={<TasksPage />} />
               <Route path="sources" element={<SourcesPage />} />
+              <Route path="datasources" element={<DatasourcesPage />} />
               <Route path="playground" element={<PlaygroundPage />} />
               <Route path="deliveries" element={<DeliveriesPage />} />
               <Route path="idem" element={<IdemPage />} />

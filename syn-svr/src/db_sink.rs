@@ -7,8 +7,19 @@
 //!    numeric」的类型适配交给 PG 自己。
 //! 2. **表名与列名走白名单**：只接受 `[a-z_][a-z0-9_]*`（`schema.table` 两段），并且
 //!    真的去 `information_schema.columns` 核一遍再拼 SQL。配置能改，所以拼接点必须有闸。
-//! 3. **一个数据源一个账号**：连接串从 `[syn.datasources.<name>]` 取，任务配置里只有
+//! 3. **一个数据源一个账号**：连接串以 `syn_datasource` 表为准，任务配置里只有
 //!    数据源名。共用高权账号等于「改一条任务就能写任何库」。
+//!
+//! ## 连接串从哪来
+//!
+//! **表优先、配置兜底**：`syn_datasource` 里有这个 `code` 就用它（`enabled=false`
+//! 直接判失败，不回退 —— 停用是运维的显式动作）；表里没有才回退到
+//! `[syn.datasources.<name>]`，给联调与「表还没初始化」的环境留一条路。
+//!
+//! 连接串可变，所以连接池不能只建不换：控制台写完 `syn_datasource` 发一条
+//! [`SYN_DATASOURCE_REFRESH_SUBJECT`]，各副本（含发布者）收到就把本地连接池与
+//! 列白名单全丢掉，下次用到时按新连接串重建。不发这条信号的话，3 个副本会各连
+//! 各的旧库，现象是「改了连接串，有的副本写新库有的写旧库」。
 //!
 //! ## 已知边界
 //!
@@ -18,6 +29,7 @@
 //! 那等于把 SQL 拼接重新引进来。
 
 use async_trait::async_trait;
+use sea_orm::{ColumnTrait, Condition};
 use serde_json::{Map, Value};
 use sqlx::{PgPool, Row};
 use std::collections::{HashMap, HashSet};
@@ -25,9 +37,17 @@ use std::sync::LazyLock;
 use syn_api::{DbTarget, OnConflict, Op};
 use syn_core::{DbError, DbWriter};
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::get_app_config;
+use crate::dao::SynDatasourceDao;
+use crate::mo::syn_datasource::{Column as DsColumn, Model as DsModel};
+use robotech::db::get_db_conn;
+use robotech::refresh::RefreshSubject;
+
+/// 数据源变更的刷新主题。写库后发布，各副本收到就丢弃本地连接池与列白名单
+pub const SYN_DATASOURCE_REFRESH_SUBJECT: RefreshSubject =
+    robotech::refresh_subject!("syn", "datasource");
 
 /// 数据源名 → 连接池。懒建立：只有真的用到这个下游才连
 static POOLS: LazyLock<Mutex<HashMap<String, PgPool>>> =
@@ -50,17 +70,10 @@ impl DbSinks {
         if let Some(p) = POOLS.lock().await.get(name) {
             return Ok(p.clone());
         }
-        let config = get_app_config()
-            .map_err(|e| DbError::fatal("CONFIG_NOT_READY", e.to_string()))?;
-        let ds = config.syn.datasources.get(name).ok_or_else(|| {
-            DbError::fatal(
-                "DATASOURCE_UNRESOLVED",
-                format!("[syn.datasources] 缺少 {name}"),
-            )
-        })?;
+        let (url, max_connections) = Self::resolve(name).await?;
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(ds.max_connections)
-            .connect(&ds.url)
+            .max_connections(max_connections)
+            .connect(&url)
             .await
             .map_err(|e| {
                 // 建池失败是可重试的：下游库可能在重启，或者网络抖动
@@ -71,8 +84,48 @@ impl DbSinks {
         Ok(pool)
     }
 
+    /// 解析数据源的连接参数：**表优先，配置兜底**
+    ///
+    /// 表里有这个 `code` 就以表为准（停用的直接判失败，不回退配置 —— 那会把
+    /// 「运维显式停用」变成「悄悄用旧连接串继续跑」）；只有表里查不到才回退
+    /// `[syn.datasources.<name>]`，给联调和「表还没初始化」的环境留一条路。
+    ///
+    /// 读表失败（连不上 syn 自己的库）也回退配置并告警：这时按配置把这一条投递
+    /// 处理掉，比整条链路停摆更划算。
+    async fn resolve(name: &str) -> Result<(String, u32), DbError> {
+        match lookup_table(name).await {
+            Ok(Some(row)) if row.enabled => {
+                return Ok((row.url, row.max_connections.max(1) as u32));
+            }
+            Ok(Some(_)) => {
+                return Err(DbError::fatal(
+                    "DATASOURCE_DISABLED",
+                    format!("数据源 {name} 已在控制台停用"),
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => warn!("读 syn_datasource 失败，回退 [syn.datasources]: {e}"),
+        }
+        let config =
+            get_app_config().map_err(|e| DbError::fatal("CONFIG_NOT_READY", e.to_string()))?;
+        let ds = config.syn.datasources.get(name).ok_or_else(|| {
+            DbError::fatal(
+                "DATASOURCE_UNRESOLVED",
+                format!(
+                    "数据源 {name} 既不在 syn_datasource 表里，也不在 [syn.datasources] 配置里"
+                ),
+            )
+        })?;
+        Ok((ds.url.clone(), ds.max_connections))
+    }
+
     /// 表的列白名单（首次访问时从 information_schema 读一次）
-    async fn columns(&self, datasource: &str, pool: &PgPool, table: &str) -> Result<HashSet<String>, DbError> {
+    async fn columns(
+        &self,
+        datasource: &str,
+        pool: &PgPool,
+        table: &str,
+    ) -> Result<HashSet<String>, DbError> {
         let cache_key = format!("{datasource}|{table}");
         if let Some(cols) = COLUMNS.lock().await.get(&cache_key) {
             return Ok(cols.clone());
@@ -97,7 +150,10 @@ impl DbSinks {
                 format!("表 {schema}.{name} 不存在或当前账号没有权限"),
             ));
         }
-        let cols: HashSet<String> = rows.iter().map(|r| r.get::<String, _>("column_name")).collect();
+        let cols: HashSet<String> = rows
+            .iter()
+            .map(|r| r.get::<String, _>("column_name"))
+            .collect();
         COLUMNS.lock().await.insert(cache_key, cols.clone());
         Ok(cols)
     }
@@ -105,6 +161,69 @@ impl DbSinks {
     /// 清掉列白名单缓存（表结构变更后由运维调 reload 触发）
     pub async fn forget_columns() {
         COLUMNS.lock().await.clear();
+    }
+
+    /// # 丢弃全部连接池与列白名单
+    ///
+    /// 连接串一改，池子和「表有哪些列」的缓存都作废：换库之后列集合可能完全不同，
+    /// 留着旧白名单会把合法列判成 `DB_UNKNOWN_COLUMN`。正在用池的调用持有 `PgPool`
+    /// 的克隆，这里清掉 map 只是不再复用，不会打断在途写入。
+    pub async fn forget_pools() {
+        let mut pools = POOLS.lock().await;
+        let n = pools.len();
+        pools.clear();
+        COLUMNS.lock().await.clear();
+        if n > 0 {
+            info!("数据源连接池已失效，{n} 个池待重建");
+        }
+    }
+}
+
+/// 查 `syn_datasource` 里的一条（停用的也返回，由调用方决定怎么处理）
+///
+/// 错误统一折成 `String`：这里只用来决定「回退配置」并留一条日志，
+/// 不需要把 DAO 的错误类型往上带（DAO 的 `DaoError` 不进本模块的错误契约）。
+async fn lookup_table(name: &str) -> Result<Option<DsModel>, String> {
+    let db = get_db_conn().map_err(|e| e.to_string())?;
+    SynDatasourceDao::get_by_condition::<_, DsModel>(
+        Condition::all().add(DsColumn::Code.eq(name)),
+        db.as_ref(),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// # 发布数据源变更信号
+///
+/// 控制台写成功 `syn_datasource` 后调用。信号由 JetStream 回送**所有**副本
+/// （包括发布者自己），所以这里不顺手清本地池 —— 统一走订阅回调，路径只有一条。
+/// 发不出去时至少让本副本失效：宁可本副本重建，也不能留在旧连接串上。
+pub async fn on_datasource_changed() {
+    if let Err(e) = robotech::refresh::publish(&SYN_DATASOURCE_REFRESH_SUBJECT).await {
+        warn!("发布数据源刷新信号失败，仅本副本失效: {e}");
+        DbSinks::forget_pools().await;
+    }
+}
+
+/// # 启动订阅数据源变更
+///
+/// 与任务快照同构：先订阅再首次使用。返回 `false` 表示没配上 nats（单副本/联调），
+/// 此时改了数据源要重启进程或调控制台的启停接口才会重建连接池。
+pub async fn setup_datasource_refresh() -> anyhow::Result<bool> {
+    match robotech::refresh::subscribe(&SYN_DATASOURCE_REFRESH_SUBJECT, || async {
+        DbSinks::forget_pools().await;
+        Ok(())
+    })
+    .await
+    {
+        Ok(_) => {
+            info!("数据源刷新订阅已建立: {SYN_DATASOURCE_REFRESH_SUBJECT}");
+            Ok(true)
+        }
+        Err(e) => {
+            warn!("数据源刷新订阅未建立，改数据源后需重启生效: {e}");
+            Ok(false)
+        }
     }
 }
 
@@ -117,7 +236,9 @@ impl DbWriter for DbSinks {
         row: &Map<String, Value>,
     ) -> Result<u64, DbError> {
         let pool = Self::pool_for(&target.datasource).await?;
-        let columns = self.columns(&target.datasource, &pool, &target.table).await?;
+        let columns = self
+            .columns(&target.datasource, &pool, &target.table)
+            .await?;
 
         // 映射的每一列都必须真实存在：拼错一个列名，PG 报的是 42703，
         // 但那已经是「一行数据发出去之后」了，不如在这里就说清楚
@@ -275,17 +396,24 @@ mod tests {
         let mut m = Map::new();
         m.insert("id".into(), serde_json::json!(1));
         m.insert("name".into(), serde_json::json!("张三"));
-        m.insert("updated_at".into(), serde_json::json!("2026-11-12T21:00:00Z"));
+        m.insert(
+            "updated_at".into(),
+            serde_json::json!("2026-11-12T21:00:00Z"),
+        );
         m
     }
 
     #[test]
     fn upsert_updates_non_key_columns() {
         let sql = build_sql(&t(&["id"], OnConflict::Update), Op::U, &row()).unwrap();
-        assert!(sql.starts_with("insert into public.dtw_person (\"id\", \"name\", \"updated_at\")"));
+        assert!(
+            sql.starts_with("insert into public.dtw_person (\"id\", \"name\", \"updated_at\")")
+        );
         assert!(sql.contains("select \"id\", \"name\", \"updated_at\" from jsonb_populate_record"));
         // 键列不参与 set
-        assert!(sql.contains("do update set \"name\" = excluded.\"name\", \"updated_at\" = excluded.\"updated_at\""));
+        assert!(sql.contains(
+            "do update set \"name\" = excluded.\"name\", \"updated_at\" = excluded.\"updated_at\""
+        ));
         assert!(!sql.contains("\"id\" = excluded.\"id\""));
     }
 

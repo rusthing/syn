@@ -44,7 +44,6 @@ use serde_json::Value;
 use crate::dic::SourceKind;
 use crate::issue::{SpecIssue, SpecIssueKind};
 
-
 /// # 游标列的类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -83,7 +82,8 @@ pub enum WrapMode {
 /// # 取数定义
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SourceSpec {
-    /// 源库的数据源名，取 `[syn.datasources.<name>]`
+    /// 源库的数据源名，对应 `syn_datasource` 表的 `code`
+    /// （表里没有时回退 `[syn.datasources.<name>]`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub datasource: Option<String>,
     /// 取数 SQL（必须是单条 `select` / `with`，不允许分号分隔多句）
@@ -170,17 +170,11 @@ impl SourceSpec {
         match kind {
             SourceKind::Sql => {
                 // 只有库表取数才需要数据源连接；http 分页取数走 URL，没有 datasource 的概念
-                if self
-                    .datasource
-                    .as_deref()
-                    .unwrap_or("")
-                    .trim()
-                    .is_empty()
-                {
+                if self.datasource.as_deref().unwrap_or("").trim().is_empty() {
                     issues.push(SpecIssue::new(
                         "spec.datasource",
                         SpecIssueKind::Missing,
-                        "库表取数必须写数据源名（对应 [syn.datasources.<name>]）",
+                        "库表取数必须写数据源名（对应控制台里的数据源编码）",
                     ));
                 }
                 match self.select.as_deref().map(str::trim) {
@@ -376,7 +370,13 @@ mod tests {
         );
         assert_eq!(issues, vec![("spec.method".into(), SpecIssueKind::Invalid)]);
         // 大小写不敏感
-        assert!(check(json!({ "url": "https://x", "method": "post" }), SourceKind::Http).is_empty());
+        assert!(
+            check(
+                json!({ "url": "https://x", "method": "post" }),
+                SourceKind::Http
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -406,7 +406,10 @@ mod tests {
             json!({ "url": "https://x", "page_size": 0 }),
             SourceKind::Http,
         );
-        assert_eq!(issues, vec![("spec.page_size".into(), SpecIssueKind::Invalid)]);
+        assert_eq!(
+            issues,
+            vec![("spec.page_size".into(), SpecIssueKind::Invalid)]
+        );
     }
 
     #[test]

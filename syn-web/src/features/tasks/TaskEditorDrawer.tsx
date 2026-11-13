@@ -17,8 +17,9 @@ import { ActionEditor } from "@/components/spec/ActionEditor";
 import { GuardEditor } from "@/components/spec/GuardEditor";
 import { OutcomeEditor } from "@/components/spec/OutcomeEditor";
 import { useTaskMutations } from "@/hooks/use-tasks";
+import { useDatasources, useServices } from "@/hooks/use-sources";
 
-type Tab = "basic" | "match" | "mapping" | "actions" | "guards" | "outcomes" | "json";
+type Tab = "basic" | "match" | "mapping" | "actions" | "guards" | "outcomes" | "target" | "json";
 
 const TABS: Array<{ key: Tab; label: string; stage: string }> = [
   { key: "basic", label: "基本", stage: "—" },
@@ -27,6 +28,7 @@ const TABS: Array<{ key: Tab; label: string; stage: string }> = [
   { key: "guards", label: "校验", stage: "3" },
   { key: "actions", label: "动作", stage: "4" },
   { key: "outcomes", label: "判定", stage: "5" },
+  { key: "target", label: "投递", stage: "6" },
   { key: "json", label: "JSON", stage: "—" },
 ];
 
@@ -37,6 +39,7 @@ function tabOfPath(path: string): Tab {
   if (path.startsWith("actions")) return "actions";
   if (path.startsWith("guards")) return "guards";
   if (path.startsWith("outcomes")) return "outcomes";
+  if (path.startsWith("target")) return "target";
   return "basic";
 }
 
@@ -54,6 +57,10 @@ export function TaskEditorDrawer({
   const toast = useToast();
   const navigate = useNavigate();
   const { save } = useTaskMutations();
+  // 两个候选清单都只是编辑期的辅助：取不到时输入框仍可自由手输，
+  // 因为配置要能先于下游上线、也要能在注册中心不可达时保存。
+  const { data: datasourceOptions = [] } = useDatasources();
+  const { data: serviceOptions = [] } = useServices();
 
   const [tab, setTab] = useState<Tab>("basic");
   const [name, setName] = useState("");
@@ -76,7 +83,9 @@ export function TaskEditorDrawer({
   const tabIssues = (key: Tab) => {
     switch (key) {
       case "basic":
-        return issues.filter((i) => i.path === "id" || i.path === "topic" || i.path.startsWith("target"));
+        return issues.filter((i) => i.path === "id" || i.path === "topic");
+      case "target":
+        return issues.filter((i) => i.path.startsWith("target"));
       case "match":
         return issuesUnder(byPath, "match");
       case "mapping":
@@ -220,6 +229,34 @@ export function TaskEditorDrawer({
 
       {tab === "basic" && (
         <div className="space-y-4">
+          <div className="space-y-2 rounded-lg border border-line bg-sunken/40 p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-[12.5px] font-medium text-ink">启用</p>
+                <p className="text-[11px] text-muted">停用的任务保留配置但不参与匹配</p>
+              </div>
+              <Switch
+                checked={spec.enabled ?? true}
+                label="启用任务"
+                onChange={(enabled) => patch({ enabled })}
+              />
+            </div>
+            <div className="flex items-start justify-between gap-3 border-t border-line/70 pt-2">
+              <div>
+                <p className="text-[12.5px] font-medium text-ink">独占（命中后停止匹配）</p>
+                <p className="text-[11px] leading-relaxed text-muted">
+                  关掉它，一条记录会继续匹配后面的任务 —— 这是「一份数据同步到多个下游」的表达方式。
+                  每个下游各有自己的映射与死信分类，比在一个任务里堆多个动作清楚。
+                </p>
+              </div>
+              <Switch
+                checked={spec.exclusive !== false}
+                label="独占"
+                onChange={(exclusive) => patch({ exclusive })}
+              />
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <Field
               label="任务标识 code"
@@ -256,173 +293,6 @@ export function TaskEditorDrawer({
               />
             </Field>
           </div>
-
-          <div className="space-y-3 rounded-lg border border-line bg-sunken/30 p-3">
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="投递方式" hint="前四段完全共用，只是最后一步出口不同">
-                <Select
-                  className="w-full font-mono text-[12.5px]"
-                  value={spec.target.kind ?? "http"}
-                  onChange={(e) =>
-                    patch({ target: { ...spec.target, kind: e.target.value as "http" | "db" } })
-                  }
-                >
-                  <option value="http">http — 调下游接口</option>
-                  <option value="db">db — 直写下游库表</option>
-                </Select>
-              </Field>
-              <div className="flex items-end pb-1 text-[11px] leading-relaxed text-muted">
-                {spec.target.kind === "db"
-                  ? "映射的 to 就是列名，值绑参数写进目标表；没有 HTTP 请求，判定段看 { affected: n }。"
-                  : "服务名只作服务发现的键，host 由执行器按环境解析，不拼进 URL。"}
-              </div>
-            </div>
-
-            {spec.target.kind === "db" ? (
-              <>
-                <div className="grid grid-cols-2 gap-3">
-                  <Field
-                    label="数据源"
-                    required
-                    hint="[syn.datasources.<name>] 的键，一个下游一个账号"
-                    error={byPath.get("target.datasource")?.[0]?.message}
-                  >
-                    <Input
-                      value={spec.target.datasource ?? ""}
-                      spellCheck={false}
-                      className="h-9 font-mono text-[12.5px]"
-                      onChange={(e) =>
-                        patch({ target: { ...spec.target, datasource: e.target.value } })
-                      }
-                    />
-                  </Field>
-                  <Field
-                    label="目标表"
-                    required
-                    hint="table 或 schema.table，只允许小写字母/数字/下划线"
-                    error={byPath.get("target.table")?.[0]?.message}
-                  >
-                    <Input
-                      value={spec.target.table ?? ""}
-                      spellCheck={false}
-                      className="h-9 font-mono text-[12.5px]"
-                      onChange={(e) => patch({ target: { ...spec.target, table: e.target.value } })}
-                    />
-                  </Field>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <Field
-                    label="冲突键"
-                    required
-                    hint="逗号分隔；c/r/u 走 on conflict，d 按它删除"
-                    error={byPath.get("target.key")?.[0]?.message}
-                  >
-                    <Input
-                      value={(spec.target.key ?? []).join(",")}
-                      spellCheck={false}
-                      className="h-9 font-mono text-[12.5px]"
-                      placeholder="id"
-                      onChange={(e) =>
-                        patch({
-                          target: {
-                            ...spec.target,
-                            key: e.target.value
-                              .split(",")
-                              .map((k) => k.trim())
-                              .filter(Boolean),
-                          },
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="冲突处理" hint="update = upsert；nothing = 保留已有行">
-                    <Select
-                      className="w-full font-mono text-[12.5px]"
-                      value={spec.target.on_conflict ?? "update"}
-                      onChange={(e) =>
-                        patch({
-                          target: {
-                            ...spec.target,
-                            on_conflict: e.target.value as "update" | "nothing" | "error",
-                          },
-                        })
-                      }
-                    >
-                      <option value="update">update — 覆盖其余列</option>
-                      <option value="nothing">nothing — 什么也不做</option>
-                      <option value="error">error — 报错交给判定段</option>
-                    </Select>
-                  </Field>
-                </div>
-              </>
-            ) : (
-              <div className="grid grid-cols-2 gap-3">
-                <Field
-                  label="目标服务"
-                  required
-                  hint="只写服务名：host 由执行器按环境解析，不拼进 URL"
-                  error={byPath.get("target.service")?.[0]?.message}
-                >
-                  <Input
-                    value={spec.target.service ?? ""}
-                    spellCheck={false}
-                    className="h-9 font-mono text-[12.5px]"
-                    onChange={(e) => patch({ target: { ...spec.target, service: e.target.value } })}
-                  />
-                </Field>
-                <Field
-                  label="路径前缀"
-                  required
-                  hint="必须以 / 开头"
-                  error={byPath.get("target.base")?.[0]?.message}
-                >
-                  <Input
-                    value={spec.target.base ?? ""}
-                    spellCheck={false}
-                    className="h-9 font-mono text-[12.5px]"
-                    onChange={(e) => patch({ target: { ...spec.target, base: e.target.value } })}
-                  />
-                </Field>
-              </div>
-            )}
-          </div>
-
-          <div className="space-y-2 rounded-lg border border-line bg-sunken/40 p-3">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[12.5px] font-medium text-ink">启用</p>
-                <p className="text-[11px] text-muted">停用的任务保留配置但不参与匹配</p>
-              </div>
-              <Switch
-                checked={spec.enabled ?? true}
-                label="启用任务"
-                onChange={(enabled) => patch({ enabled })}
-              />
-            </div>
-            <div className="flex items-start justify-between gap-3 border-t border-line/70 pt-2">
-              <div>
-                <p className="text-[12.5px] font-medium text-ink">独占（命中后停止匹配）</p>
-                <p className="text-[11px] leading-relaxed text-muted">
-                  关掉它，一条记录会继续匹配后面的任务 —— 这是「一份数据同步到多个下游」的表达方式。
-                  每个下游各有自己的映射与死信分类，比在一个任务里堆多个动作清楚。
-                </p>
-              </div>
-              <Switch
-                checked={spec.exclusive !== false}
-                label="独占"
-                onChange={(exclusive) => patch({ exclusive })}
-              />
-            </div>
-          </div>
-
-          <Field label="原始 JSON" hint="与库里的 syn_task.spec 完全一致，排障时可直接对照">
-            <Textarea
-              readOnly
-              rows={12}
-              value={JSON.stringify(spec, null, 2)}
-              className="font-mono text-[11px]"
-            />
-          </Field>
         </div>
       )}
 
@@ -512,6 +382,171 @@ export function TaskEditorDrawer({
             pathPrefix="outcomes"
             issues={byPath}
           />
+        </div>
+      )}
+
+      {tab === "target" && (
+        <div className="space-y-3">
+          <SectionIntro
+            title="投递（第 6 步）"
+            body="前五段完全共用，这里只决定最后一步往哪儿写。候选清单只是辅助输入：服务可能还没注册、数据源也可能先配好，所以两处都保留手输。"
+          />
+
+          <datalist id="syn-datasource-options">
+            {datasourceOptions.map((d) => (
+              <option key={d.id ?? d.code} value={d.code}>
+                {d.target ? `${d.name} · ${d.target}` : d.name}
+              </option>
+            ))}
+          </datalist>
+          <datalist id="syn-service-options">
+            {serviceOptions.map((s) => (
+              <option key={s.name} value={s.name}>
+                {s.healthy ? `${s.healthy} 个健康实例` : "注册中心已登记"}
+              </option>
+            ))}
+          </datalist>
+
+          <div className="space-y-3 rounded-lg border border-line bg-sunken/30 p-3">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="投递方式" hint="前五段完全共用，只是最后一步出口不同">
+                <Select
+                  className="w-full font-mono text-[12.5px]"
+                  value={spec.target.kind ?? "http"}
+                  onChange={(e) =>
+                    patch({ target: { ...spec.target, kind: e.target.value as "http" | "db" } })
+                  }
+                >
+                  <option value="http">http — 调下游接口</option>
+                  <option value="db">db — 直写下游库表</option>
+                </Select>
+              </Field>
+              <div className="flex items-end pb-1 text-[11px] leading-relaxed text-muted">
+                {spec.target.kind === "db"
+                  ? "映射的 to 就是列名，值绑参数写进目标表；没有 HTTP 请求，判定段看 { affected: n }。"
+                  : "服务名只作服务发现的键，host 由执行器按环境解析，不拼进 URL。"}
+              </div>
+            </div>
+
+            {spec.target.kind === "db" ? (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field
+                    label="数据源"
+                    required
+                    hint="从数据源清单里选，或手输 code；连接串在数据源页维护"
+                    error={byPath.get("target.datasource")?.[0]?.message}
+                  >
+                    <Input
+                      list="syn-datasource-options"
+                      value={spec.target.datasource ?? ""}
+                      spellCheck={false}
+                      className="h-9 font-mono text-[12.5px]"
+                      placeholder={datasourceOptions[0]?.code ?? "dtw"}
+                      onChange={(e) =>
+                        patch({ target: { ...spec.target, datasource: e.target.value } })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="目标表"
+                    required
+                    hint="table 或 schema.table，只允许小写字母/数字/下划线"
+                    error={byPath.get("target.table")?.[0]?.message}
+                  >
+                    <Input
+                      value={spec.target.table ?? ""}
+                      spellCheck={false}
+                      className="h-9 font-mono text-[12.5px]"
+                      onChange={(e) => patch({ target: { ...spec.target, table: e.target.value } })}
+                    />
+                  </Field>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field
+                    label="冲突键"
+                    required
+                    hint="逗号分隔；c/r/u 走 on conflict，d 按它删除"
+                    error={byPath.get("target.key")?.[0]?.message}
+                  >
+                    <Input
+                      value={(spec.target.key ?? []).join(",")}
+                      spellCheck={false}
+                      className="h-9 font-mono text-[12.5px]"
+                      placeholder="id"
+                      onChange={(e) =>
+                        patch({
+                          target: {
+                            ...spec.target,
+                            key: e.target.value
+                              .split(",")
+                              .map((k) => k.trim())
+                              .filter(Boolean),
+                          },
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label="冲突处理" hint="update = upsert；nothing = 保留已有行">
+                    <Select
+                      className="w-full font-mono text-[12.5px]"
+                      value={spec.target.on_conflict ?? "update"}
+                      onChange={(e) =>
+                        patch({
+                          target: {
+                            ...spec.target,
+                            on_conflict: e.target.value as "update" | "nothing" | "error",
+                          },
+                        })
+                      }
+                    >
+                      <option value="update">update — 覆盖其余列</option>
+                      <option value="nothing">nothing — 什么也不做</option>
+                      <option value="error">error — 报错交给判定段</option>
+                    </Select>
+                  </Field>
+                </div>
+              </>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <Field
+                  label="目标服务"
+                  required
+                  hint="可从注册中心已登记的服务里选，也可直接手输服务名"
+                  error={byPath.get("target.service")?.[0]?.message}
+                >
+                  <Input
+                    list="syn-service-options"
+                    value={spec.target.service ?? ""}
+                    spellCheck={false}
+                    className="h-9 font-mono text-[12.5px]"
+                    placeholder={serviceOptions[0]?.name ?? "dtw-rs-svr"}
+                    onChange={(e) => patch({ target: { ...spec.target, service: e.target.value } })}
+                  />
+                </Field>
+                <Field
+                  label="路径前缀"
+                  required
+                  hint="必须以 / 开头"
+                  error={byPath.get("target.base")?.[0]?.message}
+                >
+                  <Input
+                    value={spec.target.base ?? ""}
+                    spellCheck={false}
+                    className="h-9 font-mono text-[12.5px]"
+                    onChange={(e) => patch({ target: { ...spec.target, base: e.target.value } })}
+                  />
+                </Field>
+              </div>
+            )}
+          </div>
+
+          {spec.target.kind === "http" && serviceOptions.length === 0 && (
+            <p className="text-[11px] leading-relaxed text-muted">
+              当前没有拉到注册中心的服务清单（可能是注册中心未配置或暂时不可达）。直接手输服务名即可，
+              配置不依赖「编辑时注册中心里有什么」。
+            </p>
+          )}
         </div>
       )}
 

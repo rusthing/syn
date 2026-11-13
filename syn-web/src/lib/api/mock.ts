@@ -10,11 +10,14 @@
 
 import type {
   DatasourceInfo,
+  DatasourceQuery,
+  DatasourceSaveInput,
   Delivery,
   IdemRecord,
   Overview,
   Page,
   PullResult,
+  ServiceOption,
   SourceSaveInput,
   SyncSource,
   SyncTask,
@@ -669,12 +672,162 @@ export const mockTasks = {
   },
 };
 
-/** 演示模式下的可选连接名，与实时接口返回同样的形状 */
+/* ------------------------------ 数据源连接 ------------------------------ */
+
+/**
+ * 演示模式的数据源，内存里只有脱敏后的实体 —— 与实时接口完全同形。
+ * `url` 明文从不落进 `DatasourceInfo`：写入时只拿它算一个占位 target，读不回来。
+ */
+let DATASOURCES: DatasourceInfo[] = [
+  {
+    id: "1900000000000000101",
+    code: "dtw",
+    name: "定位库",
+    target: "pgsql:5432/dtwrs_ui",
+    maxConnections: 4,
+    enabled: true,
+    version: 2,
+    remark: "主库，只读账号",
+    creater_id: "100237",
+    create_ms: String(NOW - 30 * 24 * 60 * MIN),
+    updater_id: "100237",
+    update_ms: String(NOW - 2 * 24 * 60 * MIN),
+  },
+  {
+    id: "1900000000000000102",
+    code: "adm",
+    name: "人员主数据库",
+    target: "pgsql:5432/admrs",
+    maxConnections: 8,
+    enabled: true,
+    version: 1,
+    remark: null,
+    creater_id: "100237",
+    create_ms: String(NOW - 30 * 24 * 60 * MIN),
+    updater_id: "100237",
+    update_ms: String(NOW - 9 * 24 * 60 * MIN),
+  },
+  {
+    id: "1900000000000000103",
+    code: "archive",
+    name: "归档库",
+    target: null,
+    maxConnections: 2,
+    enabled: false,
+    version: 1,
+    remark: "连接待补全，暂时停用",
+    creater_id: "100237",
+    create_ms: String(NOW - 12 * 24 * 60 * MIN),
+    updater_id: "100237",
+    update_ms: String(NOW - 12 * 24 * 60 * MIN),
+  },
+];
+
+/** 演示数据没有真实解析器：只留一个不含账号密码的占位，绝不回显明文 url */
+function maskUrl(_url: string): string {
+  return "(连接串已保存，未回显)";
+}
+
+function nextDatasourceId(): string {
+  return String(19_0000_0000 + (idSeq += 1));
+}
+
 export const mockDatasources = {
   async list(): Promise<DatasourceInfo[]> {
+    return DATASOURCES;
+  },
+
+  async page(query: DatasourceQuery = {}): Promise<Page<DatasourceInfo>> {
+    const keyword = query.keyword?.trim().toLowerCase();
+    const list = DATASOURCES.filter((d) => {
+      if (query.enabled !== undefined && d.enabled !== query.enabled) return false;
+      if (!keyword) return true;
+      return (
+        d.code.toLowerCase().includes(keyword) ||
+        d.name.toLowerCase().includes(keyword) ||
+        (d.remark ?? "").toLowerCase().includes(keyword)
+      );
+    });
+    return paginate(list, query.pageNum, query.pageSize);
+  },
+
+  async get(id: string): Promise<DatasourceInfo> {
+    const hit = DATASOURCES.find((d) => d.id === id || d.code === id);
+    if (!hit) throw new Error(`数据源 ${id} 不存在`);
+    return hit;
+  },
+
+  async create(input: DatasourceSaveInput): Promise<DatasourceInfo> {
+    const code = input.code.trim();
+    if (DATASOURCES.some((d) => d.code === code)) throw new Error(`数据源编码 ${code} 已存在`);
+    if (!input.url?.trim()) throw new Error("新增数据源必须填连接串");
+    const now = String(Date.now());
+    const created: DatasourceInfo = {
+      id: nextDatasourceId(),
+      code,
+      name: input.name.trim(),
+      target: maskUrl(input.url),
+      maxConnections: input.maxConnections,
+      enabled: input.enabled,
+      version: 1,
+      remark: input.remark?.trim() || null,
+      creater_id: "100237",
+      create_ms: now,
+      updater_id: "100237",
+      update_ms: now,
+    };
+    DATASOURCES = [...DATASOURCES, created];
+    return created;
+  },
+
+  async update(id: string, input: DatasourceSaveInput): Promise<DatasourceInfo> {
+    const current = await mockDatasources.get(id);
+    if (current.code !== input.code.trim()) {
+      throw new Error("数据源编码不可修改：任务与来源都按它指代");
+    }
+    const url = input.url?.trim();
+    const next: DatasourceInfo = {
+      ...current,
+      name: input.name.trim(),
+      // 留空表示不改连接串：沿用原 target，绝不把明文 url 放进实体
+      target: url ? maskUrl(url) : current.target,
+      maxConnections: input.maxConnections,
+      enabled: input.enabled,
+      remark: input.remark?.trim() || null,
+      version: current.version + 1,
+      updater_id: "100237",
+      update_ms: String(Date.now()),
+    };
+    DATASOURCES = DATASOURCES.map((d) => (d.id === current.id ? next : d));
+    return next;
+  },
+
+  async setEnabled(id: string, enabled: boolean): Promise<DatasourceInfo> {
+    const current = await mockDatasources.get(id);
+    const next: DatasourceInfo = {
+      ...current,
+      enabled,
+      version: current.version + 1,
+      update_ms: String(Date.now()),
+    };
+    DATASOURCES = DATASOURCES.map((d) => (d.id === current.id ? next : d));
+    return next;
+  },
+
+  async remove(id: string): Promise<null> {
+    if (!DATASOURCES.some((d) => d.id === id)) throw new Error(`数据源 ${id} 不存在`);
+    DATASOURCES = DATASOURCES.filter((d) => d.id !== id);
+    return null;
+  },
+};
+
+/** 演示模式的注册中心候选；实时模式这个接口可能还没实现，失败由 hook 兜成空数组 */
+export const mockRegistry = {
+  async services(): Promise<ServiceOption[]> {
     return [
-      { name: "dtw", target: "pgsql:5432/dtwrs_ui", maxConnections: 4 },
-      { name: "adm", target: "pgsql:5432/admrs", maxConnections: 4 },
+      { name: "dtw-rs-svr", healthy: 3 },
+      { name: "alarm-svr", healthy: 2 },
+      { name: "oss-rs", healthy: 1 },
     ];
   },
 };

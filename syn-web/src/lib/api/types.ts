@@ -219,13 +219,55 @@ export interface SourceSaveInput {
 }
 
 /**
- * 一个已配置的 DB 连接（只读）。连接串本身在 `{pkg}.toml` / consul KV 里维护，
- * 控制台只拿名字与脱敏后的目标，避免把账号密码送进浏览器。
+ * 一个已配置的 DB 数据源（完整实体）。
+ *
+ * 连接串明文只在写入口收，读接口一律返回脱敏后的 `target`（host:port/db），
+ * **绝不返回 url** —— 控制台不持有、也拿不到能还原连接串的字段。
+ *
+ * 字段命名有两处历史差异，别"顺手统一"：
+ * - `maxConnections` / `version` 沿用早期 camelCase，任务/来源实体却是 snake_case；
+ * - 审计四列走 `Audit`（snake_case），与 `SyncTask` / `SyncSource` 对齐。
+ * `id` 是 U64 雪花 ID，前端一律当字符串，不能转 number（会丢精度）。
  */
-export interface DatasourceInfo {
+export interface DatasourceInfo extends Audit {
+  id: string;
+  code: string;
   name: string;
+  /** 脱敏后的目标；连接串解析不出来时为 null */
   target?: string | null;
   maxConnections: number;
+  enabled: boolean;
+  version: number;
+  remark?: string | null;
+}
+
+/**
+ * 保存数据源的入参（对应后端 `SynDatasourceSaveDto`，本身就是 camelCase）。
+ * `url` 含账号密码：新增必填；编辑留空 / 不传表示「不修改连接串」，
+ * 适配层会把它从 body 里省掉。其余字段没有"留空即不改"的语义。
+ */
+export interface DatasourceSaveInput {
+  code: string;
+  name: string;
+  url?: string;
+  maxConnections: number;
+  enabled: boolean;
+  remark?: string;
+}
+
+/** `GET /syn/datasource/page` 的查询参数（后端 `SynDatasourceQueryDto`，camelCase） */
+export interface DatasourceQuery {
+  keyword?: string;
+  enabled?: boolean;
+  pageNum?: number;
+  pageSize?: number;
+}
+
+/** `GET /syn/registry/services` 的服务名候选项 */
+export interface ServiceOption {
+  name: string;
+  /** 健康实例数；注册中心没给就不显示数字 */
+  healthy?: number;
 }
 
 export interface SyncSource extends Audit {

@@ -114,7 +114,8 @@ done
 [ "$ready" = 1 ] || fail "syn-svr 30s 内没起来"
 
 tables=$(q syn_it "select count(*) from pg_tables where schemaname='public' and tablename like 'syn_%'")
-assert_eq "migration 建表数" 5 "$tables"
+# syn_task / syn_task_version / syn_source / syn_cursor / syn_idem / syn_datasource
+assert_eq "migration 建表数" 6 "$tables"
 
 # ---- 配置 -----------------------------------------------------------------
 say "创建任务与数据源"
@@ -191,6 +192,40 @@ assert_eq "overview total" 2 "$(printf '%s' "$overview" | jq -r '.extra.total')"
 # 桶必须覆盖当前小时：曲线里所有 success 之和要等于合计，不能把刚发生的记账漏掉
 assert_eq "小时桶 success 之和" 2 "$(printf '%s' "$overview" | jq -r '[.extra.series[].success] | add')"
 assert_eq "reload 生效任务数" 1 "$(curl -fsS -X POST "$API/syn/task/reload" | jq -r '.extra')"
+
+# ---- 数据源 CRUD 与「连接串只写不回显」 -------------------------------------
+# 两个安全契约必须在真库上锁死：读接口绝不出现 url 明文；改其它字段时留空连接串
+# 必须保持库里原值。这两条错了都不会报错，只会「悄悄把密码写没」或「把密码漏出去」。
+say "数据源 CRUD：连接串只写不回显"
+assert_eq "初始数据源清单为空（清单读表，不读配置）" 0 \
+  "$(curl -fsS "$API/syn/datasource/list" | jq -r '.extra | length')"
+ds_resp=$(curl -fsS -X POST "$API/syn/datasource" -H 'Content-Type: application/json' \
+  -H 'X-User-Id: 1' --data '{"code":"it_ds","name":"联调数据源","url":"postgresql://syn:secret@10.1.2.3:5432/it_ds?sslmode=disable","maxConnections":4,"enabled":true,"remark":"e2e"}')
+assert_eq "新建后 target 已脱敏" "10.1.2.3:5432/it_ds" "$(printf '%s' "$ds_resp" | jq -r '.extra.target')"
+assert_eq "新建响应不含 url 明文" "true" \
+  "$(printf '%s' "$ds_resp" | jq -r 'if (.extra | has("url")) then "false" else "true" end')"
+assert_eq "新建响应不含密码" "true" \
+  "$(printf '%s' "$ds_resp" | jq -r 'if (tostring | test("secret")) then "false" else "true" end')"
+ds_id=$(printf '%s' "$ds_resp" | jq -r '.extra.id')
+assert_eq "清单里有这条" 1 \
+  "$(curl -fsS "$API/syn/datasource/list" | jq -r '[.extra[] | select(.code=="it_ds")] | length')"
+
+# 修改时不带 url：其余字段生效，连接串保持不变
+upd_resp=$(curl -fsS -X PUT "$API/syn/datasource/$ds_id" -H 'Content-Type: application/json' \
+  -H 'X-User-Id: 1' --data '{"code":"it_ds","name":"联调数据源改","url":"","maxConnections":8,"enabled":true,"remark":"e2e-2"}')
+assert_eq "改名生效" "联调数据源改" "$(printf '%s' "$upd_resp" | jq -r '.extra.name')"
+assert_eq "连接池上限生效" 8 "$(printf '%s' "$upd_resp" | jq -r '.extra.maxConnections')"
+assert_eq "留空 url 不改连接串" "10.1.2.3:5432/it_ds" "$(printf '%s' "$upd_resp" | jq -r '.extra.target')"
+
+assert_eq "停用生效" "false" \
+  "$(curl -fsS -X PUT "$API/syn/datasource/$ds_id/enabled" -H 'Content-Type: application/json' \
+     -H 'X-User-Id: 1' --data '{"enabled":false}' | jq -r '.extra.enabled')"
+curl -fsS -X DELETE "$API/syn/datasource/$ds_id" -H 'X-User-Id: 1' >/dev/null
+assert_eq "删除后清单为空" 0 "$(curl -fsS "$API/syn/datasource/list" | jq -r '.extra | length')"
+
+# 注册中心候选：联调没有注册中心，必须降级成空数组而不是 5xx
+assert_eq "服务名候选降级为空数组" "200" \
+  "$(curl -sS -o /dev/null -w '%{http_code}' "$API/syn/registry/services")"
 
 # ---- 服务发现负向路径 ------------------------------------------------------
 # 联调配置里没有注册中心。http 任务必须显式 fatal：解析不到实例是部署问题，

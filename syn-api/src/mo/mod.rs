@@ -10,6 +10,7 @@
 pub mod prelude;
 
 pub mod syn_cursor;
+pub mod syn_datasource;
 pub mod syn_idem;
 pub mod syn_source;
 pub mod syn_task;

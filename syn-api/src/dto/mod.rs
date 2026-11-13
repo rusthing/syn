@@ -15,12 +15,16 @@
 //!
 //! `@len` / `@range` 来自列注释，用 `validator` 落在字段上，svc 调 `dto.validate()`。
 
+mod syn_datasource_dto;
 mod syn_delivery_dto;
 mod syn_idem_dto;
 mod syn_overview_dto;
 mod syn_source_dto;
 mod syn_task_dto;
 
+pub use syn_datasource_dto::{
+    SynDatasourceEnabledDto, SynDatasourceQueryDto, SynDatasourceSaveDto,
+};
 pub use syn_delivery_dto::SynDeliveryQueryDto;
 pub use syn_idem_dto::SynIdemQueryDto;
 pub use syn_overview_dto::SynOverviewQueryDto;

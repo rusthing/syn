@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
+  Database,
   Fingerprint,
   FlaskConical,
   LayoutDashboard,
@@ -25,6 +26,7 @@ export const NAV = [
   { to: "/", label: "同步总览", icon: LayoutDashboard, end: true },
   { to: "/tasks", label: "同步任务", icon: Workflow },
   { to: "/sources", label: "取数来源", icon: Radio },
+  { to: "/datasources", label: "数据源", icon: Database },
   { to: "/playground", label: "试跑", icon: FlaskConical },
   { to: "/deliveries", label: "投递记录", icon: ScrollText },
   { to: "/idem", label: "幂等台账", icon: Fingerprint },

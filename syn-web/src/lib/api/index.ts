@@ -13,6 +13,7 @@ import {
   liveDeliveries,
   liveIdem,
   liveOverview,
+  liveRegistry,
   liveSources,
   liveTasks,
 } from "./live";
@@ -20,6 +21,7 @@ import {
   mockDatasources,
   mockDeliveries,
   mockIdem,
+  mockRegistry,
   mockSources,
   mockTasks,
   mockTopics,
@@ -28,11 +30,14 @@ import {
 } from "./mock";
 import type {
   DatasourceInfo,
+  DatasourceQuery,
+  DatasourceSaveInput,
   Delivery,
   IdemRecord,
   Overview,
   Page,
   PullResult,
+  ServiceOption,
   SourceSaveInput,
   SyncReply,
   SyncSource,
@@ -121,10 +126,31 @@ export const sources = {
     isMock() ? mockSources.toggle(id, enabled) : liveSources.toggle(id, enabled),
 };
 
-/** 数据源连接清单。演示模式下也给出同样的名字，编辑器两边表现一致 */
+/**
+ * 数据源连接的读写门面。演示模式下给出同样形状的实体，编辑器两边表现一致。
+ * `url` 明文只在 create / update 的入参里出现，读回来一律是脱敏 VO。
+ */
 export const datasources = {
   list: (): Promise<DatasourceInfo[]> =>
     isMock() ? mockDatasources.list() : liveDatasources.list(),
+  page: (query: DatasourceQuery = {}): Promise<Page<DatasourceInfo>> =>
+    isMock() ? mockDatasources.page(query) : liveDatasources.page(query),
+  get: (id: string): Promise<DatasourceInfo> =>
+    isMock() ? mockDatasources.get(id) : liveDatasources.get(id),
+  create: (input: DatasourceSaveInput): Promise<DatasourceInfo> =>
+    isMock() ? mockDatasources.create(input) : liveDatasources.create(input),
+  update: (id: string, input: DatasourceSaveInput): Promise<DatasourceInfo> =>
+    isMock() ? mockDatasources.update(id, input) : liveDatasources.update(id, input),
+  setEnabled: (id: string, enabled: boolean): Promise<DatasourceInfo> =>
+    isMock() ? mockDatasources.setEnabled(id, enabled) : liveDatasources.setEnabled(id, enabled),
+  remove: (id: string): Promise<null> =>
+    isMock() ? mockDatasources.remove(id) : liveDatasources.remove(id),
+};
+
+/** 注册中心服务名候选。实时模式接口未落地 / 不可达时由 `useServices` 兜成空数组 */
+export const registry = {
+  services: (): Promise<ServiceOption[]> =>
+    isMock() ? mockRegistry.services() : liveRegistry.services(),
 };
 
 export interface DeliveryQuery {

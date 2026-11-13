@@ -1,3 +1,13 @@
+-- #
+-- # syn 未上线：本文件可直接改，不做增量迁移
+-- #
+-- # 为什么可以：还没往生产发过，没有「已应用但结构不同」的历史库。改建表脚本后
+-- # 跑过的库必须重建（删库或删表重跑），否则 sqlx 会因校验和变化在启动时报错。
+-- # 一旦第一次正式上生产，从那时起任何表结构变更都必须新增迁移文件、不得再改本文件。
+-- #
+-- # 本文件是 model/create-table-pgsql.sql 的拷贝，只多这一段头部说明。
+-- #
+
 /*==============================================================*/
 /* DBMS name:      PostgreSQL 9.x                               */
 /* Created on:     2026/11/12 18:56:52                          */
@@ -421,6 +431,91 @@ comment on column syn_cursor.update_ms is
 /* Index: syn_cursor_PK                                         */
 /*==============================================================*/
 create unique index syn_cursor_PK on syn_cursor (
+id
+);
+
+
+
+/*==============================================================*/
+/* Table: syn_datasource                                        */
+/*==============================================================*/
+create table syn_datasource (
+   id                   INT8                 not null,
+   code                 VARCHAR(64)          not null,
+   name                 VARCHAR(100)         not null,
+   url                  VARCHAR(500)         not null,
+   max_connections      INT4                 not null default 4,
+   enabled              BOOL                 not null default true,
+   remark               VARCHAR(500)         null,
+   version              INT4                 not null default 1,
+   creater_id           INT8                 not null,
+   create_ms            INT8                 not null,
+   updater_id           INT8                 not null,
+   update_ms            INT8                 not null,
+   constraint PK_SYN_DATASOURCE primary key (id),
+   constraint AK_CODE_SYN_DATASOURCE unique (code)
+);
+
+comment on table syn_datasource is
+'DB 数据源（连接配置）：连接串在本表维护，明文只写不回显；任务与来源按 code 引用。改动后由刷新信号失效各副本连接池。';
+
+comment on column syn_datasource.id is
+'ID
+由 idworker 生成，全局唯一';
+
+comment on column syn_datasource.code is
+'数据源编码
+对应 target.datasource 与 source.spec.datasource 要填的值
+@len 1..=64';
+
+comment on column syn_datasource.name is
+'名称
+@len 1..=100';
+
+comment on column syn_datasource.url is
+'连接串
+含账号密码；明文只写不回显，列表与详情一律脱敏，编辑时留空表示不修改
+@len 1..=500';
+
+comment on column syn_datasource.max_connections is
+'连接池上限
+@range 1..=100';
+
+comment on column syn_datasource.enabled is
+'是否启用
+停用后引用它的任务会解析不到数据源
+@check is_enabled';
+
+comment on column syn_datasource.remark is
+'备注
+@len 0..=500';
+
+comment on column syn_datasource.version is
+'配置版本号
+@range 1..=2147483647';
+
+comment on column syn_datasource.creater_id is
+'创建者ID
+由框架在新增时写入当前操作者；无登录态的系统写入写 0';
+
+comment on column syn_datasource.create_ms is
+'创建时间戳
+由框架在新增时写入当前时间
+@unit ms';
+
+comment on column syn_datasource.updater_id is
+'更新者ID
+由框架在修改时写入当前操作者；无登录态的系统写入写 0';
+
+comment on column syn_datasource.update_ms is
+'更新时间戳
+由框架在修改时写入当前时间
+@unit ms';
+
+/*==============================================================*/
+/* Index: syn_datasource_PK                                     */
+/*==============================================================*/
+create unique index syn_datasource_PK on syn_datasource (
 id
 );
 

@@ -8,6 +8,7 @@ mod syn_datasource_api_doc;
 mod syn_delivery_api_doc;
 mod syn_idem_api_doc;
 mod syn_overview_api_doc;
+mod syn_service_api_doc;
 mod syn_source_api_doc;
 mod syn_task_api_doc;
 
@@ -15,5 +16,6 @@ pub use syn_datasource_api_doc::*;
 pub use syn_delivery_api_doc::*;
 pub use syn_idem_api_doc::*;
 pub use syn_overview_api_doc::*;
+pub use syn_service_api_doc::*;
 pub use syn_source_api_doc::*;
 pub use syn_task_api_doc::*;

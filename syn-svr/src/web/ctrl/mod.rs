@@ -9,6 +9,7 @@ pub mod syn_datasource_ctrl;
 pub mod syn_delivery_ctrl;
 pub mod syn_idem_ctrl;
 pub mod syn_overview_ctrl;
+pub mod syn_service_ctrl;
 pub mod syn_source_ctrl;
 pub mod syn_sync_ctrl;
 pub mod syn_task_ctrl;

@@ -218,7 +218,7 @@ export function SourceEditorDrawer({
             hint={
               <>
                 连接串在 <code className="font-mono">[syn.datasources.*]</code>（toml / consul）维护，
-                这里只选名字；{dsLoading ? "正在读取…" : `当前有 ${names.length} 个可选`}
+                这里按 code 选；{dsLoading ? "正在读取…" : `当前有 ${names.length} 个可选`}
               </>
             }
           >
@@ -230,15 +230,15 @@ export function SourceEditorDrawer({
               >
                 <option value="">请选择…</option>
                 {names.map((d) => (
-                  <option key={d.name} value={d.name}>
-                    {d.name}{d.target ? ` — ${d.target}` : ""}
+                  <option key={d.id ?? d.code} value={d.code}>
+                    {d.code}{d.target ? ` · ${d.target}` : ""}
                   </option>
                 ))}
               </Select>
             ) : (
               <Input
                 value={spec.datasource ?? ""}
-                placeholder="还没读到可用连接，可先手填名字"
+                placeholder="还没读到可用连接，可先手填 code"
                 className="font-mono text-[12.5px]"
                 onChange={(e) => patchSpec({ datasource: e.target.value })}
               />

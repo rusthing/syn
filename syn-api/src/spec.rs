@@ -123,7 +123,8 @@ pub struct Target {
     /// 路径前缀，必须以 `/` 开头（`kind = http` 必填）
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub base: String,
-    /// 数据源名，取 `[syn.datasources.<name>]`（`kind = db` 必填）
+    /// 数据源名，对应 `syn_datasource` 表的 `code`（`kind = db` 必填；
+    /// 表里没有时回退 `[syn.datasources.<name>]`，见 `db_sink` 的模块文档）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub datasource: Option<String>,
     /// 目标表，`schema.table` 或 `table`（`kind = db` 必填）
@@ -624,7 +625,7 @@ impl TaskSpec {
                     issues.push(SpecIssue::new(
                         "target.datasource",
                         SpecIssueKind::Missing,
-                        "db 目标必须写数据源名（对应 [syn.datasources.<name>]）",
+                        "db 目标必须写数据源名（对应控制台里的数据源编码）",
                     ));
                 }
                 match self.target.table.as_deref() {
