@@ -11,8 +11,8 @@
  * 消费者集合 = 匹配它的任务；两边都为空的 topic 不存在，不会被画出来。
  *
  * 方向就是数据流：数据源 → 取数来源 → 主题 → 任务。投递不画成节点 ——
- * 它是任务六段的最后一段，画到卡里（见 `TaskCard`），否则多个任务投同一个服务时
- * 会连出一堆交叉线，还把「投递目标」误当成共享实体。
+ * 它是任务的第五段（第六段判定看的就是投递的响应），画到卡里（见 `TaskCard`），
+ * 否则多个任务投同一个服务时会连出一堆交叉线，还把「投递目标」误当成共享实体。
  */
 
 import type {
@@ -93,8 +93,10 @@ const STAGE_LABEL: Array<{ stage: TaskStage; label: string }> = [
   { stage: "mapping", label: "2 映射" },
   { stage: "guards", label: "3 校验" },
   { stage: "actions", label: "4 动作" },
-  { stage: "outcomes", label: "5 判定" },
-  { stage: "target", label: "6 投递" },
+  // 投递在判定之前：判定段看的就是投递的响应（http 的回复 / db 的 {affected:n}），
+  // 先有投递才有结论，顺序不能反过来
+  { stage: "target", label: "5 投递" },
+  { stage: "outcomes", label: "6 判定" },
 ];
 
 /** 投递段概要：http 看服务 + 路径，db 看数据源 + 表 */

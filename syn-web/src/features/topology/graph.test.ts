@@ -216,19 +216,19 @@ describe("buildGraph", () => {
 });
 
 describe("taskSegments", () => {
-  it("六段的顺序与概要固定", () => {
+  it("六段的顺序与概要固定，投递在判定之前", () => {
     const segments = taskSegments(specOf("dtw.region"));
     expect(segments.map((s) => s.stage)).toEqual([
       "match",
       "mapping",
       "guards",
       "actions",
-      "outcomes",
       "target",
+      "outcomes",
     ]);
     expect(segments[0].detail).toBe("1 条断言");
     expect(segments[1].detail).toBe("1 个字段");
-    expect(segments[5].detail).toBe("dtw-rs-svr");
+    expect(segments[4].detail).toBe("dtw-rs-svr");
     expect(segments.every((s) => s.issues === 0)).toBe(true);
   });
 
@@ -243,7 +243,7 @@ describe("taskSegments", () => {
     const spec = specOf("dtw.region", {
       target: { kind: "db", service: "", base: "", datasource: "iot", table: "region", key: ["id"] },
     });
-    expect(taskSegments(spec)[5].detail).toBe("iot · region");
+    expect(taskSegments(spec)[4].detail).toBe("iot · region");
   });
 });
 

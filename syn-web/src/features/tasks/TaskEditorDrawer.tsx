@@ -39,8 +39,9 @@ const TABS: Array<{ key: Tab; label: string; stage: string }> = [
   { key: "mapping", label: "映射", stage: "2" },
   { key: "guards", label: "校验", stage: "3" },
   { key: "actions", label: "动作", stage: "4" },
-  { key: "outcomes", label: "判定", stage: "5" },
-  { key: "target", label: "投递", stage: "6" },
+  // 投递在判定之前：判定段看的就是投递的响应，先有投递才有结论
+  { key: "target", label: "投递", stage: "5" },
+  { key: "outcomes", label: "判定", stage: "6" },
   { key: "json", label: "JSON", stage: "—" },
 ];
 
@@ -155,7 +156,7 @@ export function TaskEditorDrawer({
       onClose={onClose}
       width={880}
       title={task ? `编辑 ${task.code}` : "新建同步任务"}
-      subtitle={task ? `v${task.version} · ${task.topic}` : "五段规则一次配完，保存后需重载快照"}
+      subtitle={task ? `v${task.version} · ${task.topic}` : "六段流水线一次配完，保存后需重载快照"}
       badge={
         issues.length > 0 ? (
           <Badge tone="danger" dot>
@@ -389,7 +390,7 @@ export function TaskEditorDrawer({
         <div className="space-y-3">
           <SectionIntro
             title="判定"
-            body="响应 → 结论。有序、首命中即停；分类码会进死信，也是判断「能否改报文重投」的依据。"
+            body="投递的响应 → 结论（第 6 步）。有序、首命中即停；分类码会进死信，也是判断「能否改报文重投」的依据。"
           />
           <OutcomeEditor
             outcomes={spec.outcomes ?? []}
@@ -403,13 +404,13 @@ export function TaskEditorDrawer({
       {tab === "target" && (
         <div className="space-y-3">
           <SectionIntro
-            title="投递（第 6 步）"
-            body="前五段完全共用，这里只决定最后一步往哪儿写。候选清单只是辅助输入：服务可能还没注册、数据源也可能先配好，所以两处都保留手输。"
+            title="投递（第 5 步）"
+            body="前四段决定发什么，这里决定往哪儿投；投完由判定段（第 6 步）看响应定结论。候选清单只是辅助输入：服务可能还没注册、数据源也可能先配好，所以两处都保留手输。"
           />
 
           <div className="space-y-3 rounded-lg border border-line bg-sunken/30 p-3">
             <div className="grid grid-cols-2 gap-3">
-              <Field label="投递方式" hint="前五段完全共用，只是最后一步出口不同">
+              <Field label="投递方式" hint="前四段完全共用，只是出口配置不同">
                 <Select
                   className="w-full font-mono text-[12.5px]"
                   value={spec.target.kind ?? "http"}
