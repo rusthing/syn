@@ -11,7 +11,10 @@
  * - 点卡片选中，点空白取消选中；任务卡的启用/独占开关直接在卡上切换。
  *
  * 拖拽用 window 上的 pointermove/up，而不是卡片的 onPointerMove：指针一旦移出
- * 卡片（画布上很常见），卡片收不到事件，拖拽会「粘住」。
+ * 卡片（画布上很常见），卡片收不到事件，拖拽会「粘住」。开关带 `data-no-drag`，
+ * pointerdown 落在上面直接跳过拖拽 —— 否则缩到 45% 时轻微手抖就会把 click 吞掉，
+ * 变成「拖了一下卡片」，看起来像开关点不动。开关的悬停说明也画在这一层：卡内
+ * 的一切都跟着 `scale()` 缩，气泡放在缩放容器外才有正常字号。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -19,7 +22,14 @@ import { Maximize2, Minus, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CanvasNodePos } from "@/lib/api/types";
 import { nodeId, type GraphNode, type TaskStage, type TopologyGraph } from "./graph";
-import { EntityCard, TaskCard, TopicCard, cardSize } from "./TopologyCards";
+import {
+  EntityCard,
+  NO_DRAG_ATTR,
+  TaskCard,
+  TopicCard,
+  cardSize,
+  type HintHandler,
+} from "./TopologyCards";
 
 const MIN_SCALE = 0.3;
 const MAX_SCALE = 2;
@@ -32,6 +42,19 @@ interface View {
   y: number;
   scale: number;
 }
+
+/** 悬停说明：坐标是相对画布的 CSS 像素，气泡画在缩放容器之外，字号不会被 scale 缩掉 */
+interface Hint {
+  x: number;
+  y: number;
+  text: string;
+  /** 太靠顶就翻到指针下方，免得气泡被画布上沿裁掉 */
+  below: boolean;
+}
+
+/** 卡片上的开关：pointerdown 落在这里一律不启动拖拽/平移，否则轻微手抖就会吞掉 click */
+const isControl = (target: EventTarget | null): boolean =>
+  target instanceof Element && !!target.closest(`[${NO_DRAG_ATTR}]`);
 
 interface Props {
   graph: TopologyGraph;
@@ -77,6 +100,39 @@ export function TopologyCanvas({
   } | null>(null);
   const panRef = useRef<{ px: number; py: number; vx: number; vy: number } | null>(null);
   const fittedRef = useRef(false);
+  const [hint, setHint] = useState<Hint | null>(null);
+
+  /** 开关的悬停说明。只在 enter/focus 时算一次位置，不跟着 mousemove 每帧重渲染画布 */
+  const showHint = useCallback<HintHandler>((event, text) => {
+    const box = boxRef.current;
+    if (!event || !text || !box) {
+      setHint(null);
+      return;
+    }
+    const rect = box.getBoundingClientRect();
+    let cx: number;
+    let cy: number;
+    if ("clientX" in event) {
+      cx = event.clientX;
+      cy = event.clientY;
+    } else {
+      const r = (event.currentTarget as Element).getBoundingClientRect();
+      cx = r.left + r.width / 2;
+      cy = r.top + r.height / 2;
+    }
+    const half = Math.min(148, rect.width / 2 - 8);
+    setHint({
+      x: Math.max(half, Math.min(rect.width - half, cx - rect.left)),
+      y: cy - rect.top,
+      text,
+      below: cy - rect.top < 110,
+    });
+  }, []);
+
+  // 请求开始后按钮会置灰，mouseleave 不一定还收得到，主动收掉残留气泡
+  useEffect(() => {
+    if (busyTaskId) setHint(null);
+  }, [busyTaskId]);
 
   const rectOf = useCallback(
     (node: GraphNode) => {
@@ -166,6 +222,12 @@ export function TopologyCanvas({
 
   const startNodeDrag = (node: GraphNode) => (e: React.PointerEvent) => {
     if (e.button !== 0) return;
+    // 开关：不进拖拽。否则手一抖就变成「拖卡片」，click 被吞、还顺手写了一次坐标
+    if (isControl(e.target)) {
+      e.stopPropagation();
+      setHint(null);
+      return;
+    }
     e.stopPropagation();
     const pos = positions[node.id] ?? { x: 0, y: 0 };
     const rect = boxRef.current?.getBoundingClientRect();
@@ -220,7 +282,7 @@ export function TopologyCanvas({
   }, [drag, view.x, view.y, view.scale, onMove, onSelect, selectedId]);
 
   const startPan = (e: React.PointerEvent) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || isControl(e.target)) return;
     panRef.current = { px: e.clientX, py: e.clientY, vx: view.x, vy: view.y };
     onSelect(null);
   };
@@ -365,7 +427,9 @@ export function TopologyCanvas({
               style: { left: pos.x, top: pos.y, width: size.w, height: size.h },
               className: cn("absolute", dragging ? "z-20 cursor-grabbing" : "z-10 cursor-grab"),
               onPointerDown: startNodeDrag(node),
-              onDoubleClick: () => {
+              onDoubleClick: (e: React.MouseEvent) => {
+                // 双击开关不该顺手把抽屉打开（会盖住刚点的那张卡）
+                if (isControl(e.target)) return;
                 // 双击进抽屉：顺手选中，抽屉关掉后卡片仍是选中的那个（免得两次
                 // 点击的 toggle 把选中态又抵消掉）
                 onSelect(node.id);
@@ -389,6 +453,7 @@ export function TopologyCanvas({
                     onOpenStage={(stage) => onOpenStage(node, stage)}
                     onToggleEnabled={(next) => onToggleTask(node, next)}
                     onToggleExclusive={() => onToggleExclusive(node)}
+                    onHint={showHint}
                     busy={busyTaskId === node.id}
                   />
                 </div>
@@ -409,6 +474,20 @@ export function TopologyCanvas({
               先到「数据源」登记连接、到「取数来源」登记拉取规则、或到「同步任务」新建任务，
               拓扑会自动长出来。
             </p>
+          </div>
+        )}
+
+        {hint && (
+          <div
+            role="tooltip"
+            className="pointer-events-none absolute z-30 w-[296px] rounded-lg border border-line bg-surface px-2.5 py-2 text-[11.5px] leading-relaxed text-ink-soft shadow-float"
+            style={{
+              left: hint.x,
+              top: hint.below ? hint.y + 14 : hint.y - 14,
+              transform: hint.below ? "translate(-50%, 0)" : "translate(-50%, -100%)",
+            }}
+          >
+            {hint.text}
           </div>
         )}
 

@@ -13,6 +13,10 @@
  * - **启用**：右上角的标准 Switch，点了直接调 toggle 接口；
  * - **独占**：主题连线落到卡片的位置（顶边中点）做成一个圆形图标按钮 ——
  *   独占时数据到此为止（箭头落地），非独占时数据会继续流给下一个任务（分叉）。
+ *
+ * 两者的悬停说明由画布层统一渲染：卡片整个处在 `scale()` 容器里，气泡画在卡内会
+ * 跟着缩到看不清；原生 title 又要等一秒才弹，缩到 45% 时图标只有十来像素，
+ * 用户很难确认自己指着什么。见 `TopologyCanvas` 的 `hint`。
  */
 
 import {
@@ -28,6 +32,18 @@ import { cn } from "@/lib/utils";
 import type { CanvasNodeKind } from "@/lib/api/types";
 import type { GraphNode, NodeTone, TaskSegment, TaskStage } from "./graph";
 import { Switch } from "@/components/ui/Switch";
+
+/**
+ * 悬停说明上报。传鼠标事件用来在画布层定位气泡，传 null 表示移出。
+ * 卡片只管「说什么」和「什么时候说」，不管气泡画在哪。
+ */
+export type HintHandler = (
+  event: React.MouseEvent | React.FocusEvent | null,
+  text: string,
+) => void;
+
+/** 画布上的交互控件标记：pointerdown 落在这里就不启动卡片拖拽/画布平移 */
+export const NO_DRAG_ATTR = "data-no-drag";
 
 /** 卡片尺寸：同类同高，操作行才能对齐 */
 export const CARD_SIZE: Record<CanvasNodeKind, { w: number; h: number }> = {
@@ -232,39 +248,52 @@ function SegmentChip({
   );
 }
 
+const EXCLUSIVE_HINT = {
+  on: "独占 · 命中即止：数据匹配到这个任务后就不再往下匹配，后面的任务拿不到这条数据。点击可改为「非独占」。",
+  off: "非独占 · 分叉继续：命中后数据还会继续流给下一个任务，用来把一份数据同步到多个下游。点击可改为「独占」。",
+} as const;
+
 /**
  * 独占开关：钉在主题连线落进卡片的位置（顶边中点）。
  *
  * 图标就是语义：独占 = 命中即止（箭头落地，数据到这张卡为止）；非独占 = 分叉继续
  * （数据还会流给后面的任务）。点击直接改 spec.exclusive 保存，不用进抽屉。
+ *
+ * 图标只有 22px，画布默认还缩到 45%，所以视觉尺寸不变、用 after 伪元素把 hover /
+ * 点击热区扩到约 38px；说明文字交给画布层的气泡，不用会跟着缩放的原生 title。
  */
 function ExclusiveToggle({
   exclusive,
   busy,
   onToggle,
+  onHint,
 }: {
   exclusive: boolean;
   busy?: boolean;
   onToggle: () => void;
+  onHint?: HintHandler;
 }) {
+  const hint = exclusive ? EXCLUSIVE_HINT.on : EXCLUSIVE_HINT.off;
   return (
     <button
       type="button"
+      data-no-drag
       onPointerDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onMouseEnter={(e) => onHint?.(e, hint)}
+      onMouseLeave={() => onHint?.(null, "")}
+      onFocus={(e) => onHint?.(e, hint)}
+      onBlur={() => onHint?.(null, "")}
       onClick={(e) => {
         e.stopPropagation();
         onToggle();
       }}
-      title={
-        exclusive
-          ? "独占：命中后停止匹配，不再看后面的任务（点击关闭）"
-          : "非独占：命中后继续匹配下一个任务 —— 一份数据同步到多个下游的表达方式（点击开启独占）"
-      }
-      aria-label="切换独占"
+      aria-label={hint}
       aria-pressed={exclusive}
       disabled={busy}
       className={cn(
         "absolute -top-[11px] left-1/2 z-10 flex size-[22px] -translate-x-1/2 items-center justify-center rounded-full border shadow-panel transition-colors",
+        "after:absolute after:-inset-2 after:content-['']",
         exclusive
           ? "border-accent/50 bg-accent-soft text-accent-strong"
           : "border-line bg-surface text-muted hover:border-line-strong hover:text-ink",
@@ -283,6 +312,7 @@ export function TaskCard({
   onOpenStage,
   onToggleEnabled,
   onToggleExclusive,
+  onHint,
   busy,
 }: {
   node: GraphNode;
@@ -292,16 +322,25 @@ export function TaskCard({
   /** 启用开关直接走 toggle 接口；抽屉里不再有这一项 */
   onToggleEnabled: (next: boolean) => void;
   onToggleExclusive: () => void;
+  onHint?: HintHandler;
   busy?: boolean;
 }) {
   const task = node.task;
   const segments = node.segments ?? [];
   const stats = task?.stats;
   const exclusive = task?.spec.exclusive !== false;
+  const enabledHint = task?.enabled
+    ? "当前启用：点击停用这个任务。停用后事件会落到下一个任务或直接进死信；改完要点顶栏「重载快照」，执行器才按新状态跑。"
+    : "当前停用：点击启用这个任务。启用后同样要点顶栏「重载快照」，执行器才会加载新状态。";
 
   return (
     <CardShell node={node} selected={selected} onPointerDown={onPointerDown}>
-      <ExclusiveToggle exclusive={exclusive} busy={busy} onToggle={onToggleExclusive} />
+      <ExclusiveToggle
+        exclusive={exclusive}
+        busy={busy}
+        onToggle={onToggleExclusive}
+        onHint={onHint}
+      />
 
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1 text-[11px] font-medium text-accent">
@@ -310,7 +349,13 @@ export function TaskCard({
         </span>
         <div
           className="flex items-center gap-1.5"
+          data-no-drag
           onPointerDown={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onMouseEnter={(e) => onHint?.(e, enabledHint)}
+          onMouseLeave={() => onHint?.(null, "")}
+          onFocus={(e) => onHint?.(e, enabledHint)}
+          onBlur={() => onHint?.(null, "")}
           onClick={(e) => e.stopPropagation()}
         >
           {node.issues.length > 0 && (
