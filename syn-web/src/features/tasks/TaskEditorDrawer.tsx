@@ -4,6 +4,7 @@ import { CircleCheck, CircleX, FlaskConical, TriangleAlert } from "lucide-react"
 import { Button } from "@/components/ui/Button";
 import { Drawer } from "@/components/ui/Drawer";
 import { Field, Input, Select, Textarea } from "@/components/ui/Field";
+import { SuggestInput } from "@/components/ui/SuggestInput";
 import { Switch } from "@/components/ui/Switch";
 import { Badge } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
@@ -392,27 +393,6 @@ export function TaskEditorDrawer({
             body="前五段完全共用，这里只决定最后一步往哪儿写。候选清单只是辅助输入：服务可能还没注册、数据源也可能先配好，所以两处都保留手输。"
           />
 
-          <datalist id="syn-datasource-options">
-            {datasourceOptions.map((d) => (
-              <option key={d.id ?? d.code} value={d.code}>
-                {d.code} · {d.name}
-              </option>
-            ))}
-          </datalist>
-          {/*
-            下拉里显示的是 option 的文本，不是 value：这里必须把**服务名**本身写进
-            文本，否则每条都退化成同一句说明，31 条候选看上去像一条。
-            后端只回 name（健康实例数要逐个服务查，代价不值得），所以健康数只在
-            确实给了的时候做后缀。
-          */}
-          <datalist id="syn-service-options">
-            {serviceOptions.map((s) => (
-              <option key={s.name} value={s.name}>
-                {s.healthy ? `${s.name} · ${s.healthy} 个健康实例` : s.name}
-              </option>
-            ))}
-          </datalist>
-
           <div className="space-y-3 rounded-lg border border-line bg-sunken/30 p-3">
             <div className="grid grid-cols-2 gap-3">
               <Field label="投递方式" hint="前五段完全共用，只是最后一步出口不同">
@@ -443,15 +423,13 @@ export function TaskEditorDrawer({
                     hint="从数据源清单里选，或手输 code；连接串在数据源页维护"
                     error={byPath.get("target.datasource")?.[0]?.message}
                   >
-                    <Input
-                      list="syn-datasource-options"
+                    <SuggestInput
                       value={spec.target.datasource ?? ""}
-                      spellCheck={false}
-                      className="h-9 font-mono text-[12.5px]"
                       placeholder={datasourceOptions[0]?.code ?? "dtw"}
-                      onChange={(e) =>
-                        patch({ target: { ...spec.target, datasource: e.target.value } })
-                      }
+                      options={datasourceOptions.map((d) => ({ value: d.code, hint: d.name }))}
+                      countText={(n) => `共 ${n} 个数据源，点一条即填入；也可手输 code`}
+                      emptyText="还没有维护数据源。到「数据源」页登记后这里会自动出现，也可以直接手输 code。"
+                      onChange={(v) => patch({ target: { ...spec.target, datasource: v } })}
                     />
                   </Field>
                   <Field
@@ -521,13 +499,16 @@ export function TaskEditorDrawer({
                   hint="可从注册中心已登记的服务里选，也可直接手输服务名"
                   error={byPath.get("target.service")?.[0]?.message}
                 >
-                  <Input
-                    list="syn-service-options"
+                  <SuggestInput
                     value={spec.target.service ?? ""}
-                    spellCheck={false}
-                    className="h-9 font-mono text-[12.5px]"
                     placeholder={serviceOptions[0]?.name ?? "dtw-rs-svr"}
-                    onChange={(e) => patch({ target: { ...spec.target, service: e.target.value } })}
+                    options={serviceOptions.map((s) => ({
+                      value: s.name,
+                      hint: s.healthy ? `${s.healthy} 个健康实例` : undefined,
+                    }))}
+                    countText={(n) => `共 ${n} 个候选，点一条即填入；也可手输未登记的服务名`}
+                    emptyText="没拉到注册中心的服务清单（未配置或暂时不可达）。直接手输服务名即可，配置不依赖「编辑时注册中心里有什么」。"
+                    onChange={(v) => patch({ target: { ...spec.target, service: v } })}
                   />
                 </Field>
                 <Field
@@ -547,19 +528,8 @@ export function TaskEditorDrawer({
             )}
           </div>
 
-          {spec.target.kind === "http" && serviceOptions.length === 0 && (
-            <p className="text-[11px] leading-relaxed text-muted">
-              当前没有拉到注册中心的服务清单（可能是注册中心未配置或暂时不可达）。直接手输服务名即可，
-              配置不依赖「编辑时注册中心里有什么」。
-            </p>
-          )}
-
-          {spec.target.kind === "http" && serviceOptions.length > 0 && (
-            <p className="text-[11px] leading-relaxed text-muted">
-              候选来自注册中心，共 {serviceOptions.length} 个（只有向注册中心登记过的服务才会出现；
-              未登记的照旧手输）。点输入框或输入片段即可筛选。
-            </p>
-          )}
+          {/* 候选为空/有候选的说明都由 SuggestInput 自己给出：空时一行提示，
+              有候选时写在下拉面板底部，避免页面上再重复一段同样的字。 */}
         </div>
       )}
 
