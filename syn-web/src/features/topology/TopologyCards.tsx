@@ -5,36 +5,40 @@
  * 颜色只区分「哪一类节点」，状态只用标签和左侧色条表达 —— 一屏几十张卡时，
  * 颜色一多就分不清哪个是错误色、哪个是类型色。
  *
- * 任务卡有两态：
- * - 收起（300×88）：一眼能扫完整张图的密度，只有一行六段摘要；
- * - 展开（600×140）：选中后就地展开，六段并排、每段可点，点哪段进抽屉的哪个页签。
- *   展开只影响这一张卡，其余节点位置不变（`TopologyCanvas` 负责把邻居让开）。
+ * 任务卡只有一种形态（600×140）：六段并排、每段可点，点哪段进抽屉的哪个页签。
+ * 收起/展开切换存在过，但六段摘要收成一行小格子后基本读不出内容，两态还带来
+ * 选中让位、邻居下移这些复杂度，不如恒展开。
+ *
+ * 两个开关不在编辑抽屉里，就在卡上：
+ * - **启用**：右上角的标准 Switch，点了直接调 toggle 接口；
+ * - **独占**：主题连线落到卡片的位置（顶边中点）做成一个圆形图标按钮 ——
+ *   独占时数据到此为止（箭头落地），非独占时数据会继续流给下一个任务（分叉）。
  */
 
 import {
+  ArrowDownToLine,
   Database,
   Layers,
   Radio,
+  Split,
   TriangleAlert,
   Workflow,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CanvasNodeKind } from "@/lib/api/types";
 import type { GraphNode, NodeTone, TaskSegment, TaskStage } from "./graph";
+import { Switch } from "@/components/ui/Switch";
 
 /** 卡片尺寸：同类同高，操作行才能对齐 */
 export const CARD_SIZE: Record<CanvasNodeKind, { w: number; h: number }> = {
   datasource: { w: 260, h: 84 },
   source: { w: 280, h: 84 },
   topic: { w: 220, h: 56 },
-  task: { w: 300, h: 88 },
+  task: { w: 600, h: 140 },
 };
 
-/** 展开态的任务卡：六段并排要这么宽才写得下服务名 */
-export const TASK_EXPANDED = { w: 600, h: 140 };
-
-export function cardSize(kind: CanvasNodeKind, expanded: boolean): { w: number; h: number } {
-  return kind === "task" && expanded ? TASK_EXPANDED : CARD_SIZE[kind];
+export function cardSize(kind: CanvasNodeKind): { w: number; h: number } {
+  return CARD_SIZE[kind];
 }
 
 const KIND_META: Record<CanvasNodeKind, { label: string; icon: typeof Database; accent: string }> = {
@@ -228,67 +232,116 @@ function SegmentChip({
   );
 }
 
+/**
+ * 独占开关：钉在主题连线落进卡片的位置（顶边中点）。
+ *
+ * 图标就是语义：独占 = 命中即止（箭头落地，数据到这张卡为止）；非独占 = 分叉继续
+ * （数据还会流给后面的任务）。点击直接改 spec.exclusive 保存，不用进抽屉。
+ */
+function ExclusiveToggle({
+  exclusive,
+  busy,
+  onToggle,
+}: {
+  exclusive: boolean;
+  busy?: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+      title={
+        exclusive
+          ? "独占：命中后停止匹配，不再看后面的任务（点击关闭）"
+          : "非独占：命中后继续匹配下一个任务 —— 一份数据同步到多个下游的表达方式（点击开启独占）"
+      }
+      aria-label="切换独占"
+      aria-pressed={exclusive}
+      disabled={busy}
+      className={cn(
+        "absolute -top-[11px] left-1/2 z-10 flex size-[22px] -translate-x-1/2 items-center justify-center rounded-full border shadow-panel transition-colors",
+        exclusive
+          ? "border-accent/50 bg-accent-soft text-accent-strong"
+          : "border-line bg-surface text-muted hover:border-line-strong hover:text-ink",
+        busy && "cursor-wait opacity-60",
+      )}
+    >
+      {exclusive ? <ArrowDownToLine className="size-3.5" /> : <Split className="size-3.5" />}
+    </button>
+  );
+}
+
 export function TaskCard({
   node,
   selected,
-  expanded,
   onPointerDown,
   onOpenStage,
-  onToggle,
+  onToggleEnabled,
+  onToggleExclusive,
+  busy,
 }: {
   node: GraphNode;
   selected: boolean;
-  expanded: boolean;
   onPointerDown?: (e: React.PointerEvent) => void;
   onOpenStage: (stage: TaskStage) => void;
-  onToggle: () => void;
+  /** 启用开关直接走 toggle 接口；抽屉里不再有这一项 */
+  onToggleEnabled: (next: boolean) => void;
+  onToggleExclusive: () => void;
+  busy?: boolean;
 }) {
   const task = node.task;
   const segments = node.segments ?? [];
   const stats = task?.stats;
+  const exclusive = task?.spec.exclusive !== false;
 
   return (
     <CardShell node={node} selected={selected} onPointerDown={onPointerDown}>
-      <KindLine kind="task" status={node.status} tone={node.tone} />
+      <ExclusiveToggle exclusive={exclusive} busy={busy} onToggle={onToggleExclusive} />
+
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1 text-[11px] font-medium text-accent">
+          <Workflow className="size-3" />
+          任务
+        </span>
+        <div
+          className="flex items-center gap-1.5"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {node.issues.length > 0 && (
+            <span className="rounded bg-danger-soft px-1.5 py-0.5 text-[10.5px] font-medium text-danger">
+              待修正
+            </span>
+          )}
+          <Switch
+            checked={!!task?.enabled}
+            size="sm"
+            label={task?.enabled ? `停用 ${node.title}` : `启用 ${node.title}`}
+            disabled={busy}
+            onChange={onToggleEnabled}
+          />
+        </div>
+      </div>
+
       <div className="mt-0.5 flex items-center gap-1.5">
         <span className="truncate text-[13px] font-medium text-ink">{node.title}</span>
         <Flags node={node} />
         <span className="ml-auto shrink-0 font-mono text-[10.5px] text-muted">{node.key}</span>
       </div>
 
-      {expanded ? (
-        <div className="mt-1.5 flex items-stretch gap-1">
-          {segments.map((segment, i) => (
-            <div key={segment.stage} className="flex min-w-0 flex-1 items-center gap-1">
-              <SegmentChip segment={segment} onClick={onOpenStage} />
-              {i < segments.length - 1 && <span className="text-[10px] text-line-strong">›</span>}
-            </div>
-          ))}
-        </div>
-      ) : (
-        /* 收起态：六段各占一格，只写段名 —— 挤成一行文本必然被截掉最后几段，
-           而「投递」正是最该一眼看到的那段。详情放 title，展开看全。 */
-        <div className="mt-1 flex items-stretch gap-[3px]">
-          {segments.map((segment) => {
-            const isTarget = segment.stage === "target";
-            return (
-              <span
-                key={segment.stage}
-                title={`${segment.label} · ${segment.detail}${segment.issues ? ` · ${segment.issues} 处待修正` : ""}`}
-                className={cn(
-                  "flex h-[19px] min-w-0 flex-1 items-center justify-center rounded border px-0.5 text-[9.5px] font-medium",
-                  isTarget
-                    ? "border-accent/40 bg-accent-soft/60 text-accent-strong"
-                    : "border-line bg-sunken/70 text-ink-soft",
-                  segment.issues > 0 && "border-danger/50 bg-danger-soft/60 text-danger",
-                )}
-              >
-                <span className="truncate">{segment.label.replace(/^\d+\s*/, "")}</span>
-              </span>
-            );
-          })}
-        </div>
-      )}
+      <div className="mt-1.5 flex items-stretch gap-1">
+        {segments.map((segment, i) => (
+          <div key={segment.stage} className="flex min-w-0 flex-1 items-center gap-1">
+            <SegmentChip segment={segment} onClick={onOpenStage} />
+            {i < segments.length - 1 && <span className="text-[10px] text-line-strong">›</span>}
+          </div>
+        ))}
+      </div>
 
       <div className="mt-auto flex items-center gap-2 text-[10.5px] text-muted">
         <span className="truncate">
@@ -297,17 +350,6 @@ export function TaskCard({
         <span className="ml-auto shrink-0 font-mono">
           {stats && stats.total > 0 ? `今日 ${stats.total.toLocaleString()} 条` : "今日无记录"}
         </span>
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggle();
-          }}
-          className="shrink-0 rounded px-1 text-[10.5px] text-accent hover:bg-accent-soft"
-        >
-          {expanded ? "收起" : "六段"}
-        </button>
       </div>
     </CardShell>
   );

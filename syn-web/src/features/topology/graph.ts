@@ -346,8 +346,8 @@ export function buildGraph({
 /** 列序即数据流方向 */
 const KIND_ORDER: CanvasNodeKind[] = ["datasource", "source", "topic", "task"];
 
-/** 同列纵向间距：要容下最高的一种卡（收起态 88）与呼吸；展开只影响选中那一张 */
-const ROW_GAP = 112;
+/** 同列纵向间距：要容下最高的一种卡（任务卡 140）与呼吸 */
+const ROW_GAP = 156;
 
 /**
  * 每列最多放几张。
@@ -363,7 +363,7 @@ const COLUMN_W: Record<CanvasNodeKind, number> = {
   datasource: 260,
   source: 280,
   topic: 220,
-  task: 300,
+  task: 600,
 };
 
 const GAP_X = 70;

@@ -7,7 +7,8 @@
  * 交互按 dbz 控制面板那套收敛：
  * - 卡片可拖，空白可平移，滚轮以指针为中心缩放，右下角可一键适应；
  * - 连线只作展示：方向是数据流，不能拖拽改接（改引用要回表单改，图和表才一致）；
- * - 点卡片选中（任务卡选中即就地展开六段），点空白取消选中。
+ *   唯一例外是落点处的独占图标（主题 → 任务那条线的终点，见 `TaskCard`）；
+ * - 点卡片选中，点空白取消选中；任务卡的启用/独占开关直接在卡上切换。
  *
  * 拖拽用 window 上的 pointermove/up，而不是卡片的 onPointerMove：指针一旦移出
  * 卡片（画布上很常见），卡片收不到事件，拖拽会「粘住」。
@@ -18,7 +19,7 @@ import { Maximize2, Minus, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CanvasNodePos } from "@/lib/api/types";
 import { nodeId, type GraphNode, type TaskStage, type TopologyGraph } from "./graph";
-import { CARD_SIZE, EntityCard, TASK_EXPANDED, TaskCard, TopicCard, cardSize } from "./TopologyCards";
+import { EntityCard, TaskCard, TopicCard, cardSize } from "./TopologyCards";
 
 const MIN_SCALE = 0.3;
 const MAX_SCALE = 2;
@@ -41,6 +42,12 @@ interface Props {
   onMove: (id: string, pos: { x: number; y: number }) => void;
   onOpenStage: (node: GraphNode, stage: TaskStage) => void;
   onOpenEntity: (node: GraphNode) => void;
+  /** 任务卡右上角的启用开关：走 tasks.toggle 接口 */
+  onToggleTask: (node: GraphNode, next: boolean) => void;
+  /** 连线落点处的独占开关：改 spec.exclusive 保存 */
+  onToggleExclusive: (node: GraphNode) => void;
+  /** 开关请求进行中的任务 id：按钮置灰防连点 */
+  busyTaskId?: string | null;
 }
 
 export function TopologyCanvas({
@@ -51,6 +58,9 @@ export function TopologyCanvas({
   onMove,
   onOpenStage,
   onOpenEntity,
+  onToggleTask,
+  onToggleExclusive,
+  busyTaskId,
 }: Props) {
   const boxRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ x: 0, y: 0, scale: 0.8 });
@@ -68,36 +78,13 @@ export function TopologyCanvas({
   const panRef = useRef<{ px: number; py: number; vx: number; vy: number } | null>(null);
   const fittedRef = useRef(false);
 
-  const expandedId = selectedId;
-
-  /**
-   * 展开的任务卡高 140，而默认行距是 112 —— 直接画会压住下面那张卡。
-   * 这里把「同列、位于它下方」的节点整体下移差值，纯视觉让位，不写库：
-   * 收起后自动回到原位，坐标表里始终只有用户亲手拖过的位置。
-   */
-  const shiftOf = useMemo(() => {
-    const out: Record<string, number> = {};
-    if (!expandedId) return out;
-    const anchor = positions[expandedId];
-    const anchorNode = graph.nodes.find((n) => n.id === expandedId);
-    if (!anchor || !anchorNode || anchorNode.kind !== "task") return out;
-    const delta = TASK_EXPANDED.h - CARD_SIZE.task.h;
-    for (const node of graph.nodes) {
-      const pos = positions[node.id];
-      if (!pos || node.id === expandedId) continue;
-      if (Math.abs(pos.x - anchor.x) < 60 && pos.y > anchor.y) out[node.id] = delta;
-    }
-    return out;
-  }, [expandedId, positions, graph.nodes]);
-
   const rectOf = useCallback(
     (node: GraphNode) => {
-      const base = positions[node.id] ?? { x: 0, y: 0 };
-      const pos = { x: base.x, y: base.y + (shiftOf[node.id] ?? 0) };
-      const size = cardSize(node.kind, node.id === expandedId);
+      const pos = positions[node.id] ?? { x: 0, y: 0 };
+      const size = cardSize(node.kind);
       return { x: pos.x, y: pos.y, w: size.w, h: size.h };
     },
-    [positions, expandedId],
+    [positions],
   );
 
   /* ------------------------------ 适应窗口 ------------------------------ */
@@ -195,8 +182,6 @@ export function TopologyCanvas({
       cy: e.clientY,
       moved: false,
     });
-    // 这里不选中：选中会让任务卡就地展开，拖动时卡片在指针下变大很难受。
-    // 选中推迟到抬手时判断 —— 没移动过才算点击。
   };
 
   useEffect(() => {
@@ -260,10 +245,9 @@ export function TopologyCanvas({
   const effectivePos = useCallback(
     (node: GraphNode) => {
       if (drag?.id === node.id) return { ...positions[node.id], x: drag.x, y: drag.y };
-      const base = positions[node.id] ?? { x: 0, y: 0 };
-      return { x: base.x, y: base.y + (shiftOf[node.id] ?? 0) };
+      return positions[node.id] ?? { x: 0, y: 0 };
     },
-    [drag, positions, shiftOf],
+    [drag, positions],
   );
 
   /* -------------------------------- 连线 -------------------------------- */
@@ -276,8 +260,8 @@ export function TopologyCanvas({
       if (!from || !to) return [];
       const a = effectivePos(from);
       const b = effectivePos(to);
-      const sizeA = cardSize(from.kind, from.id === expandedId);
-      const sizeB = cardSize(to.kind, to.id === expandedId);
+      const sizeA = cardSize(from.kind);
+      const sizeB = cardSize(to.kind);
       const x1 = a.x + sizeA.w / 2;
       const y1 = a.y + sizeA.h;
       const x2 = b.x + sizeB.w / 2;
@@ -291,7 +275,7 @@ export function TopologyCanvas({
         },
       ];
     });
-  }, [graph, effectivePos, expandedId]);
+  }, [graph, effectivePos]);
 
   const isEmpty = graph.nodes.length === 0;
 
@@ -374,7 +358,7 @@ export function TopologyCanvas({
 
           {graph.nodes.map((node) => {
             const pos = effectivePos(node);
-            const size = cardSize(node.kind, node.id === expandedId);
+            const size = cardSize(node.kind);
             const dragging = drag?.id === node.id;
             const common = {
               key: node.id,
@@ -402,9 +386,10 @@ export function TopologyCanvas({
                   <TaskCard
                     node={node}
                     selected={node.id === selectedId}
-                    expanded={node.id === expandedId}
                     onOpenStage={(stage) => onOpenStage(node, stage)}
-                    onToggle={() => onSelect(node.id === selectedId ? null : node.id)}
+                    onToggleEnabled={(next) => onToggleTask(node, next)}
+                    onToggleExclusive={() => onToggleExclusive(node)}
+                    busy={busyTaskId === node.id}
                   />
                 </div>
               );

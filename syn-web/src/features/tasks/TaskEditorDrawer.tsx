@@ -22,7 +22,6 @@ import { useDatasources, useServices } from "@/hooks/use-sources";
 
 /** 页签键：拓扑页点卡片上的某一段时，按这个值直接打开对应页签 */
 export type TaskTab =
-  | "basic"
   | "match"
   | "mapping"
   | "actions"
@@ -34,7 +33,6 @@ export type TaskTab =
 type Tab = TaskTab;
 
 const TABS: Array<{ key: Tab; label: string; stage: string }> = [
-  { key: "basic", label: "基本", stage: "—" },
   { key: "match", label: "匹配", stage: "1" },
   { key: "mapping", label: "映射", stage: "2" },
   { key: "guards", label: "校验", stage: "3" },
@@ -53,9 +51,17 @@ function tabOfPath(path: string): Tab {
   if (path.startsWith("guards")) return "guards";
   if (path.startsWith("outcomes")) return "outcomes";
   if (path.startsWith("target")) return "target";
-  return "basic";
+  // id / topic 在顶部身份证区直接标红，其余未知路径落到第一段
+  return "match";
 }
 
+/**
+ * 任务编辑抽屉。
+ *
+ * 没有独立的基本页签：code / 名称 / topic / 优先级是任务的身份证，常驻抽屉顶部，
+ * 任何页签下都看得到；启用 / 独占不在表单里 —— 启用在卡片右上角、独占在连线落点
+ * （拓扑页），它们是运行态开关，和配置内容混在一起反而藏得住误触。
+ */
 export function TaskEditorDrawer({
   open,
   task,
@@ -78,7 +84,7 @@ export function TaskEditorDrawer({
   const { data: datasourceOptions = [] } = useDatasources();
   const { data: serviceOptions = [] } = useServices();
 
-  const [tab, setTab] = useState<Tab>("basic");
+  const [tab, setTab] = useState<Tab>("match");
   const [name, setName] = useState("");
   const [spec, setSpec] = useState<TaskSpec>(() => newTask());
   const [jsonText, setJsonText] = useState("");
@@ -89,7 +95,7 @@ export function TaskEditorDrawer({
     const next = task ? cloneSpec(task.spec) : newTask();
     setSpec(next);
     setName(task?.name ?? "");
-    setTab(initialTab ?? "basic");
+    setTab(initialTab ?? "match");
     setJsonText(JSON.stringify(next, null, 2));
     setJsonError(null);
   }, [open, task, initialTab]);
@@ -98,8 +104,6 @@ export function TaskEditorDrawer({
   const byPath = useMemo(() => issuesByPath(issues), [issues]);
   const tabIssues = (key: Tab) => {
     switch (key) {
-      case "basic":
-        return issues.filter((i) => i.path === "id" || i.path === "topic");
       case "target":
         return issues.filter((i) => i.path.startsWith("target"));
       case "match":
@@ -133,7 +137,6 @@ export function TaskEditorDrawer({
       return;
     }
     if (!name.trim()) {
-      setTab("basic");
       toast.error("缺少任务名称", "名称是列表里唯一的可读标识，别只留 code");
       return;
     }
@@ -141,7 +144,12 @@ export function TaskEditorDrawer({
       { id: task?.id, name: name.trim(), spec },
       {
         onSuccess: () => {
-          toast.success(task ? "已保存，版本 +1" : "已创建（默认停用，确认后再启用）", "记得点顶栏的「重载快照」让它生效");
+          toast.success(
+            task ? "已保存，版本 +1" : "已创建（默认停用）",
+            task
+              ? "记得点顶栏的「重载快照」让它生效"
+              : "启用开关在列表或拓扑卡片的右上角，确认配置后再打开",
+          );
           onSaved?.();
           onClose();
         },
@@ -202,6 +210,47 @@ export function TaskEditorDrawer({
         </div>
       }
     >
+      {/* 身份证区：任何页签下都可见。id / topic 的校验问题直接标在这里 */}
+      <div className="mb-4 grid grid-cols-2 gap-3 rounded-lg border border-line bg-sunken/40 p-3">
+        <Field
+          label="任务标识 code"
+          required
+          hint="与 spec.id 同值；同一 topic 下唯一。库里的列说了算"
+          error={byPath.get("id")?.[0]?.message}
+        >
+          <Input
+            value={spec.id ?? ""}
+            spellCheck={false}
+            className="h-9 font-mono text-[12.5px]"
+            onChange={(e) => patch({ id: e.target.value })}
+          />
+        </Field>
+        <Field label="名称" required hint="列表里给人看的那一行">
+          <Input value={name} className="h-9" onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field
+          label="topic"
+          required
+          hint="sink 的 topics 里配的名字；自拉数据用 source:{code}"
+          error={byPath.get("topic")?.[0]?.message}
+        >
+          <Input
+            value={spec.topic}
+            spellCheck={false}
+            className="h-9 font-mono text-[12.5px]"
+            onChange={(e) => patch({ topic: e.target.value })}
+          />
+        </Field>
+        <Field label="优先级" hint="升序匹配，小的先命中">
+          <Input
+            type="number"
+            value={spec.priority}
+            className="h-9 tnum"
+            onChange={(e) => patch({ priority: Number(e.target.value) })}
+          />
+        </Field>
+      </div>
+
       <nav className="sticky -top-4 z-10 -mx-5 mb-4 flex items-center gap-1 border-b border-line bg-surface px-5 pb-2 pt-1">
         {TABS.map((item) => {
           const count = tabIssues(item.key).length;
@@ -242,75 +291,6 @@ export function TaskEditorDrawer({
           );
         })}
       </nav>
-
-      {tab === "basic" && (
-        <div className="space-y-4">
-          <div className="space-y-2 rounded-lg border border-line bg-sunken/40 p-3">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[12.5px] font-medium text-ink">启用</p>
-                <p className="text-[11px] text-muted">停用的任务保留配置但不参与匹配</p>
-              </div>
-              <Switch
-                checked={spec.enabled ?? true}
-                label="启用任务"
-                onChange={(enabled) => patch({ enabled })}
-              />
-            </div>
-            <div className="flex items-start justify-between gap-3 border-t border-line/70 pt-2">
-              <div>
-                <p className="text-[12.5px] font-medium text-ink">独占（命中后停止匹配）</p>
-                <p className="text-[11px] leading-relaxed text-muted">
-                  关掉它，一条记录会继续匹配后面的任务 —— 这是「一份数据同步到多个下游」的表达方式。
-                  每个下游各有自己的映射与死信分类，比在一个任务里堆多个动作清楚。
-                </p>
-              </div>
-              <Switch
-                checked={spec.exclusive !== false}
-                label="独占"
-                onChange={(exclusive) => patch({ exclusive })}
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <Field
-              label="任务标识 code"
-              required
-              hint="与 spec.id 同值；同一 topic 下唯一。库里的列说了算"
-            >
-              <Input
-                value={spec.id ?? ""}
-                spellCheck={false}
-                className="h-9 font-mono text-[12.5px]"
-                onChange={(e) => patch({ id: e.target.value })}
-              />
-            </Field>
-            <Field label="名称" required hint="列表里给人看的那一行">
-              <Input value={name} className="h-9" onChange={(e) => setName(e.target.value)} />
-            </Field>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="topic" required hint="sink 的 topics 里配的名字；自拉数据用 source:{code}">
-              <Input
-                value={spec.topic}
-                spellCheck={false}
-                className="h-9 font-mono text-[12.5px]"
-                onChange={(e) => patch({ topic: e.target.value })}
-              />
-            </Field>
-            <Field label="优先级" hint="升序匹配，小的先命中">
-              <Input
-                type="number"
-                value={spec.priority}
-                className="h-9 tnum"
-                onChange={(e) => patch({ priority: Number(e.target.value) })}
-              />
-            </Field>
-          </div>
-        </div>
-      )}
 
       {tab === "match" && (
         <div className="space-y-3">

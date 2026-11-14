@@ -22,6 +22,8 @@ import type { CanvasNodePos, DatasourceInfo, SyncSource, SyncTask } from "@/lib/
 import { useAllTasks } from "@/hooks/use-tasks";
 import { useDatasources, useServices, useSources } from "@/hooks/use-sources";
 import { useCanvasLayout, useCanvasMutations } from "@/hooks/use-canvas";
+import { useTaskMutations } from "@/hooks/use-tasks";
+import { cloneSpec } from "@/lib/spec/defaults";
 import { SourceEditorDrawer } from "@/features/sources/SourceEditorDrawer";
 import { DatasourceEditorDrawer } from "@/features/datasources/DatasourceEditorDrawer";
 import { TaskEditorDrawer, type TaskTab } from "@/features/tasks/TaskEditorDrawer";
@@ -59,12 +61,57 @@ export function TopologyPage() {
   const { data: tasks = [], isLoading: loadingTasks } = useAllTasks();
   const { data: services = [] } = useServices();
   const { data: stored = [], refetch } = useCanvasLayout();
+  const { save: saveTask, toggle: toggleTaskMutation } = useTaskMutations();
   const { save } = useCanvasMutations();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   /** 拖动中的临时坐标：不等接口回来就先把卡放到新位置 */
   const [dragging, setDragging] = useState<Record<string, CanvasNodePos>>({});
   const [editing, setEditing] = useState<Editing>(null);
+  /** 卡上开关请求进行中的任务 id：按钮置灰防连点 */
+  const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+
+  const toastTaskBusy = (id: string, fn: () => void) => {
+    setBusyTaskId(id);
+    fn();
+  };
+  const settleTaskBusy = () => setBusyTaskId(null);
+
+  /** 卡右上角的启用开关：直接走 toggle 接口，不必进抽屉 */
+  const toggleTask = (node: GraphNode, next: boolean) => {
+    if (!node.task) return;
+    toastTaskBusy(node.id, () =>
+      toggleTaskMutation.mutate(
+        { id: node.task!.id, enabled: next },
+        {
+          onSuccess: () => toast.success(next ? "已启用" : "已停用", "点顶栏「重载快照」后执行器才生效"),
+          onError: (err) => toast.error("操作失败", err instanceof Error ? err.message : "接口不可达"),
+          onSettled: settleTaskBusy,
+        },
+      ),
+    );
+  };
+
+  /** 连线落点的独占开关：改 spec.exclusive 保存（版本 +1） */
+  const toggleExclusive = (node: GraphNode) => {
+    if (!node.task) return;
+    const task = node.task;
+    const next = { ...cloneSpec(task.spec), exclusive: task.spec.exclusive === false };
+    toastTaskBusy(node.id, () =>
+      saveTask.mutate(
+        { id: task.id, name: task.name, spec: next },
+        {
+          onSuccess: () =>
+            toast.success(
+              next.exclusive ? "已设为独占" : "已取消独占",
+              `${next.exclusive ? "命中后停止匹配" : "命中后继续匹配下一个任务"}；版本 +1，重载快照后生效`,
+            ),
+          onError: (err) => toast.error("操作失败", err instanceof Error ? err.message : "接口不可达"),
+          onSettled: settleTaskBusy,
+        },
+      ),
+    );
+  };
 
   const graph = useMemo(
     () =>
@@ -112,7 +159,7 @@ export function TopologyPage() {
   };
 
   const openEntity = (node: GraphNode) => {
-    if (node.task) return setEditing({ kind: "task", task: node.task, tab: "basic" });
+    if (node.task) return setEditing({ kind: "task", task: node.task, tab: "match" });
     if (node.source) return setEditing({ kind: "source", source: node.source });
     if (node.datasource) return setEditing({ kind: "datasource", datasource: node.datasource });
     toast.info("主题是虚拟节点", "它由来源写入、被任务消费；双击两端的卡片改具体配置。");
@@ -132,7 +179,8 @@ export function TopologyPage() {
         subtitle={
           <>
             数据源 → 取数来源 → 主题 → 任务，投递在判定之前。左侧组件栏点选直接新建；
-            拖动节点即保存摆位，双击卡片进抽屉改配置，点任务卡里的某一段直达对应页签。
+            拖动节点即保存摆位，双击卡片进抽屉改配置，点任务卡里的某一段直达对应页签；
+            卡右上角切换启用，连线落点切换独占。
           </>
         }
         actions={
@@ -209,6 +257,9 @@ export function TopologyPage() {
               onMove={onMove}
               onOpenStage={openStage}
               onOpenEntity={openEntity}
+              onToggleTask={toggleTask}
+              onToggleExclusive={toggleExclusive}
+              busyTaskId={busyTaskId}
             />
           </div>
         </div>
