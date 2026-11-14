@@ -8,7 +8,8 @@
  * （`syn_canvas_layout`）。所以这张图不可能和真实配置不一致 —— 这也意味着
  * **不能在这里直接改引用关系**：改「来源用哪个数据源」要回表单，图只负责呈现与跳转。
  *
- * 这里只做三件写操作：拖动后保存坐标、双击打开抽屉、点任务卡的某一段直达页签。
+ * 这里只做写操作：拖动后保存坐标、双击打开抽屉、点任务卡的某一段直达页签、
+ * 组件栏点选直接新建（新建的抽屉与维护页共用同一个组件，实体传 null 即创建模式）。
  */
 
 import { useMemo, useState } from "react";
@@ -26,12 +27,23 @@ import { DatasourceEditorDrawer } from "@/features/datasources/DatasourceEditorD
 import { TaskEditorDrawer, type TaskTab } from "@/features/tasks/TaskEditorDrawer";
 import { buildGraph, mergePositions, type GraphNode, type TaskStage } from "./graph";
 import { TopologyCanvas } from "./TopologyCanvas";
+import { TopologyPalette } from "./TopologyPalette";
 
 type Editing =
   | { kind: "task"; task: SyncTask; tab: TaskTab }
+  | { kind: "task-new" }
   | { kind: "source"; source: SyncSource }
+  | { kind: "source-new" }
   | { kind: "datasource"; datasource: DatasourceInfo }
+  | { kind: "datasource-new" }
   | null;
+
+/** 组件栏能新建的三类 ↔ Editing 的 -new 变体 */
+const CREATE_KIND: Record<"datasource" | "source" | "task", Exclude<Editing, null>> = {
+  datasource: { kind: "datasource-new" },
+  source: { kind: "source-new" },
+  task: { kind: "task-new" },
+};
 
 const KIND_LEGEND = [
   { label: "数据源", dot: "bg-info" },
@@ -119,8 +131,8 @@ export function TopologyPage() {
         title="同步拓扑"
         subtitle={
           <>
-            数据源 → 取数来源 → 主题 → 任务，投递是任务第六段。拖动节点即保存摆位；
-            双击卡片进抽屉改配置，点任务卡里的某一段直达对应页签。
+            数据源 → 取数来源 → 主题 → 任务，投递是任务第六段。左侧组件栏点选直接新建；
+            拖动节点即保存摆位，双击卡片进抽屉改配置，点任务卡里的某一段直达对应页签。
           </>
         }
         actions={
@@ -186,15 +198,20 @@ export function TopologyPage() {
           正在拼图…
         </div>
       ) : (
-        <TopologyCanvas
-          graph={graph}
-          positions={positions}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          onMove={onMove}
-          onOpenStage={openStage}
-          onOpenEntity={openEntity}
-        />
+        <div className="flex items-stretch gap-2.5">
+          <TopologyPalette onAdd={(kind) => setEditing(CREATE_KIND[kind])} />
+          <div className="min-w-0 flex-1">
+            <TopologyCanvas
+              graph={graph}
+              positions={positions}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              onMove={onMove}
+              onOpenStage={openStage}
+              onOpenEntity={openEntity}
+            />
+          </div>
+        </div>
       )}
 
       <p className="mt-2 text-[11px] leading-relaxed text-muted">
@@ -204,18 +221,18 @@ export function TopologyPage() {
       </p>
 
       <TaskEditorDrawer
-        open={editing?.kind === "task"}
+        open={editing?.kind === "task" || editing?.kind === "task-new"}
         task={editing?.kind === "task" ? editing.task : null}
         initialTab={editing?.kind === "task" ? editing.tab : undefined}
         onClose={() => setEditing(null)}
       />
       <SourceEditorDrawer
-        open={editing?.kind === "source"}
+        open={editing?.kind === "source" || editing?.kind === "source-new"}
         source={editing?.kind === "source" ? editing.source : null}
         onClose={() => setEditing(null)}
       />
       <DatasourceEditorDrawer
-        open={editing?.kind === "datasource"}
+        open={editing?.kind === "datasource" || editing?.kind === "datasource-new"}
         datasource={editing?.kind === "datasource" ? editing.datasource : null}
         onClose={() => setEditing(null)}
       />
