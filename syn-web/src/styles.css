@@ -35,6 +35,10 @@
   --color-warn: #a2670a;
   --color-warn-soft: #fbf1e0;
 
+  /* 六段轨道的选中色：统一琥珀。淡彩底铺满整行，圈号/段名/概要/图标同色 */
+  --color-stage: #854f0b;
+  --color-stage-soft: #fac775;
+
   --color-info: #2a5bd7;
   --color-info-soft: #eaeffd;
 
