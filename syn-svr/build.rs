@@ -49,13 +49,16 @@ fn main() {
     copy_dir(project_root, "migrations", dest_dir_path);
     copy_dir(project_root, "cert", dest_dir_path);
 }
-
 /// 整目录复制。源目录不存在就跳过：`cert/` 在很多服务里是可选的。
 fn copy_dir(project_root: &str, src_dir: &str, dest_dir_path: &Path) {
     let src_dir_path = Path::new(project_root).join(src_dir);
     if !src_dir_path.is_dir() {
         return;
     }
+    // 必须发 rerun-if-changed：build.rs 只要给任何一个文件发过它，cargo 的
+    // 「整包变化就重跑」默认行为就关了 —— 改了 migrations 里的 SQL 不会重新拷贝，
+    // 二进制旁边一直是旧脚本，联调 / 部署建出来的表永远少一张。
+    println!("cargo:rerun-if-changed={}", src_dir_path.display());
     copy_dir_recursive(&src_dir_path, &dest_dir_path.join(src_dir));
 }
 

@@ -101,7 +101,7 @@ pg syn_it_dst -c "
   insert into demo_person (id,name,updated_at) values (1,'alice-stale', now() - interval '2 days');
 " >/dev/null
 
-# ---- 启服务（db_migrate! 自动建 syn_* 五张表） ------------------------------
+# ---- 启服务（db_migrate! 自动建 syn_* 七张表） ------------------------------
 say "启动 syn-svr（-c 指定联调配置，端口 19007）"
 # exec 让 $! 就是二进制自己的 PID，退出时 kill -TERM 才能触发优雅停机
 (cd "$(dirname "$BIN")" && exec "$BIN" -c "$CFG" --signal start >"$LOG" 2>&1) &
@@ -114,8 +114,8 @@ done
 [ "$ready" = 1 ] || fail "syn-svr 30s 内没起来"
 
 tables=$(q syn_it "select count(*) from pg_tables where schemaname='public' and tablename like 'syn_%'")
-# syn_task / syn_task_version / syn_source / syn_cursor / syn_idem / syn_datasource
-assert_eq "migration 建表数" 6 "$tables"
+# syn_task / syn_task_version / syn_source / syn_cursor / syn_idem / syn_datasource / syn_canvas_layout
+assert_eq "migration 建表数" 7 "$tables"
 
 # ---- 配置 -----------------------------------------------------------------
 say "创建任务与数据源"
@@ -226,6 +226,38 @@ assert_eq "删除后清单为空" 0 "$(curl -fsS "$API/syn/datasource/list" | jq
 # 注册中心候选：联调没有注册中心，必须降级成空数组而不是 5xx
 assert_eq "服务名候选降级为空数组" "200" \
   "$(curl -sS -o /dev/null -w '%{http_code}' "$API/syn/registry/services")"
+
+# ---- 画布布局 ---------------------------------------------------------------
+# 拓扑页的坐标独存于 syn_canvas_layout：节点来自三张业务表，这里只存 x/y。
+# 契约有三条：读全量；保存是按 (node_type, node_key) 的 upsert（两个人摆位不互抹）；
+# 校验失败不落行。
+say "画布布局：upsert 保存 + 部分提交不互抹"
+layout() { curl -fsS "$API/syn/canvas/layout"; }
+save_layout() { # body
+  curl -fsS -X PUT "$API/syn/canvas/layout" -H 'Content-Type: application/json' \
+    -H 'X-User-Id: 1' --data "$1"
+}
+assert_eq "初始布局为空" 0 "$(layout | jq -r '.extra | length')"
+saved=$(save_layout '{"nodes":[{"nodeType":4,"nodeKey":"it_person_db","x":840,"y":120},{"nodeType":2,"nodeKey":"it_person","x":420,"y":120}]}')
+assert_eq "一次存两个节点" 2 "$(printf '%s' "$saved" | jq -r '.extra | length')"
+assert_eq "读回两条坐标" 2 "$(layout | jq -r '.extra | length')"
+save_layout '{"nodes":[{"nodeType":4,"nodeKey":"it_person_db","x":900,"y":160}]}' >/dev/null
+assert_eq "只拖一个不抹另一个" 2 "$(layout | jq -r '.extra | length')"
+assert_eq "拖过的节点是新坐标" 900 \
+  "$(layout | jq -r '[.extra[] | select(.nodeType==4 and .nodeKey=="it_person_db")][0].x')"
+assert_eq "没拖的坐标保持原样" 420 \
+  "$(layout | jq -r '[.extra[] | select(.nodeType==2 and .nodeKey=="it_person")][0].x')"
+assert_eq "同键重复保存不新增行" 2 \
+  "$(q syn_it 'select count(*) from syn_canvas_layout')"
+assert_eq "空 nodeKey 被拒 HTTP" 400 \
+  "$(curl -sS -o /dev/null -w '%{http_code}' -X PUT "$API/syn/canvas/layout" \
+      -H 'Content-Type: application/json' -H 'X-User-Id: 1' \
+      --data '{"nodes":[{"nodeType":4,"nodeKey":"","x":1,"y":1}]}')"
+assert_eq "坐标越界被拒 HTTP" 400 \
+  "$(curl -sS -o /dev/null -w '%{http_code}' -X PUT "$API/syn/canvas/layout" \
+      -H 'Content-Type: application/json' -H 'X-User-Id: 1' \
+      --data '{"nodes":[{"nodeType":4,"nodeKey":"bad_pos","x":-1,"y":0}]}')"
+assert_eq "被拒的请求不落行" 2 "$(q syn_it 'select count(*) from syn_canvas_layout')"
 
 # ---- 服务发现负向路径 ------------------------------------------------------
 # 联调配置里没有注册中心。http 任务必须显式 fatal：解析不到实例是部署问题，

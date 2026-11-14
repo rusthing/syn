@@ -9,6 +9,7 @@
 
 pub mod prelude;
 
+pub mod syn_canvas_layout;
 pub mod syn_cursor;
 pub mod syn_datasource;
 pub mod syn_idem;

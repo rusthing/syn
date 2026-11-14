@@ -9,6 +9,7 @@
  */
 
 import type {
+  CanvasNodePos,
   DatasourceInfo,
   DatasourceQuery,
   DatasourceSaveInput,
@@ -1018,3 +1019,17 @@ export const SAMPLE_RECORDS: Record<string, Array<{ label: string; record: unkno
 };
 
 export const mockTopics = (): string[] => [...new Set(TASKS.map((t) => t.topic))];
+
+/**
+ * 画布坐标：演示模式只存内存，刷新还原。默认布局在前端算（见 `features/topology`），
+ * 这里只负责「拖过之后记住」。
+ */
+const canvasPositions = new Map<string, CanvasNodePos>();
+
+export const mockCanvas = {
+  layout: async (): Promise<CanvasNodePos[]> => [...canvasPositions.values()],
+  save: async (nodes: CanvasNodePos[]): Promise<CanvasNodePos[]> => {
+    for (const node of nodes) canvasPositions.set(`${node.kind}:${node.key}`, node);
+    return nodes;
+  },
+};

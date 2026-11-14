@@ -16,3 +16,6 @@ syn-web/dist
 
 # 临时备份文件（如 Cargo.lock.bak）不入库
 *.bak
+
+# 演示模式构建产物（--mode mock，不入库）
+syn-web/dist-mock

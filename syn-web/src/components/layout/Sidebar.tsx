@@ -5,6 +5,7 @@ import {
   Fingerprint,
   FlaskConical,
   LayoutDashboard,
+  Network,
   Radio,
   ScrollText,
   Settings2,
@@ -24,6 +25,7 @@ import { Wordmark } from "./Logo";
 
 export const NAV = [
   { to: "/", label: "同步总览", icon: LayoutDashboard, end: true },
+  { to: "/topology", label: "同步拓扑", icon: Network },
   { to: "/tasks", label: "同步任务", icon: Workflow },
   { to: "/sources", label: "取数来源", icon: Radio },
   { to: "/datasources", label: "数据源", icon: Database },

@@ -16,8 +16,10 @@ import {
   liveRegistry,
   liveSources,
   liveTasks,
+  liveCanvas,
 } from "./live";
 import {
+  mockCanvas,
   mockDatasources,
   mockDeliveries,
   mockIdem,
@@ -29,6 +31,7 @@ import {
   SAMPLE_RECORDS,
 } from "./mock";
 import type {
+  CanvasNodePos,
   DatasourceInfo,
   DatasourceQuery,
   DatasourceSaveInput,
@@ -145,6 +148,16 @@ export const datasources = {
     isMock() ? mockDatasources.setEnabled(id, enabled) : liveDatasources.setEnabled(id, enabled),
   remove: (id: string): Promise<null> =>
     isMock() ? mockDatasources.remove(id) : liveDatasources.remove(id),
+};
+
+/**
+ * 画布布局门面。只存节点坐标，节点本身由 `features/topology/graph.ts` 现拼 ——
+ * 所以「谁引用了谁」永远以三张业务表为准，不会出现坐标表和图对不上的情况。
+ */
+export const canvas = {
+  layout: (): Promise<CanvasNodePos[]> => (isMock() ? mockCanvas.layout() : liveCanvas.layout()),
+  save: (nodes: CanvasNodePos[]): Promise<CanvasNodePos[]> =>
+    isMock() ? mockCanvas.save(nodes) : liveCanvas.save(nodes),
 };
 
 /** 注册中心服务名候选。实时模式接口未落地 / 不可达时由 `useServices` 兜成空数组 */

@@ -132,6 +132,23 @@ export interface TaskSpec {
   outcomes?: Outcome[];
 }
 
+/* ---------- 拓扑画布 ---------- */
+
+/**
+ * 画布节点类型，与后端 `CanvasNodeType`（`syn_canvas_layout.node_type`，INT2 1..4）
+ * 一一对应。字符串只在适配层出现，落库与接口一律用整数。
+ */
+export type CanvasNodeKind = "datasource" | "source" | "topic" | "task";
+
+/** 一个节点的世界坐标（与缩放无关） */
+export interface CanvasNodePos {
+  kind: CanvasNodeKind;
+  /** 数据源 / 取数来源 / 任务填 code，主题填 topic 名 */
+  key: string;
+  x: number;
+  y: number;
+}
+
 /* ---------- 实体（syn_task / syn_source / 运行记录） ---------- */
 
 export interface Audit {

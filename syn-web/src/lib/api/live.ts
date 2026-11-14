@@ -22,6 +22,8 @@
 
 import { request } from "./http";
 import type {
+  CanvasNodeKind,
+  CanvasNodePos,
   DatasourceInfo,
   DatasourceQuery,
   DatasourceSaveInput,
@@ -120,6 +122,14 @@ interface WireDatasource {
 }
 
 /** `GET /syn/registry/services` 的候选项，已是 camelCase 的简单结构 */
+/** `syn_canvas_layout` 的行：`nodeType` 是 `#[dic]` 的 INT2（1..4） */
+interface WireCanvasNode {
+  nodeType: number;
+  nodeKey: string;
+  x: number;
+  y: number;
+}
+
 interface WireService {
   name: string;
   healthy?: number | string | null;
@@ -477,6 +487,59 @@ export const liveDatasources = {
 
   remove: (id: string): Promise<null> =>
     request<void>(`/syn/datasource/${encodeURIComponent(id)}`, { method: "DELETE" }).then(() => null),
+};
+
+/** 整数 → 前端节点类型；认不出就当没有（旧版本多出来的类型不该画出来） */
+const CANVAS_KIND_OF: Record<number, CanvasNodeKind> = {
+  1: "datasource",
+  2: "source",
+  3: "topic",
+  4: "task",
+};
+
+const CANVAS_TYPE_OF: Record<CanvasNodeKind, number> = {
+  datasource: 1,
+  source: 2,
+  topic: 3,
+  task: 4,
+};
+
+function toCanvasNode(v: WireCanvasNode): CanvasNodePos | null {
+  const kind = CANVAS_KIND_OF[num(v.nodeType)];
+  if (!kind) return null;
+  return { kind, key: v.nodeKey, x: num(v.x), y: num(v.y) };
+}
+
+/**
+ * 画布布局：只读写节点坐标，节点本身由任务 / 来源 / 数据源三张表现拼。
+ * 保存按 `(kind, key)` upsert，只提交拖动过的节点。
+ */
+export const liveCanvas = {
+  layout: (): Promise<CanvasNodePos[]> =>
+    request<WireCanvasNode[]>("/syn/canvas/layout").then((rows) =>
+      (rows ?? []).flatMap((v) => {
+        const node = toCanvasNode(v);
+        return node ? [node] : [];
+      }),
+    ),
+
+  save: (nodes: CanvasNodePos[]): Promise<CanvasNodePos[]> =>
+    request<WireCanvasNode[]>("/syn/canvas/layout", {
+      method: "PUT",
+      body: {
+        nodes: nodes.map((n) => ({
+          nodeType: CANVAS_TYPE_OF[n.kind],
+          nodeKey: n.key,
+          x: Math.round(n.x),
+          y: Math.round(n.y),
+        })),
+      },
+    }).then((rows) =>
+      (rows ?? []).flatMap((v) => {
+        const node = toCanvasNode(v);
+        return node ? [node] : [];
+      }),
+    ),
 };
 
 /**

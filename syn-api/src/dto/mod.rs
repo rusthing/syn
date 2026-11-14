@@ -15,6 +15,7 @@
 //!
 //! `@len` / `@range` 来自列注释，用 `validator` 落在字段上，svc 调 `dto.validate()`。
 
+mod syn_canvas_layout_dto;
 mod syn_datasource_dto;
 mod syn_delivery_dto;
 mod syn_idem_dto;
@@ -22,6 +23,7 @@ mod syn_overview_dto;
 mod syn_source_dto;
 mod syn_task_dto;
 
+pub use syn_canvas_layout_dto::{SynCanvasLayoutSaveDto, SynCanvasNodePosDto};
 pub use syn_datasource_dto::{
     SynDatasourceEnabledDto, SynDatasourceQueryDto, SynDatasourceSaveDto,
 };

@@ -6,6 +6,7 @@
 //!
 //! 唯一的例外是错误：一律 `SvcError`，由框架的 `CtrlError` 翻译成状态码。
 
+mod syn_canvas_layout_svc;
 mod syn_datasource_svc;
 mod syn_delivery_svc;
 mod syn_idem_svc;
@@ -15,6 +16,7 @@ mod syn_source_svc;
 mod syn_task_svc;
 mod sync_svc;
 
+pub use syn_canvas_layout_svc::SynCanvasLayoutSvc;
 pub use syn_datasource_svc::SynDatasourceSvc;
 pub use syn_delivery_svc::SynDeliverySvc;
 pub use syn_idem_svc::SynIdemSvc;

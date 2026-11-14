@@ -104,7 +104,12 @@ let dest = Path::new(&out_dir).ancestors().nth(3).unwrap();  // → target/<prof
    不写就只是躺在二进制旁边。
 2. 复制失败**不要** `unwrap`：`cert/` 可能整目录不存在，`migrations/*/.gitkeep` 也可能
    没权限；编译不该因为运行期资源挂掉。真正缺文件的问题交给启动时的报错。
-3. 新增一类运行期资源（如 `i18n/`）时改这里，不要在代码里拼 `../` 相对路径。
+3. **目录复制必须发 `cargo:rerun-if-changed=<目录>`**。build.rs 只要给任何一个文件发过
+   `rerun-if-changed`（上面配置文件那一行），cargo 的「整包变化就重跑」默认行为就关了：
+   此后改 `migrations/` 里的 SQL、`cargo build` 也只重编译不重拷贝，二进制旁边一直是
+   旧脚本，联调建出来的表永远少一张、还不报错。2026-11-14 加 `syn_canvas_layout` 时
+   实际踩中，e2e 断言「建表数」才暴露。
+4. 新增一类运行期资源（如 `i18n/`）时改这里，不要在代码里拼 `../` 相对路径。
 
 这不是假想问题：`syn-svr` 起初就没有 `build.rs`，`migrations` 只躺在源码目录里，
 `cargo run` 一切正常，打进镜像后建表脚本就找不到了 —— 而报错发生在 `setup` 阶段，
@@ -655,13 +660,13 @@ feat(syn): 五段规则与记录转发
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| `model/syn.ldm` / `syn-pgsql.pdm` / `syn.prj` | ✅ | 五张表：`syn_task` / `syn_task_version` / `syn_idem` / `syn_source` / `syn_cursor` |
+| `model/syn.ldm` / `syn-pgsql.pdm` / `syn.prj` | ✅ | 七张表：`syn_task` / `syn_task_version` / `syn_idem` / `syn_source` / `syn_cursor` / `syn_datasource` / `syn_canvas_layout` |
 | `model/create-table-pgsql.sql` | ✅ | 在 PG 18 上 `psql -v ON_ERROR_STOP=1` 跑通，约束名与框架拼名一致 |
 | `syn-svr/migrations/pgsql/*_create-table.sql` | ✅ | 与 model 脚本逐字一致 |
 | `syn-core`（五段纯函数 + WKB） | ✅ | 50 个单测，`clippy -D warnings` 干净 |
 | `POST /syn/sync/{topic}`、`POST /syn/task/reload` | ✅ | 手写 handler；`sync` 用 `(StatusCode, Json)` 对齐 sink 语义，`reload` 走 `Ro<u64>` |
 | `AppConfig` + `bootstrap!` + `db_migrate!` + **`build.rs`** | ✅ | 运行期资源（配置 / `log.toml` / `migrations`）由 `build.rs` 拷到二进制旁，见 §1.1 |
-| `syn-api/src/mo`（五个实体） | ✅ | 与 PDM 逐列对齐，`store.rs` 已改走 `dao` |
+| `syn-api/src/mo`（七个实体） | ✅ | 与 PDM 逐列对齐，`store.rs` 已改走 `dao` |
 | `dto` / `vo` / `dic`（`SyncVerdict`、`SourceKind`） | ✅ | 全部手写，理由见 §6.2；字典列是 `INT2` + `@enum` |
 | `dao` / `svc` / `ctrl` / `router` / `api_doc` 五件套 | ✅ | 五个资源共 7+8+1+1+1 个手写接口，`api_doc` 逐个列全 |
 | `POST /syn/source/{id}/pull`（poll 入口，`kind=sql`） | ✅ | 复合游标 + 5 秒重叠窗口 + 批量 + `wrap`；jobx 与运维按钮共用一条实现，进程内无调度器，见 §11.7 |
@@ -673,6 +678,7 @@ feat(syn): 五段规则与记录转发
 | 来源的新增 / 编辑 / 删除入口 | ✅ | 后端五件套齐全（`code` 不可改）；前端 `SourceEditorDrawer` + `lib/spec/validate-source.ts` 本地预校验，错误定位到字段 |
 | 数据源管理（`syn_datasource` 表 + 七个接口） | ✅ | 控制台可增删改（连接串 / 池上限 / 启停 / 备注）；明文只写不回显，读接口一律脱敏；改完发 `refresh.syn.datasource` 让各副本重建连接池；`[syn.datasources.*]` 降级为兜底，见 §11 第 13 条 |
 | `GET /syn/registry/services`（http 目标服务名候选） | ✅ | 走 `robotech::micro_svc::list_services`（Consul 取 `/v1/catalog/services`，etcd/nacos 默认返回空）；**失败降级为空数组不报错**，表单手输照常能存，见 §14.2 |
+| 同步拓扑页（`GET/PUT /syn/canvas/layout` + `syn_canvas_layout`） | ✅ | 图不落库：节点来自三张业务表、连线来自引用，坐标独存一张表；保存是按 `(node_type, node_key)` 的 upsert（多人摆位不互抹）；投递是任务卡第六段画在卡内，不单独建节点，见 §14.7 |
 | 真库端到端联调（migration → 源库查数 → db sink → 幂等命中 → pull 返回） | ✅ | `tests/e2e/run.sh` 一键跑 30+ 断言，覆盖三库、控制台五接口与前端 wire 契约；见 §15.1–§15.4。联调中还修掉了总览小时桶的 off-by-one（§11 第 12 条） |
 | 部署形态联调（consul 配置中心 + 业务库隔离表） | ✅ | `tests/env/run.sh` 一次跑 50 条断言，验的是「不加 `-c`、走默认 `syn-svr.toml` + consul KV 覆盖」这条路；见 §15.5 |
 | jobx 计划任务自动注册（取数心跳） | ✅ | 首次启动注册 `executor-code=syn.pull`，撞唯一键只确认分组；实测 6 个批次共 297 拍、0 失败，见 §15.7 |
@@ -693,7 +699,7 @@ TanStack Query + lucide-react。**不引组件库**：一个控制台要用的�
 syn-web/
   src/
     components/{ui,layout,spec,table}   # 通用控件、布局、五段编辑器
-    features/{overview,tasks,sources,playground,deliveries,idem}
+    features/{overview,tasks,sources,topology,playground,deliveries,idem}
     hooks/                              # 一资源一 hook，query key 集中在 hook 里
     lib/api/{http,types,mock,live,index} # types 是 syn-api 的 TS 镜像
     lib/spec/{jsonpath,transforms,evaluate,validate,defaults}
@@ -794,6 +800,32 @@ cd syn-web && pnpm typecheck && pnpm test && pnpm build
 
 `pnpm test` 没测试文件会以退出码 1 结束，别把它当「没有测试所以跳过」。
 
+### 14.7 同步拓扑页（`features/topology`）
+
+一张图看清「数据从哪来、投到哪去」：数据源 → 取数来源 → 主题 → 任务四列，方向即数据流。
+四条设计决策，改这块之前先读一遍：
+
+1. **图不落库**。节点来自三张业务表、连线来自它们之间的引用（`spec.datasource` /
+   `source.topic` / `task.topic`），库里只存节点坐标（`syn_canvas_layout`）。
+   所以图永远和配置一致 —— 反过来，**画布上不能改引用关系**：改「来源用哪个数据源」
+   要回表单，图只负责呈现与跳转（双击卡片进抽屉）。
+2. **投递是任务卡的第六段，不单独建节点**。画到卡外会连出「一个任务分支到一个服务」
+   的假关系；多个任务投同一个服务时还会交叉连线，还把投递目标误当成共享实体。
+   任务卡两态：收起 300×88 六个小格（段名，`投递` 高亮）、选中就地展开 600×140
+   六段并排（段名 + 概要），点某段直达抽屉对应页签。展开只影响这一张卡，同列下方
+   节点由画布做纯视觉让位，**坐标表里永远只存收起坐标**。
+3. **保存是 upsert，不是全量替换**。前端只提交这次拖动过的节点；两个人在不同分支上
+   摆位时全量替换会互相抹掉对方的坐标。拖动用 window 级 `pointermove/up`（指针移出
+   卡片拖拽不粘），松手才写库；按下不动抬手才算点击（选中/展开），移动过就是拖拽。
+4. **滚轮缩放必须用原生非被动监听**。React 的 `onWheel` 挂在根节点上是 passive 的，
+   里面 `preventDefault()` 不生效 —— 缩放的同时整页会跟着滚。dbz 控制面板那套
+   平移 / 指针锚点缩放 / 适应窗口照搬；`services: []`（注册中心没拿到）不判
+   「未登记」，否则断网时满屏假警。
+
+后端只有两个接口：`GET /syn/canvas/layout`（全量）、`PUT /syn/canvas/layout`
+（按 `(node_type, node_key)` upsert，校验契约在列注释：`@len 128`、`@range 0..20000`）。
+不做删除接口：节点删了残行由画布忽略，`mergePositions` 会丢掉孤儿坐标。
+
 ---
 
 ## 15. 真库端到端联调（`tests/e2e` / `tests/env`）
@@ -834,7 +866,7 @@ warn。端口 19007（单进程联调，显式写死好让脚本连），jobx �
 
 ### 15.2 断言清单
 
-1. 迁移建出 5 张表；任务/数据源创建后虚拟 topic 是 `source:it_person`。
+1. 迁移建出 7 张表；任务/数据源创建后虚拟 topic 是 `source:it_person`。
 2. 首轮 pull 3 行全 success，目标表 3 行且 `id=1` 被覆盖，游标 `rows_synced=3`、水位非空。
 3. 空轮 `rows=0` 且不重复写；源库加一行后下一轮 `rows=1`，游标涨到 4。
 4. `X-Idempotency-Key`：首次写下游并记账；手工改下游值后同键重投**不再写**；缺冲突键
@@ -842,6 +874,11 @@ warn。端口 19007（单进程联调，显式写死好让脚本连），jobx �
 5. 控制台五类接口：`task/page` / `source/page`（`cursor.rowsSynced`）/ `delivery/page`
    （含 `verdict` 与 `taskCode` 筛选）/ `idem/page` / `overview`（小时桶 success 之和
    等于 `total`）/ `reload` 的 `extra`。这一组同时是 `live.ts` 适配层的 wire 契约。
+6. 数据源 CRUD：连接串只写不回显、改其它字段时留空连接串保持原值、停用 / 删除生效、
+   `GET /syn/registry/services` 无注册中心降级为空数组。
+7. 画布布局：初始为空；一次存两个节点、读回一致；**只提交一个节点不抹掉另一个**
+   （upsert 而非全量替换）；同键重复保存不新增行；空 `nodeKey` / 越界坐标返回 400
+   且不落行。
 
 ### 15.3 联调暴露过的坑
 

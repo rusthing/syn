@@ -8,6 +8,7 @@ import { LoginPage } from "@/pages/LoginPage";
 import { subscribeDataMode } from "@/lib/api";
 import { OverviewPage } from "@/features/overview/OverviewPage";
 import { TasksPage } from "@/features/tasks/TasksPage";
+import { TopologyPage } from "@/features/topology/TopologyPage";
 import { SourcesPage } from "@/features/sources/SourcesPage";
 import { DatasourcesPage } from "@/features/datasources/DatasourcesPage";
 import { PlaygroundPage } from "@/features/playground/PlaygroundPage";
@@ -68,6 +69,7 @@ export default function App() {
               }
             >
               <Route index element={<OverviewPage />} />
+              <Route path="topology" element={<TopologyPage />} />
               <Route path="tasks" element={<TasksPage />} />
               <Route path="sources" element={<SourcesPage />} />
               <Route path="datasources" element={<DatasourcesPage />} />

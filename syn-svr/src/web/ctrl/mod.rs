@@ -5,6 +5,7 @@
 
 pub(crate) mod common;
 
+pub mod syn_canvas_layout_ctrl;
 pub mod syn_datasource_ctrl;
 pub mod syn_delivery_ctrl;
 pub mod syn_idem_ctrl;

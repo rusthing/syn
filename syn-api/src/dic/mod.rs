@@ -10,8 +10,10 @@
 //! 不要为了「统一」把 JSONB 里的字符串改成整数：那份配置是给人读、给人改的，
 //! `"retriable"` 比 `3` 更难写错。
 
+mod canvas_node_type;
 mod source_kind;
 mod sync_verdict;
 
+pub use canvas_node_type::CanvasNodeType;
 pub use source_kind::SourceKind;
 pub use sync_verdict::SyncVerdict;

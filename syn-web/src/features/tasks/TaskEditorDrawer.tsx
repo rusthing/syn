@@ -20,7 +20,18 @@ import { OutcomeEditor } from "@/components/spec/OutcomeEditor";
 import { useTaskMutations } from "@/hooks/use-tasks";
 import { useDatasources, useServices } from "@/hooks/use-sources";
 
-type Tab = "basic" | "match" | "mapping" | "actions" | "guards" | "outcomes" | "target" | "json";
+/** 页签键：拓扑页点卡片上的某一段时，按这个值直接打开对应页签 */
+export type TaskTab =
+  | "basic"
+  | "match"
+  | "mapping"
+  | "actions"
+  | "guards"
+  | "outcomes"
+  | "target"
+  | "json";
+
+type Tab = TaskTab;
 
 const TABS: Array<{ key: Tab; label: string; stage: string }> = [
   { key: "basic", label: "基本", stage: "—" },
@@ -47,11 +58,14 @@ function tabOfPath(path: string): Tab {
 export function TaskEditorDrawer({
   open,
   task,
+  initialTab,
   onClose,
   onSaved,
 }: {
   open: boolean;
   task: SyncTask | null;
+  /** 打开时落在哪个页签；拓扑页点「3 校验」这段时用它直达 */
+  initialTab?: TaskTab;
   onClose: () => void;
   onSaved?: () => void;
 }) {
@@ -74,10 +88,10 @@ export function TaskEditorDrawer({
     const next = task ? cloneSpec(task.spec) : newTask();
     setSpec(next);
     setName(task?.name ?? "");
-    setTab("basic");
+    setTab(initialTab ?? "basic");
     setJsonText(JSON.stringify(next, null, 2));
     setJsonError(null);
-  }, [open, task]);
+  }, [open, task, initialTab]);
 
   const issues = useMemo(() => validateSpec(spec), [spec]);
   const byPath = useMemo(() => issuesByPath(issues), [issues]);

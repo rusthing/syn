@@ -6,6 +6,7 @@
 //! `unique_keys` 里的列名要与 DDL 里的约束**逐字一致**：框架靠它把
 //! `23505`（唯一冲突）翻译成「任务编码已存在」，写错列名只会退化成 500。
 
+mod syn_canvas_layout_dao;
 mod syn_cursor_dao;
 mod syn_datasource_dao;
 mod syn_idem_dao;
@@ -13,6 +14,7 @@ mod syn_source_dao;
 mod syn_task_dao;
 mod syn_task_version_dao;
 
+pub use syn_canvas_layout_dao::SynCanvasLayoutDao;
 pub use syn_cursor_dao::SynCursorDao;
 pub use syn_datasource_dao::SynDatasourceDao;
 pub use syn_idem_dao::SynIdemDao;

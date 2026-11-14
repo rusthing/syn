@@ -520,6 +520,80 @@ id
 );
 
 
+
+/*==============================================================*/
+/* Table: syn_canvas_layout                                     */
+/*==============================================================*/
+create table syn_canvas_layout (
+   id                   INT8                 not null,
+   node_type            INT2                 not null,
+   node_key             VARCHAR(128)         not null,
+   x                    INT4                 not null,
+   y                    INT4                 not null,
+   creater_id           INT8                 not null,
+   create_ms            INT8                 not null,
+   updater_id           INT8                 not null,
+   update_ms            INT8                 not null,
+   constraint PK_SYN_CANVAS_LAYOUT primary key (id),
+   constraint AK_NODE_TYPE_AND_NODE_KEY_SYN_CANVAS_LAYOUT unique (node_type, node_key)
+);
+
+comment on table syn_canvas_layout is
+'画布布局：拓扑页每个节点的世界坐标，按「节点类型 + 节点标识」存一行。节点不存在了残行无害（画布丢弃即可），不参与任何业务判断。';
+
+comment on column syn_canvas_layout.id is
+'ID
+由 idworker 生成，全局唯一';
+
+comment on column syn_canvas_layout.node_type is
+'节点类型
+@enum CanvasNodeType default=Task
+  1=Datasource  数据源
+  2=Source      取数来源
+  3=Topic       主题
+  4=Task        任务';
+
+comment on column syn_canvas_layout.node_key is
+'节点标识
+数据源 / 取数来源 / 任务填各自的 code，主题填 topic 名
+@len 1..=128';
+
+comment on column syn_canvas_layout.x is
+'画布横坐标
+世界坐标（不是屏幕坐标），与缩放无关
+@range 0..=20000';
+
+comment on column syn_canvas_layout.y is
+'画布纵坐标
+世界坐标（不是屏幕坐标），与缩放无关
+@range 0..=20000';
+
+comment on column syn_canvas_layout.creater_id is
+'创建者ID
+由框架在新增时写入当前操作者；无登录态的系统写入写 0';
+
+comment on column syn_canvas_layout.create_ms is
+'创建时间戳
+由框架在新增时写入当前时间
+@unit ms';
+
+comment on column syn_canvas_layout.updater_id is
+'更新者ID
+由框架在修改时写入当前操作者；无登录态的系统写入写 0';
+
+comment on column syn_canvas_layout.update_ms is
+'更新时间戳
+由框架在修改时写入当前时间
+@unit ms';
+
+/*==============================================================*/
+/* Index: syn_canvas_layout_PK                                  */
+/*==============================================================*/
+create unique index syn_canvas_layout_PK on syn_canvas_layout (
+id
+);
+
+
 alter table syn_task_version
    add constraint fk_task_id__from__syn_task foreign key (task_id)
       references syn_task (id)

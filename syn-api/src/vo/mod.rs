@@ -14,6 +14,7 @@
 //! 3. **`Option` 为 `None` 时不输出**（`skip_serializing_none`）：让「没有这个字段」
 //!    和「字段是 null」在报文里保持一致，前端不必两套判断。
 
+mod syn_canvas_layout_vo;
 mod syn_datasource_vo;
 mod syn_delivery_vo;
 mod syn_idem_vo;
@@ -22,6 +23,7 @@ mod syn_service_vo;
 mod syn_source_vo;
 mod syn_task_vo;
 
+pub use syn_canvas_layout_vo::SynCanvasLayoutVo;
 pub use syn_datasource_vo::SynDatasourceVo;
 pub use syn_delivery_vo::SynDeliveryVo;
 pub use syn_idem_vo::SynIdemVo;
