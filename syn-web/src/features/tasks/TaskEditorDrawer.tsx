@@ -427,7 +427,8 @@ export function TaskEditorDrawer({
                       value={spec.target.datasource ?? ""}
                       placeholder={datasourceOptions[0]?.code ?? "dtw"}
                       options={datasourceOptions.map((d) => ({ value: d.code, hint: d.name }))}
-                      countText={(n) => `共 ${n} 个数据源，点一条即填入；也可手输 code`}
+                      unit="数据源"
+                      footNote="，点一条即填入；也可手输 code"
                       emptyText="还没有维护数据源。到「数据源」页登记后这里会自动出现，也可以直接手输 code。"
                       onChange={(v) => patch({ target: { ...spec.target, datasource: v } })}
                     />
@@ -506,7 +507,7 @@ export function TaskEditorDrawer({
                       value: s.name,
                       hint: s.healthy ? `${s.healthy} 个健康实例` : undefined,
                     }))}
-                    countText={(n) => `共 ${n} 个候选，点一条即填入；也可手输未登记的服务名`}
+                    footNote="，点一条即填入；也可手输未登记的服务名"
                     emptyText="没拉到注册中心的服务清单（未配置或暂时不可达）。直接手输服务名即可，配置不依赖「编辑时注册中心里有什么」。"
                     onChange={(v) => patch({ target: { ...spec.target, service: v } })}
                   />
