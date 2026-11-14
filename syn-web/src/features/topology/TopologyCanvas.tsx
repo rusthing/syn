@@ -1,7 +1,7 @@
 /**
  * # 拓扑画布
  *
- * 只负责画和拖：节点位置、连线、缩放平移。写库的动作（保存坐标、打开抽屉、
+ * 只负责画和拖：节点位置、连线、缩放平移。写库的动作（保存坐标、打开窗体、
  * 启停任务）全部由页面传入 —— 组件不知道接口存在。
  *
  * 交互按 dbz 控制面板那套收敛：
@@ -69,8 +69,11 @@ interface Props {
   onToggleTask: (node: GraphNode, next: boolean) => void;
   /** 连线落点处的独占开关：改 spec.exclusive 保存 */
   onToggleExclusive: (node: GraphNode) => void;
-  /** 开关请求进行中的任务 id：按钮置灰防连点 */
-  busyTaskId?: string | null;
+  /**
+   * 正在进行的开关请求，键是 `${node.id}:${action}`。启用与独占各占一键，
+   * 一个在途时不会把另一个也点不了；只给视觉提示，不禁用任何按钮。
+   */
+  pendingKeys?: ReadonlySet<string>;
 }
 
 export function TopologyCanvas({
@@ -83,7 +86,7 @@ export function TopologyCanvas({
   onOpenEntity,
   onToggleTask,
   onToggleExclusive,
-  busyTaskId,
+  pendingKeys,
 }: Props) {
   const boxRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>({ x: 0, y: 0, scale: 0.8 });
@@ -129,10 +132,10 @@ export function TopologyCanvas({
     });
   }, []);
 
-  // 请求开始后按钮会置灰，mouseleave 不一定还收得到，主动收掉残留气泡
+  // 请求开始后指针可能已不在卡片上（气泡会残留），主动收掉
   useEffect(() => {
-    if (busyTaskId) setHint(null);
-  }, [busyTaskId]);
+    if (pendingKeys?.size) setHint(null);
+  }, [pendingKeys]);
 
   const rectOf = useCallback(
     (node: GraphNode) => {
@@ -269,7 +272,9 @@ export function TopologyCanvas({
       setDrag((d) => {
         if (!d) return null;
         if (d.moved) onMove(d.id, { x: Math.round(d.x), y: Math.round(d.y) });
-        else onSelect(d.id === selectedId ? null : d.id);
+        // 单击始终选中（右侧属性栏常驻）：点空白才取消。以前做成 toggle，
+        // 连点同一张卡会把选中态抵消掉，属性栏/OA 面板会莫名消失。
+        else onSelect(d.id);
         return null;
       });
     };
@@ -279,7 +284,7 @@ export function TopologyCanvas({
       window.removeEventListener("pointermove", onMoveEvent);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [drag, view.x, view.y, view.scale, onMove, onSelect, selectedId]);
+  }, [drag, view.x, view.y, view.scale, onMove, onSelect]);
 
   const startPan = (e: React.PointerEvent) => {
     if (e.button !== 0 || isControl(e.target)) return;
@@ -428,9 +433,9 @@ export function TopologyCanvas({
               className: cn("absolute", dragging ? "z-20 cursor-grabbing" : "z-10 cursor-grab"),
               onPointerDown: startNodeDrag(node),
               onDoubleClick: (e: React.MouseEvent) => {
-                // 双击开关不该顺手把抽屉打开（会盖住刚点的那张卡）
+                // 双击开关不该顺手把窗体打开（会盖住刚点的那张卡）
                 if (isControl(e.target)) return;
-                // 双击进抽屉：顺手选中，抽屉关掉后卡片仍是选中的那个（免得两次
+                // 双击进窗体：顺手选中，窗体关掉后卡片仍是选中的那个（免得两次
                 // 点击的 toggle 把选中态又抵消掉）
                 onSelect(node.id);
                 onOpenEntity(node);
@@ -450,11 +455,22 @@ export function TopologyCanvas({
                   <TaskCard
                     node={node}
                     selected={node.id === selectedId}
-                    onOpenStage={(stage) => onOpenStage(node, stage)}
-                    onToggleEnabled={(next) => onToggleTask(node, next)}
-                    onToggleExclusive={() => onToggleExclusive(node)}
+                    onOpenStage={(stage) => {
+                      onSelect(node.id);
+                      onOpenStage(node, stage);
+                    }}
+                    // 开关点下去也把卡片选中：右侧属性栏跟着切到这张卡
+                    onToggleEnabled={(next) => {
+                      onSelect(node.id);
+                      onToggleTask(node, next);
+                    }}
+                    onToggleExclusive={() => {
+                      onSelect(node.id);
+                      onToggleExclusive(node);
+                    }}
                     onHint={showHint}
-                    busy={busyTaskId === node.id}
+                    enabledBusy={pendingKeys?.has(`${node.id}:enabled`)}
+                    exclusiveBusy={pendingKeys?.has(`${node.id}:exclusive`)}
                   />
                 </div>
               );

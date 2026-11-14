@@ -4,7 +4,7 @@
 
 技术栈跟 `jobx-web` 保持一致，不另起一套：React 19 + Vite 7 + Tailwind 4 +
 React Router 7 + TanStack Query + lucide-react。没有引组件库 —— 一个控制台需要的
-表格、抽屉、开关、提示，自己写比配主题便宜。
+表格、居中弹出窗体、开关、提示，自己写比配主题便宜。
 
 ```bash
 pnpm install
@@ -34,9 +34,13 @@ pnpm typecheck
 
 两边语义有几处必须逐字对齐，改动时别「优化」：
 
-- 守卫的断言默认对**记录**求值，看请求体要显式 `scope: body`；
+- 守卫的条件默认对**记录**求值，看请求体要显式 `scope: body`；同一作用域在判定段
+  指的是下游**响应体**；
+- 条件数组即 AND，元素可以是 `all` / `any` / `not` 分组（可嵌套）；旧的一层断言数组
+  不用迁移；`gt` / `gte` / `lt` / `lte` 只对数字生效；
 - 映射的 `omit_null` 是全局语义，`on_empty` 只处理「变换之后变空」；
-- 判定首命中即停，末条不带 `field`，没命中任何规则时按 `UNCLASSIFIED` 失败；
+- 判定首命中即停，末条必须是不带 `field` 的纯状态码兜底（不能含 any / not 分组），
+  没命中任何规则时按 `UNCLASSIFIED` 失败；
 - 变换链遇到非字符串原样返回，解析不了就报错走该行的 `on_error`。
 
 「真实投递」调 `POST /syn/sync/{topic}`，返回的就是 sink 会收到的结论（含 HTTP 状态码
@@ -53,19 +57,27 @@ pnpm typecheck
 - 静态服务器配不了 SPA 回退时用 `VITE_ROUTER=hash`；hash 模式 basename 必须留空，
   否则 react-router 拿 basename 去匹配 hash 路径，整页空白。
 
-## 后端还缺什么
+## 接口清单
 
-界面按 `doc/syn-开发规范.md` §7 的路径调用下面这些接口。目前 `syn-svr` 只有
-`POST /syn/sync/{topic}` 与 `POST /syn/task/reload`，其余返回 404 时页面会明确提示
-「syn-svr 尚未提供该能力」，不会白屏：
+界面按 `doc/syn-开发规范.md` §7 调这些路径，**全部已在 `syn-svr/src/web/router/` 注册**。
+遇到 404 / 405 基本只有两种原因：网关前缀没配对，或部署的 syn-svr 是旧版本 ——
+`ApiError.isMissing` 会给出明确提示，不会白屏。
 
 | 页面 | 接口 |
 |---|---|
-| 任务 | `GET/POST/PUT/DELETE /syn/task[/{id}]`、`PUT /syn/task/{id}/enabled` |
-| 来源 | `GET /syn/source/list`、`POST /syn/source/{id}/pull`、`PUT /syn/source/{id}/enabled` |
-| 投递 | `GET /syn/delivery/page` |
-| 幂等 | `GET /syn/idem/page` |
-| 总览 | `GET /syn/overview?window=24h` |
+| 任务 | `GET /syn/task/list`、`GET /syn/task/page`、`GET/POST/PUT/DELETE /syn/task[/{id}]`、`PUT /syn/task/{id}/enabled` |
+| 来源 | `GET /syn/source/list|page`、`POST/PUT/DELETE /syn/source[/{id}]`、`POST /syn/source/{id}/pull`、`PUT /syn/source/{id}/enabled` |
+| 数据源 | `GET /syn/datasource/list|page`、`POST/PUT/DELETE /syn/datasource[/{id}]`、`PUT /syn/datasource/{id}/enabled` |
+| 控制面板 | `GET/PUT /syn/canvas/layout`、`GET /syn/registry/services` |
+| 投递 / 幂等 / 总览 | `GET /syn/delivery/page`、`GET /syn/idem/page`、`GET /syn/overview?window=24h` |
+| 投递入口 / 手动重载 | `POST /syn/sync/{topic}`、`POST /syn/task/reload` |
 
-补齐它们属于 `syn-api` 的 `mo/dto/vo/dic` + `dao/svc/ctrl/router/api_doc` 五件套，
-是规范 §13 里还没打勾的那部分。
+`PUT /syn/task/{id}/enabled` 只回一个 `Ro<SynTaskVo>`，前端只取 `enabled` 这个权威布尔值，
+不把 `extra` 当完整任务解析：包装差异（`extra` 为 null、字段缺失）不该让一次成功的启停
+在转换函数里抛错、进而被当成失败回滚。所有写库接口都会发 `refresh.syn.task`，
+各副本下一拍自动重载快照；顶栏「重载快照」是手动兜底，不是生效的必要条件。
+
+启停的前端契约见 `src/hooks/task-cache.ts`：乐观补丁同时写 `enabled` 与 `spec.enabled`
+（后端保存任务时用 `spec` 反推列，漏一个就会被随后的编辑悄悄改回去），连点用序号保证
+最后一次生效，`onSuccess` 只标脏不立刻 refetch。请求期间开关**保持可点**，
+`busy` 只加 `aria-busy` 和描边 —— 原生 `disabled` 会连 `click` 一起吞掉。

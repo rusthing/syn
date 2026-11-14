@@ -5,11 +5,11 @@
  * 颜色只区分「哪一类节点」，状态只用标签和左侧色条表达 —— 一屏几十张卡时，
  * 颜色一多就分不清哪个是错误色、哪个是类型色。
  *
- * 任务卡只有一种形态（600×140）：六段并排、每段可点，点哪段进抽屉的哪个页签。
+ * 任务卡只有一种形态（600×140）：六段并排、每段可点，点哪段进窗体的哪个页签。
  * 收起/展开切换存在过，但六段摘要收成一行小格子后基本读不出内容，两态还带来
  * 选中让位、邻居下移这些复杂度，不如恒展开。
  *
- * 两个开关不在编辑抽屉里，就在卡上：
+ * 两个开关不在编辑窗体里，就在卡上：
  * - **启用**：右上角的标准 Switch，点了直接调 toggle 接口；
  * - **独占**：主题连线落到卡片的位置（顶边中点）做成一个圆形图标按钮 ——
  *   独占时数据到此为止（箭头落地），非独占时数据会继续流给下一个任务（分叉）。
@@ -257,7 +257,7 @@ const EXCLUSIVE_HINT = {
  * 独占开关：钉在主题连线落进卡片的位置（顶边中点）。
  *
  * 图标就是语义：独占 = 命中即止（箭头落地，数据到这张卡为止）；非独占 = 分叉继续
- * （数据还会流给后面的任务）。点击直接改 spec.exclusive 保存，不用进抽屉。
+ * （数据还会流给后面的任务）。点击直接改 spec.exclusive 保存，不用进窗体。
  *
  * 图标只有 22px，画布默认还缩到 45%，所以视觉尺寸不变、用 after 伪元素把 hover /
  * 点击热区扩到约 38px；说明文字交给画布层的气泡，不用会跟着缩放的原生 title。
@@ -290,14 +290,15 @@ function ExclusiveToggle({
       }}
       aria-label={hint}
       aria-pressed={exclusive}
-      disabled={busy}
+      aria-busy={busy || undefined}
       className={cn(
         "absolute -top-[11px] left-1/2 z-10 flex size-[22px] -translate-x-1/2 items-center justify-center rounded-full border shadow-panel transition-colors",
         "after:absolute after:-inset-2 after:content-['']",
         exclusive
           ? "border-accent/50 bg-accent-soft text-accent-strong"
           : "border-line bg-surface text-muted hover:border-line-strong hover:text-ink",
-        busy && "cursor-wait opacity-60",
+        // 请求中不禁用：原生 disabled 会连 click 一起吞掉，看起来就是「点不动」
+        busy && "cursor-wait opacity-70 ring-2 ring-accent/25",
       )}
     >
       {exclusive ? <ArrowDownToLine className="size-3.5" /> : <Split className="size-3.5" />}
@@ -313,31 +314,34 @@ export function TaskCard({
   onToggleEnabled,
   onToggleExclusive,
   onHint,
-  busy,
+  enabledBusy,
+  exclusiveBusy,
 }: {
   node: GraphNode;
   selected: boolean;
   onPointerDown?: (e: React.PointerEvent) => void;
   onOpenStage: (stage: TaskStage) => void;
-  /** 启用开关直接走 toggle 接口；抽屉里不再有这一项 */
+  /** 启用开关直接走 toggle 接口；窗体里不再有这一项 */
   onToggleEnabled: (next: boolean) => void;
   onToggleExclusive: () => void;
   onHint?: HintHandler;
-  busy?: boolean;
+  /** 两个请求各记各的，互不置灰；都只影响视觉，不禁用按钮 */
+  enabledBusy?: boolean;
+  exclusiveBusy?: boolean;
 }) {
   const task = node.task;
   const segments = node.segments ?? [];
   const stats = task?.stats;
   const exclusive = task?.spec.exclusive !== false;
   const enabledHint = task?.enabled
-    ? "当前启用：点击停用这个任务。停用后事件会落到下一个任务或直接进死信；改完要点顶栏「重载快照」，执行器才按新状态跑。"
-    : "当前停用：点击启用这个任务。启用后同样要点顶栏「重载快照」，执行器才会加载新状态。";
+    ? "当前启用：点击停用这个任务。停用后事件会落到下一个任务或直接进死信；写库时会通知各副本刷新执行器快照。"
+    : "当前停用：点击启用这个任务。启用后写库同样会通知各副本刷新执行器快照。";
 
   return (
     <CardShell node={node} selected={selected} onPointerDown={onPointerDown}>
       <ExclusiveToggle
         exclusive={exclusive}
-        busy={busy}
+        busy={exclusiveBusy}
         onToggle={onToggleExclusive}
         onHint={onHint}
       />
@@ -367,7 +371,7 @@ export function TaskCard({
             checked={!!task?.enabled}
             size="sm"
             label={task?.enabled ? `停用 ${node.title}` : `启用 ${node.title}`}
-            disabled={busy}
+            busy={enabledBusy}
             onChange={onToggleEnabled}
           />
         </div>

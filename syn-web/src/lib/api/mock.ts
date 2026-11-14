@@ -23,6 +23,7 @@ import type {
   SyncSource,
   SyncTask,
   TaskSpec,
+  TaskToggleResult,
   Verdict,
 } from "./types";
 
@@ -650,17 +651,17 @@ export const mockTasks = {
     return next;
   },
 
-  async toggle(id: string, enabled: boolean): Promise<SyncTask> {
+  /** 与后端 `set_enabled` 对齐：同时写列和 spec.enabled，且**不加版本**（开关不是规则） */
+  async toggle(id: string, enabled: boolean): Promise<TaskToggleResult> {
     const current = await mockTasks.get(id);
     const next: SyncTask = {
       ...current,
       enabled,
       spec: { ...current.spec, enabled },
-      version: current.version + 1,
       update_ms: String(Date.now()),
     };
     TASKS = TASKS.map((t) => (t.id === current.id ? next : t));
-    return next;
+    return { id, enabled };
   },
 
   async remove(id: string): Promise<null> {

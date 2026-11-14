@@ -1,5 +1,5 @@
 /**
- * # 同步拓扑
+ * # 控制面板
  *
  * 一张图看清「数据从哪来、经过哪些任务、投到哪去」：
  * 数据源 → 取数来源 → 主题 → 任务，投递是任务第五段（判定看投递响应），画在卡里。
@@ -8,8 +8,9 @@
  * （`syn_canvas_layout`）。所以这张图不可能和真实配置不一致 —— 这也意味着
  * **不能在这里直接改引用关系**：改「来源用哪个数据源」要回表单，图只负责呈现与跳转。
  *
- * 这里只做写操作：拖动后保存坐标、双击打开抽屉、点任务卡的某一段直达页签、
- * 组件栏点选直接新建（新建的抽屉与维护页共用同一个组件，实体传 null 即创建模式）。
+ * 这里只做写操作：拖动后保存坐标、单击在右侧属性栏看属性、双击打开居中窗体、
+ * 点任务卡的某一段直达页签、组件栏点选直接新建（新建窗体与维护页共用同一个组件，
+ * 实体传 null 即创建模式）。
  */
 
 import { useMemo, useState } from "react";
@@ -29,6 +30,7 @@ import { DatasourceEditorDrawer } from "@/features/datasources/DatasourceEditorD
 import { TaskEditorDrawer, type TaskTab } from "@/features/tasks/TaskEditorDrawer";
 import { buildGraph, mergePositions, type GraphNode, type TaskStage } from "./graph";
 import { TopologyCanvas } from "./TopologyCanvas";
+import { TopologyInspector } from "./TopologyInspector";
 import { TopologyPalette } from "./TopologyPalette";
 
 type Editing =
@@ -68,25 +70,34 @@ export function TopologyPage() {
   /** 拖动中的临时坐标：不等接口回来就先把卡放到新位置 */
   const [dragging, setDragging] = useState<Record<string, CanvasNodePos>>({});
   const [editing, setEditing] = useState<Editing>(null);
-  /** 卡上开关请求进行中的任务 id：按钮置灰防连点 */
-  const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+  /**
+   * 在途的开关请求，键是 `${node.id}:${action}`。启用和独占各占一键，互不干扰；
+   * 且**只做视觉提示**，不给按钮加原生 disabled —— 那会把后续 click 整个吞掉。
+   */
+  const [pendingKeys, setPendingKeys] = useState<ReadonlySet<string>>(() => new Set());
 
-  const toastTaskBusy = (id: string, fn: () => void) => {
-    setBusyTaskId(id);
-    fn();
+  const runPending = (key: string, run: (settled: () => void) => void) => {
+    setPendingKeys((prev) => new Set(prev).add(key));
+    run(() =>
+      setPendingKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      }),
+    );
   };
-  const settleTaskBusy = () => setBusyTaskId(null);
 
-  /** 卡右上角的启用开关：直接走 toggle 接口，不必进抽屉 */
+  /** 卡右上角 / 属性栏的启用开关：直接走 toggle 接口，不必进窗体 */
   const toggleTask = (node: GraphNode, next: boolean) => {
     if (!node.task) return;
-    toastTaskBusy(node.id, () =>
+    runPending(`${node.id}:enabled`, (settled) =>
       toggleTaskMutation.mutate(
         { id: node.task!.id, enabled: next },
         {
-          onSuccess: () => toast.success(next ? "已启用" : "已停用", "点顶栏「重载快照」后执行器才生效"),
+          onSuccess: () =>
+            toast.success(next ? "已启用" : "已停用", "已通知各副本刷新执行器快照"),
           onError: (err) => toast.error("操作失败", err instanceof Error ? err.message : "接口不可达"),
-          onSettled: settleTaskBusy,
+          onSettled: settled,
         },
       ),
     );
@@ -97,17 +108,17 @@ export function TopologyPage() {
     if (!node.task) return;
     const task = node.task;
     const next = { ...cloneSpec(task.spec), exclusive: task.spec.exclusive === false };
-    toastTaskBusy(node.id, () =>
+    runPending(`${node.id}:exclusive`, (settled) =>
       saveTask.mutate(
         { id: task.id, name: task.name, spec: next },
         {
           onSuccess: () =>
             toast.success(
               next.exclusive ? "已设为独占" : "已取消独占",
-              `${next.exclusive ? "命中后停止匹配" : "命中后继续匹配下一个任务"}；版本 +1，重载快照后生效`,
+              `${next.exclusive ? "命中后停止匹配" : "命中后继续匹配下一个任务"}；版本 +1，已通知各副本刷新执行器快照`,
             ),
           onError: (err) => toast.error("操作失败", err instanceof Error ? err.message : "接口不可达"),
-          onSettled: settleTaskBusy,
+          onSettled: settled,
         },
       ),
     );
@@ -128,6 +139,9 @@ export function TopologyPage() {
     const base = mergePositions(graph.nodes, stored);
     return { ...base, ...dragging };
   }, [graph.nodes, stored, dragging]);
+
+  /** 属性栏只读图节点，不另存一份选中实体：图变了属性跟着变，不存在两份状态不同步 */
+  const selectedNode = graph.nodes.find((n) => n.id === selectedId) ?? null;
 
   const issueNodes = graph.nodes.filter((n) => n.issues.length > 0);
   // 只有「主题没人消费」这种会真丢数据的才上条；「没登记生产者」走 CDC 时是常态，
@@ -175,12 +189,12 @@ export function TopologyPage() {
   return (
     <>
       <PageHeader
-        title="同步拓扑"
+        title="控制面板"
         subtitle={
           <>
             数据源 → 取数来源 → 主题 → 任务，投递在判定之前。左侧组件栏点选直接新建；
-            拖动节点即保存摆位，双击卡片进抽屉改配置，点任务卡里的某一段直达对应页签；
-            卡右上角切换启用，连线落点切换独占。
+            单击卡片在右侧看属性，双击打开窗体改配置，拖动节点即保存摆位；卡右上角切换启用，
+            连线落点切换独占。
           </>
         }
         actions={
@@ -259,9 +273,17 @@ export function TopologyPage() {
               onOpenEntity={openEntity}
               onToggleTask={toggleTask}
               onToggleExclusive={toggleExclusive}
-              busyTaskId={busyTaskId}
+              pendingKeys={pendingKeys}
             />
           </div>
+          <TopologyInspector
+            node={selectedNode}
+            onClose={() => setSelectedId(null)}
+            onOpenEntity={openEntity}
+            onOpenStage={openStage}
+            onToggleEnabled={(n, next) => toggleTask(n, next)}
+            enabledBusy={selectedNode ? pendingKeys.has(`${selectedNode.id}:enabled`) : false}
+          />
         </div>
       )}
 

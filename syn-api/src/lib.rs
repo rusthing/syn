@@ -35,9 +35,9 @@ pub use dto::{SynDatasourceEnabledDto, SynDatasourceQueryDto, SynDatasourceSaveD
 pub use issue::{SpecIssue, SpecIssueKind};
 pub use source_spec::{CursorType, SourceSpec, WrapMode};
 pub use spec::{
-    Action, Assert, Binding, BodyMode, DbTarget, Guard, Header, Mapping, MappingRow, Method,
-    OnConflict, OnEmpty, OnError, Op, Operator, Outcome, Scope, Target, TargetKind, TaskSpec,
-    Verdict,
+    Action, AllGroup, AnyGroup, Assert, Binding, BodyMode, Condition, DbTarget, Guard, Header,
+    Mapping, MappingRow, Method, NotGroup, OnConflict, OnEmpty, OnError, Op, Operator, Outcome,
+    Scope, Target, TargetKind, TaskSpec, Verdict, MAX_CONDITION_DEPTH, MAX_CONDITION_NODES,
 };
 #[cfg(feature = "server")]
 pub use vo::*;

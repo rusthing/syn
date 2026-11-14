@@ -1,13 +1,14 @@
-//! # 断言求值
+//! # 条件求值
 //!
-//! 五段里的所有条件最终都走这里。一条断言 = 取值 + 操作符 + 期望值，
-//! 没有嵌套布尔树，也没有函数调用 —— 这是「配置」与「脚本」的分界线。
+//! 五段里的所有条件最终都走这里。叶子断言 = 取值 + 操作符 + 期望值；
+//! `all` / `any` / `not` 只是布尔分组，没有函数调用、没有表达式字符串 ——
+//! 这是「配置」与「脚本」的分界线。
 //!
 //! 数字比较按数值走（`1` 等于 `1.0`）：JSON 里这两种写法在不同生产者手里
 //! 都常见，按字面量比会莫名其妙地判不等。
 
 use serde_json::{Map, Value};
-use syn_api::{Assert, Operator, Scope};
+use syn_api::{Assert, Condition, Operator, Scope};
 
 use crate::value::{get_path, get_path_in_map};
 
@@ -47,6 +48,24 @@ impl<'a> Context<'a> {
         self.status = Some(status);
         self
     }
+}
+
+/// # 求值一棵条件
+///
+/// 三段的条件数组都是隐式 AND 根节点，元素既可以是叶子断言，也可以是分组。
+/// 分组只做布尔组合，不含任何副作用，所以递归深度由保存期的校验兜住。
+pub fn eval_condition(cond: &Condition, ctx: &Context<'_>, default_scope: Scope) -> bool {
+    match cond {
+        Condition::Assert(a) => eval(a, ctx, default_scope),
+        Condition::All(g) => g.all.iter().all(|c| eval_condition(c, ctx, default_scope)),
+        Condition::Any(g) => g.any.iter().any(|c| eval_condition(c, ctx, default_scope)),
+        Condition::Not(g) => !eval_condition(g.not.as_ref(), ctx, default_scope),
+    }
+}
+
+/// 顶层条件数组：全部满足才算通过
+pub fn eval_all(conds: &[Condition], ctx: &Context<'_>, default_scope: Scope) -> bool {
+    conds.iter().all(|c| eval_condition(c, ctx, default_scope))
 }
 
 /// # 求值一条断言
@@ -127,7 +146,9 @@ fn eval_value(assert: &Assert, lhs: Option<&Value>) -> bool {
             text_of(value).is_some_and(|s| re.is_match(&s))
         }
         Operator::Gt => num_pair(value, expected).is_some_and(|(a, b)| a > b),
+        Operator::Gte => num_pair(value, expected).is_some_and(|(a, b)| a >= b),
         Operator::Lt => num_pair(value, expected).is_some_and(|(a, b)| a < b),
+        Operator::Lte => num_pair(value, expected).is_some_and(|(a, b)| a <= b),
     }
 }
 
@@ -248,5 +269,69 @@ mod tests {
             scope: None,
         };
         assert!(eval(&a, &Context::of(&r).with_body(map), Scope::Body));
+    }
+
+    #[test]
+    fn inclusive_numeric_compare() {
+        assert!(check("$.after.id", Operator::Gte, Some(json!(8821))));
+        assert!(check("$.after.id", Operator::Gte, Some(json!(8821.0))));
+        assert!(!check("$.after.id", Operator::Gte, Some(json!(8822))));
+        assert!(check("$.after.id", Operator::Lte, Some(json!(8821))));
+        assert!(!check("$.after.id", Operator::Lte, Some(json!(8000))));
+        // 非数字仍然不参与比较
+        assert!(!check("$.after.name", Operator::Gte, Some(json!(1))));
+    }
+
+    #[test]
+    fn status_and_response_body_can_be_combined() {
+        let conds: Vec<Condition> = serde_json::from_value(json!([
+            {"op": "eq", "value": 200},
+            {"scope": "body", "field": "$.result", "op": "gt", "value": 0}
+        ]))
+        .unwrap();
+        let record = Value::Null;
+        let good = json!({"result": 3});
+        let ctx = Context::of(&record)
+            .with_status(200)
+            .with_body(good.as_object().unwrap());
+        assert!(eval_all(&conds, &ctx, Scope::Status));
+
+        let bad = json!({"result": 0});
+        let ctx = Context::of(&record)
+            .with_status(200)
+            .with_body(bad.as_object().unwrap());
+        assert!(!eval_all(&conds, &ctx, Scope::Status));
+    }
+
+    #[test]
+    fn nested_any_and_not() {
+        let conds: Vec<Condition> = serde_json::from_value(json!([
+            {"op": "eq", "value": 200},
+            {"any": [
+                {"scope": "body", "field": "$.extra.code", "op": "eq", "value": "OK"},
+                {"scope": "body", "field": "$.extra.code", "op": "absent"}
+            ]},
+            {"not": {"all": [{"scope": "body", "field": "$.blocked", "op": "eq", "value": true}]}}
+        ]))
+        .unwrap();
+        let record = Value::Null;
+        let body = json!({"extra": {"code": "X"}, "blocked": false});
+        let ctx = Context::of(&record)
+            .with_status(200)
+            .with_body(body.as_object().unwrap());
+        // code 是 X、字段存在 → any 不成立
+        assert!(!eval_all(&conds, &ctx, Scope::Status));
+
+        let body = json!({"blocked": false});
+        let ctx = Context::of(&record)
+            .with_status(200)
+            .with_body(body.as_object().unwrap());
+        assert!(eval_all(&conds, &ctx, Scope::Status));
+
+        let body = json!({"blocked": true});
+        let ctx = Context::of(&record)
+            .with_status(200)
+            .with_body(body.as_object().unwrap());
+        assert!(!eval_all(&conds, &ctx, Scope::Status));
     }
 }

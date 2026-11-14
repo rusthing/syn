@@ -1,5 +1,5 @@
 /**
- * 取数来源的新增 / 编辑抽屉。
+ * 取数来源的新增 / 编辑窗体。
  *
  * 后端 `syn_source` 的 CRUD 一直在，缺的是这个入口：以前只能靠直接写库或调接口
  * 建来源，界面上只有「看 / 拉 / 启停」。连接串不在这里维护 —— 那是
@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CircleCheck, DatabaseZap, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
-import { ConfirmDialog, Drawer } from "@/components/ui/Drawer";
+import { ConfirmDialog, Modal } from "@/components/ui/Drawer";
 import { Field, Input, Select, Textarea } from "@/components/ui/Field";
 import { Switch } from "@/components/ui/Switch";
 import { useToast } from "@/components/ui/Toast";
@@ -107,10 +107,10 @@ export function SourceEditorDrawer({
   };
 
   return (
-    <Drawer
+    <Modal
       open={open}
       onClose={onClose}
-      width={660}
+      width={720}
       title={source ? `编辑 ${source.code}` : "新增取数来源"}
       subtitle="配完点「立即拉取」先验一轮；保存不会推进游标"
       badge={
@@ -367,11 +367,11 @@ export function SourceEditorDrawer({
           <DatabaseZap className="mt-0.5 size-3.5 shrink-0" />
           <span>
             来源把行包进虚拟 topic <code className="font-mono">{draft.topic?.trim() || `source:${draft.code || "编码"}`}</code>；
-            要真正投递，还得有一个监听这个 topic 的同步任务。改配置不会让执行器立刻生效，任务那边保存后点顶栏「重载快照」。
+            要真正投递，还得有一个监听这个 topic 的同步任务。改来源配置不会让执行器立刻生效，任务那边保存时会自动通知各副本刷新快照。
           </span>
         </div>
       </div>
-    </Drawer>
+    </Modal>
   );
 }
 

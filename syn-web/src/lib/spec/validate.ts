@@ -6,7 +6,8 @@
  * 两边结论不一致就说明规则漏写了 —— 那种情况应当改代码，不是放宽前端。
  */
 
-import type { Assert, Scope, TaskSpec } from "@/lib/api/types";
+import type { Assert, Condition, Scope, TaskSpec } from "@/lib/api/types";
+import { isAssert } from "./defaults";
 import { TRANSFORMS } from "./transforms";
 
 export type IssueKind = "missing" | "conflict" | "invalid" | "unknown_transform";
@@ -26,30 +27,97 @@ const NEEDS_VALUE = new Set([
   "contains",
   "regex",
   "gt",
+  "gte",
   "lt",
+  "lte",
 ]);
 
-function validateAsserts(
+/** 与 `syn-api::MAX_CONDITION_DEPTH / MAX_CONDITION_NODES` 对齐 */
+const MAX_CONDITION_DEPTH = 8;
+const MAX_CONDITION_NODES = 200;
+
+function validateCondition(
+  at: string,
+  c: Condition,
+  fallback: Scope,
+  into: SpecIssue[],
+  depth: number,
+  counter: { n: number },
+): void {
+  counter.n += 1;
+  if (depth > MAX_CONDITION_DEPTH) {
+    into.push({ path: at, kind: "invalid", message: "条件分组最多嵌套 8 层" });
+    return;
+  }
+  if (counter.n > MAX_CONDITION_NODES) {
+    into.push({ path: at, kind: "invalid", message: "条件节点超过 200 个" });
+    return;
+  }
+  if (isAssert(c)) {
+    validateAssert(at, c, fallback, into);
+    return;
+  }
+  if ("all" in c) {
+    validateChildren(`${at}.all`, c.all, fallback, into, depth, counter);
+  } else if ("any" in c) {
+    validateChildren(`${at}.any`, c.any, fallback, into, depth, counter);
+  } else {
+    validateCondition(`${at}.not`, c.not, fallback, into, depth + 1, counter);
+  }
+}
+
+function validateChildren(
   path: string,
-  asserts: Assert[],
+  children: Condition[],
+  fallback: Scope,
+  into: SpecIssue[],
+  depth: number,
+  counter: { n: number },
+): void {
+  // 空 all 恒真、空 any 恒假，都能绕过「末条兜底」的意图
+  if (children.length === 0) {
+    into.push({ path, kind: "invalid", message: "分组里至少要有一条条件" });
+    return;
+  }
+  children.forEach((c, i) =>
+    validateCondition(`${path}[${i}]`, c, fallback, into, depth + 1, counter),
+  );
+}
+
+function validateAssert(at: string, a: Assert, fallback: Scope, into: SpecIssue[]): void {
+  const scope = a.scope ?? fallback;
+  if (scope === "status" && a.field) {
+    into.push({ path: at, kind: "conflict", message: "status 作用域的断言不能带 field" });
+  }
+  if (scope !== "status" && !(a.field ?? "").trim()) {
+    into.push({ path: at, kind: "missing", message: "该作用域的断言必须写 field" });
+  }
+  if (NEEDS_VALUE.has(a.op) && a.value === undefined) {
+    into.push({ path: at, kind: "missing", message: `操作符 ${a.op} 需要 value` });
+  }
+  if ((a.op === "in" || a.op === "not_in") && !Array.isArray(a.value)) {
+    into.push({ path: at, kind: "invalid", message: "in / not_in 的 value 必须是数组" });
+  }
+}
+
+function validateConditions(
+  path: string,
+  conds: Condition[],
   fallback: Scope,
   into: SpecIssue[],
 ): void {
-  asserts.forEach((a, i) => {
-    const at = `${path}[${i}]`;
-    const scope = a.scope ?? fallback;
-    if (scope === "status" && a.field) {
-      into.push({ path: at, kind: "conflict", message: "status 作用域的断言不能带 field" });
-    }
-    if (scope !== "status" && !(a.field ?? "").trim()) {
-      into.push({ path: at, kind: "missing", message: "该作用域的断言必须写 field" });
-    }
-    if (NEEDS_VALUE.has(a.op) && a.value === undefined) {
-      into.push({ path: at, kind: "missing", message: `操作符 ${a.op} 需要 value` });
-    }
-    if ((a.op === "in" || a.op === "not_in") && !Array.isArray(a.value)) {
-      into.push({ path: at, kind: "invalid", message: "in / not_in 的 value 必须是数组" });
-    }
+  const counter = { n: 0 };
+  conds.forEach((c, i) =>
+    validateCondition(`${path}[${i}]`, c, fallback, into, 0, counter),
+  );
+}
+
+/** 兜底规则：只由不带 field 的 eq / in 叶子与 all 分组组成 */
+export function isFallbackConditions(conds: Condition[]): boolean {
+  return conds.every((c) => {
+    if (isAssert(c)) return !c.field && (c.op === "in" || c.op === "eq");
+    if ("all" in c) return c.all.length > 0 && isFallbackConditions(c.all);
+    return false;
   });
 }
 
@@ -114,7 +182,7 @@ export function validateSpec(spec: TaskSpec): SpecIssue[] {
     }
   }
 
-  validateAsserts("match", spec.match ?? [], "record", issues);
+  validateConditions("match", spec.match ?? [], "record", issues);
 
   // 映射
   const rows = spec.mapping.rows;
@@ -199,8 +267,8 @@ export function validateSpec(spec: TaskSpec): SpecIssue[] {
         message: "守卫的结论只能是 fatal 或 skip",
       });
     }
-    if (g.when) validateAsserts(`${at}.when`, [g.when], "record", issues);
-    validateAsserts(`${at}.assert`, g.assert, "record", issues);
+    if (g.when) validateConditions(`${at}.when`, [g.when], "record", issues);
+    validateConditions(`${at}.assert`, g.assert, "record", issues);
   });
 
   // 判定
@@ -209,12 +277,10 @@ export function validateSpec(spec: TaskSpec): SpecIssue[] {
     issues.push({ path: "outcomes", kind: "missing", message: "没有判定规则：响应将无法分类" });
   } else {
     outcomes.forEach((o, i) => {
-      validateAsserts(`outcomes[${i}].assert`, o.assert, o.scope, issues);
+      validateConditions(`outcomes[${i}].assert`, o.assert, o.scope, issues);
     });
     const last = outcomes[outcomes.length - 1];
-    const isFallback = last.assert.every(
-      (a) => !a.field && (a.op === "in" || a.op === "eq"),
-    );
+    const isFallback = isFallbackConditions(last.assert);
     if (!isFallback) {
       issues.push({
         path: `outcomes[${outcomes.length - 1}]`,

@@ -98,7 +98,7 @@ export function GuardEditor({
             <div>
               <div className="mb-1 text-[11px] font-medium text-ink-soft">断言（全部满足才放行）</div>
               <AssertEditor
-                asserts={guard.assert}
+                conditions={guard.assert}
                 onChange={(assert) => update(i, { assert })}
                 pathPrefix={`${pathPrefix}[${i}].assert`}
                 issues={issues}

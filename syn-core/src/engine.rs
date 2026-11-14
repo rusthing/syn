@@ -12,9 +12,9 @@
 //! 死信里能看到到底是哪一段把它挡下来的。
 
 use serde_json::{Map, Value};
-use syn_api::{BodyMode, Method, Op, Scope, Target, TaskSpec, Verdict};
+use syn_api::{BodyMode, Condition, Method, Op, Scope, Target, TaskSpec, Verdict};
 
-use crate::assertion::{Context, eval};
+use crate::assertion::{Context, eval, eval_all, eval_condition};
 use crate::mapping::map;
 use crate::db::DbWriter;
 use crate::transport::{HttpRequest, HttpResponse, Transport};
@@ -240,18 +240,14 @@ fn prepare<'a>(spec: &'a TaskSpec, record: &Value) -> Result<Prepared<'a>, Execu
     if let Some(failed) = spec
         .match_conds
         .iter()
-        .find(|a| !eval(a, &ctx, Scope::Record))
+        .find(|c| !eval_condition(c, &ctx, Scope::Record))
     {
         return Err(Execution::stop(
             spec,
             Verdict::Skip,
             "no_match",
             Stage::Match,
-            format!(
-                "{} 不满足 {}",
-                failed.field.as_deref().unwrap_or("-"),
-                op_label(failed)
-            ),
+            format!("{} 不满足", condition_label(failed)),
         ));
     }
 
@@ -281,14 +277,10 @@ fn prepare<'a>(spec: &'a TaskSpec, record: &Value) -> Result<Prepared<'a>, Execu
         if let Some(failed) = guard
             .asserts
             .iter()
-            .find(|a| !eval(a, &guard_ctx, Scope::Record))
+            .find(|c| !eval_condition(c, &guard_ctx, Scope::Record))
         {
             let message = guard.on_fail.message.clone().unwrap_or_else(|| {
-                format!(
-                    "{} 不满足 {}",
-                    failed.field.as_deref().unwrap_or("-"),
-                    op_label(failed)
-                )
+                format!("{} 不满足", condition_label(failed))
             });
             return Err(Execution::stop(
                 spec,
@@ -438,6 +430,21 @@ fn op_label(a: &syn_api::Assert) -> String {
     format!("{:?}", a.op).to_lowercase()
 }
 
+/// 失败描述。分组没有唯一「失败原因」，只给分组名，避免把 OR 里某条未命中
+/// 说成整条规则失败的原因。
+fn condition_label(c: &Condition) -> String {
+    match c {
+        Condition::Assert(a) => format!(
+            "{} {}",
+            a.field.as_deref().unwrap_or("status"),
+            op_label(a)
+        ),
+        Condition::All(_) => "全部分组".into(),
+        Condition::Any(_) => "任意分组".into(),
+        Condition::Not(_) => "取反分组".into(),
+    }
+}
+
 /// 最小百分号编码：只保留 unreserved，其余全部转义。
 ///
 /// 不引 `percent-encoding` 是因为这里只有 query 的键值，规则简单且必须有单测固定。
@@ -463,9 +470,7 @@ pub fn matches(spec: &TaskSpec, record: &Value) -> bool {
         return false;
     }
     let ctx = Context::of(record);
-    spec.match_conds
-        .iter()
-        .all(|a| eval(a, &ctx, Scope::Record))
+    eval_all(&spec.match_conds, &ctx, Scope::Record)
 }
 
 #[cfg(test)]
@@ -739,12 +744,12 @@ mod tests {
             0,
             syn_api::Outcome {
                 scope: Scope::Body,
-                asserts: vec![syn_api::Assert {
+                asserts: vec![syn_api::Condition::Assert(syn_api::Assert {
                     field: Some("$.affected".into()),
                     op: syn_api::Operator::Eq,
                     value: Some(serde_json::json!(0)),
                     scope: None,
-                }],
+                })],
                 verdict: Verdict::Skip,
                 code: "no_change".into(),
             },

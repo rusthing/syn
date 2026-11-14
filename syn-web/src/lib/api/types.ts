@@ -17,9 +17,20 @@ export type Operator =
   | "contains"
   | "regex"
   | "gt"
-  | "lt";
+  | "gte"
+  | "lt"
+  | "lte";
 
 export type Scope = "record" | "body" | "status";
+
+/**
+ * 启停接口的返回值。只回一个权威布尔值，不回完整任务 ——
+ * 开关按钮不该因为 `Ro.extra` 里少了几个字段就被判成失败，见 `liveTasks.toggle`。
+ */
+export interface TaskToggleResult {
+  id: string;
+  enabled: boolean;
+}
 
 /** CDC 四态。`r` 是快照读，必须显式配置 */
 export type Op = "c" | "r" | "u" | "d";
@@ -33,12 +44,30 @@ export type OnEmpty = "keep" | "keep_original" | "omit" | "null";
 /** 结论 → HTTP 状态码：success/skip 200、fatal 400、retriable 503 */
 export type Verdict = "success" | "skip" | "fatal" | "retriable";
 
+/** 条件树的叶子：取值 + 操作符 + 期望值 */
 export interface Assert {
   field?: string;
   op: Operator;
   value?: unknown;
   scope?: Scope;
 }
+
+/** 布尔分组。条件数组本身就是根节点 AND，分组只在同一层里组合 */
+export interface AllGroup {
+  all: Condition[];
+}
+export interface AnyGroup {
+  any: Condition[];
+}
+export interface NotGroup {
+  not: Condition;
+}
+
+/**
+ * 条件节点：与 `syn_api::Condition` 一一对应。
+ * 老配置里 `assert: Assert[]` 仍是合法的条件数组，不需要迁移。
+ */
+export type Condition = Assert | AllGroup | AnyGroup | NotGroup;
 
 export interface OnError {
   verdict: Verdict;
@@ -104,14 +133,14 @@ export interface OnFail {
 
 export interface Guard {
   when?: Assert;
-  assert: Assert[];
+  assert: Condition[];
   on_fail: OnFail;
 }
 
 export interface Outcome {
   scope: Scope;
   /** 后端 serde 的 key 是 `assert`，不是 `asserts` */
-  assert: Assert[];
+  assert: Condition[];
   verdict: Verdict;
   code?: string;
 }
@@ -125,7 +154,7 @@ export interface TaskSpec {
   /** 默认 true：命中后停止匹配后续任务 */
   exclusive?: boolean;
   target: Target;
-  match?: Assert[];
+  match?: Condition[];
   mapping: Mapping;
   actions?: Action[];
   guards?: Guard[];

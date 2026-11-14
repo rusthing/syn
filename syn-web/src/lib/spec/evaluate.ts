@@ -12,6 +12,7 @@
 import type {
   Action,
   Assert,
+  Condition,
   Guard,
   MappingRow,
   OnEmpty,
@@ -19,6 +20,7 @@ import type {
   TaskSpec,
   Verdict,
 } from "@/lib/api/types";
+import { isAssert } from "./defaults";
 import { getPath, insertPath, scalarText } from "./jsonpath";
 import { applyTransform, TransformError } from "./transforms";
 
@@ -34,6 +36,8 @@ export interface AssertResult {
   assert: Assert;
   ok: boolean;
   lhs: unknown;
+  /** 所属分组名：OR 分组里单条不成立不代表整组失败，试跑页据此标注 */
+  group?: string;
 }
 
 export interface MappedRow {
@@ -169,34 +173,75 @@ function evalValue(a: Assert, lhs: unknown): boolean {
       const pair = numericPair(lhs, expected);
       return pair !== null && pair[0] > pair[1];
     }
+    case "gte": {
+      const pair = numericPair(lhs, expected);
+      return pair !== null && pair[0] >= pair[1];
+    }
     case "lt": {
       const pair = numericPair(lhs, expected);
       return pair !== null && pair[0] < pair[1];
+    }
+    case "lte": {
+      const pair = numericPair(lhs, expected);
+      return pair !== null && pair[0] <= pair[1];
     }
     default:
       return false;
   }
 }
 
+function lhsOf(a: Assert, ctx: Context, defaultScope: Scope): unknown {
+  const scope = a.scope ?? defaultScope;
+  if (scope === "status") return ctx.status;
+  if (scope === "body") return a.field ? getPath(ctx.body, a.field) : undefined;
+  return a.field ? getPath(ctx.record, a.field) : undefined;
+}
+
+/** 求值一个条件节点（与 `syn-core::eval_condition` 同构） */
+export function evalCondition(c: Condition, ctx: Context, defaultScope: Scope): boolean {
+  if (isAssert(c)) return evalAssert(c, ctx, defaultScope);
+  if ("all" in c) return c.all.every((x) => evalCondition(x, ctx, defaultScope));
+  if ("any" in c) return c.any.some((x) => evalCondition(x, ctx, defaultScope));
+  return !evalCondition(c.not, ctx, defaultScope);
+}
+
+/**
+ * 顶层条件数组恒为 AND。除了整体结果，还把叶子逐条收集下来给试跑页展示：
+ * 分组内即使某条不成立也照常收集，别让短路把结果列表削掉几行。
+ */
+export function evalConditions(
+  conditions: Condition[],
+  ctx: Context,
+  defaultScope: Scope,
+): { ok: boolean; results: AssertResult[] } {
+  const results: AssertResult[] = [];
+  const walk = (c: Condition, group?: string): boolean => {
+    if (isAssert(c)) {
+      const ok = evalAssert(c, ctx, defaultScope);
+      results.push({ assert: c, ok, lhs: lhsOf(c, ctx, defaultScope), group });
+      return ok;
+    }
+    if ("all" in c) {
+      const flags = c.all.map((x) => walk(x, "全部满足"));
+      return flags.every(Boolean);
+    }
+    if ("any" in c) {
+      const flags = c.any.map((x) => walk(x, "任意满足"));
+      return flags.some(Boolean);
+    }
+    return !walk(c.not, "取反");
+  };
+  const ok = conditions.map((c) => walk(c)).every(Boolean);
+  return { ok, results };
+}
+
+/** 兼容试跑页：只要逐条结果 */
 export function evalAsserts(
-  asserts: Assert[],
+  conditions: Condition[],
   ctx: Context,
   defaultScope: Scope,
 ): AssertResult[] {
-  return asserts.map((a) => ({
-    assert: a,
-    ok: evalAssert(a, ctx, defaultScope),
-    lhs:
-      (a.scope ?? defaultScope) === "body"
-        ? a.field
-          ? getPath(ctx.body, a.field)
-          : undefined
-        : (a.scope ?? defaultScope) === "status"
-          ? ctx.status
-          : a.field
-            ? getPath(ctx.record, a.field)
-            : undefined,
-  }));
+  return evalConditions(conditions, ctx, defaultScope).results;
 }
 
 /* -------------------------------- 映射 -------------------------------- */
@@ -295,7 +340,7 @@ export function judge(
   const rules = spec.outcomes ?? [];
   for (let i = 0; i < rules.length; i += 1) {
     const rule = rules[i];
-    if (rule.assert.every((a) => evalAssert(a, ctx, rule.scope))) {
+    if (evalConditions(rule.assert, ctx, rule.scope).ok) {
       return { index: i + 1, verdict: rule.verdict, code: rule.code ?? "", fallback: false };
     }
   }
@@ -390,13 +435,13 @@ export function preview(spec: TaskSpec, record: unknown, options: PreviewOptions
 
   // 1 匹配
   const ctx: Context = { record };
-  const matchAsserts = evalAsserts(spec.match ?? [], ctx, "record");
-  const matched = matchAsserts.every((a) => a.ok);
+  const matchResult = evalConditions(spec.match ?? [], ctx, "record");
+  const matched = matchResult.ok;
   steps.push({
     stage: "match",
     ok: matched,
     title: matched ? "命中匹配条件" : "未命中匹配条件",
-    asserts: matchAsserts,
+    asserts: matchResult.results,
     detail: matched ? undefined : "该任务不会处理这条记录",
   });
   if (!matched) return stop("skip", "no_match", "match", "记录不满足匹配条件");
@@ -434,13 +479,13 @@ export function preview(spec: TaskSpec, record: unknown, options: PreviewOptions
       });
       continue;
     }
-    const results = evalAsserts(guard.assert, guardCtx, "record");
-    const passed = results.every((r) => r.ok);
+    const guardResult = evalConditions(guard.assert, guardCtx, "record");
+    const passed = guardResult.ok;
     steps.push({
       stage: "guard",
       ok: passed,
       title: passed ? `守卫 ${i + 1} 放行` : `守卫 ${i + 1} 拒绝`,
-      asserts: results,
+      asserts: guardResult.results,
       detail: passed ? undefined : (guard.on_fail.message ?? guard.on_fail.code),
     });
     if (!passed) {
@@ -505,7 +550,7 @@ export function selectTasks(tasks: TaskSpec[], record: unknown): TaskSpec[] {
   const ctx: Context = { record };
   for (const task of ordered) {
     if (task.enabled === false) continue;
-    if ((task.match ?? []).every((a) => evalAssert(a, ctx, "record"))) {
+    if (evalConditions(task.match ?? [], ctx, "record").ok) {
       chosen.push(task);
       if (task.exclusive !== false) break;
     }

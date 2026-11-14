@@ -8,7 +8,7 @@
 
 use syn_api::{TaskSpec, Verdict};
 
-use crate::assertion::{Context, eval};
+use crate::assertion::{Context, eval_all};
 
 /// # 判定结果
 #[derive(Debug, Clone)]
@@ -33,7 +33,7 @@ pub fn judge(spec: &TaskSpec, status: u16, body: &serde_json::Value) -> Judgemen
     };
 
     for (i, rule) in spec.outcomes.iter().enumerate() {
-        if rule.asserts.iter().all(|a| eval(a, &ctx, rule.scope)) {
+        if eval_all(&rule.asserts, &ctx, rule.scope) {
             return Judgement {
                 index: i + 1,
                 verdict: rule.verdict,
@@ -113,5 +113,33 @@ mod tests {
     fn unknown_body_with_2xx_is_success_by_fallback_rule() {
         let j = judge(&spec(), 201, &json!({"whatever": true}));
         assert_eq!(j.verdict, Verdict::Success);
+    }
+
+    #[test]
+    fn nested_group_can_classify_a_response() {
+        let mut s = spec();
+        s.outcomes.insert(
+            0,
+            serde_json::from_value(json!({
+                "scope": "status",
+                "assert": [
+                    {"op": "eq", "value": 200},
+                    {"any": [
+                        {"scope": "body", "field": "$.result", "op": "gte", "value": 1},
+                        {"scope": "body", "field": "$.extra.code", "op": "eq", "value": "OK"}
+                    ]}
+                ],
+                "verdict": "success",
+                "code": "ok_nested"
+            }))
+            .unwrap(),
+        );
+        // 200 + result=1 命中嵌套规则，抢在后面的业务码规则之前
+        let j = judge(&s, 200, &json!({"result": 1}));
+        assert_eq!(j.code, "ok_nested");
+        // 200 + result=0 且没有 OK 码 → 分组不成立，落到后面的 status 兜底
+        let j = judge(&s, 200, &json!({"result": 0}));
+        assert_eq!(j.verdict, Verdict::Success);
+        assert_ne!(j.code, "ok_nested");
     }
 }

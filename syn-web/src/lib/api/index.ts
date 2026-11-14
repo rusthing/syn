@@ -46,6 +46,7 @@ import type {
   SyncSource,
   SyncTask,
   TaskSpec,
+  TaskToggleResult,
   Verdict,
 } from "./types";
 
@@ -105,7 +106,7 @@ export const tasks = {
     isMock() ? mockTasks.create(input) : liveTasks.create(input),
   update: (id: string, input: { name: string; spec: TaskSpec }): Promise<SyncTask> =>
     isMock() ? mockTasks.update(id, input) : liveTasks.update(id, input),
-  toggle: (id: string, enabled: boolean): Promise<SyncTask> =>
+  toggle: (id: string, enabled: boolean): Promise<TaskToggleResult> =>
     isMock() ? mockTasks.toggle(id, enabled) : liveTasks.toggle(id, enabled),
   remove: (id: string): Promise<null> => (isMock() ? mockTasks.remove(id) : liveTasks.remove(id)),
   reload: (): Promise<{ count: number } | null> =>

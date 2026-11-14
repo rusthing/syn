@@ -4,7 +4,7 @@
 //!
 //! | 段 | 输入 → 输出 | 形态 |
 //! |---|---|---|
-//! | 匹配 [`Assert`] | 记录 → 是否命中 | 条件表，首命中即停 |
+//! | 匹配 [`Condition`] | 记录 → 是否命中 | 条件表，首命中即停 |
 //! | 映射 [`Mapping`] | 记录 → 请求体 | 字段表 + 变换链 |
 //! | 动作 [`Action`] | op → 一次 HTTP 调用 | 4 行矩阵 |
 //! | 判定 [`Outcome`] | 响应 → 结论 | 有序规则表 |
@@ -51,9 +51,9 @@ pub struct TaskSpec {
     pub enabled: bool,
     /// 下游地址，只有服务引用与相对路径，host 由服务发现给
     pub target: Target,
-    /// 匹配条件（合取）。空表示该 topic 的记录全部命中
+    /// 匹配条件（顶层合取，元素可以是分组）。空表示该 topic 的记录全部命中
     #[serde(rename = "match", default)]
-    pub match_conds: Vec<Assert>,
+    pub match_conds: Vec<Condition>,
     /// 命中本任务后是否停止匹配后续任务
     ///
     /// 默认 `true`（首命中即停）。一个记录要同步到多个下游时，把前面的任务设为
@@ -213,10 +213,10 @@ fn is_qualified_ident(s: &str) -> bool {
     matches!(parts.len(), 1 | 2) && parts.iter().all(|p| is_ident(p))
 }
 
-/// # 断言
+/// # 断言（条件树的叶子）
 ///
-/// 五段里所有条件都是这个形状：取值 + 操作符 + 期望值。
-/// 没有嵌套布尔树，需要 OR 就加一行（匹配段则是加一个任务）。
+/// 五段里所有条件最终都是这个形状：取值 + 操作符 + 期望值。
+/// 组合交给 [`Condition`]，叶子本身不含逻辑连接词 —— 这是「配置」与「脚本」的分界。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Assert {
     /// JSONPath，如 `$.after.polygon_location.wkb`；`None` 表示对 HTTP 状态码断言
@@ -231,6 +231,64 @@ pub struct Assert {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<Scope>,
 }
+
+/// # 条件节点
+///
+/// 三段（匹配 / 守卫 / 判定）共用一棵布尔树，**条件数组本身就是根节点 AND**。
+/// 叶子沿用老格式的 `Assert`，所以存量配置（一层断言数组）反序列化后完全等价，
+/// 一行 JSON 都不用迁移；需要「或」时把若干叶子塞进 `any` 分组。
+///
+/// 不引入表达式语言：这仍然是数据，保存期能逐节点校验、UI 能逐行编辑，
+/// 前后端也能各写一份同构求值。写成 `status == 200 && $.result > 0` 那样的字符串
+/// 会把错误从保存期推到运行期，还要沙箱，不是这里要的复杂度。
+///
+/// ```json
+/// [
+///   { "op": "eq", "value": 200 },
+///   { "any": [
+///       { "scope": "body", "field": "$.extra.code", "op": "eq", "value": "OK" },
+///       { "scope": "body", "field": "$.extra.code", "op": "absent" }
+///   ]}
+/// ]
+/// ```
+/// `all` 分组：子节点全部满足
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AllGroup {
+    pub all: Vec<Condition>,
+}
+
+/// `any` 分组：任意一条满足
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnyGroup {
+    pub any: Vec<Condition>,
+}
+
+/// `not` 分组。编辑器固定给一个 `{ "all": [...] }` 当内容，运行时接受任意节点
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotGroup {
+    pub not: Box<Condition>,
+}
+
+/// 分组结构单独定义并带 `deny_unknown_fields`：`{"any": [...], "op": "eq"}` 这种
+/// 半分组半叶子的畸形 JSON 不该被静默吞掉一半字段（serde 不支持把该属性挂在
+/// enum variant 上，所以绕一层 newtype）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Condition {
+    All(AllGroup),
+    Any(AnyGroup),
+    Not(NotGroup),
+    /// 叶子断言（老格式）
+    Assert(Assert),
+}
+
+/// 条件树尺寸上限：配置是数据不是脚本，但手改 JSON 也不该能长出把保存与求值
+/// 拖垮的树。超过上限在保存期就拦，不让运行期递归。
+pub const MAX_CONDITION_DEPTH: usize = 8;
+pub const MAX_CONDITION_NODES: usize = 200;
 
 /// # 操作符
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,8 +316,12 @@ pub enum Operator {
     Regex,
     /// 数值大于
     Gt,
+    /// 数值大于等于
+    Gte,
     /// 数值小于
     Lt,
+    /// 数值小于等于
+    Lte,
 }
 
 impl Operator {
@@ -280,7 +342,7 @@ impl Operator {
 pub enum Scope {
     /// 原始变更记录（sink 送进来的 payload）
     Record,
-    /// 映射之后的请求体
+    /// 报文体：守卫段是映射后的请求体，判定段是下游返回的响应体
     Body,
     /// HTTP 状态码
     Status,
@@ -477,9 +539,9 @@ pub struct Guard {
     /// 适用条件，对记录求值；不满足则整条守卫跳过
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<Assert>,
-    /// 断言（合取）
+    /// 条件（顶层合取，元素可以是分组）
     #[serde(rename = "assert")]
-    pub asserts: Vec<Assert>,
+    pub asserts: Vec<Condition>,
     /// 不通过时的结论与文案
     pub on_fail: OnFail,
 }
@@ -498,15 +560,15 @@ pub struct OnFail {
 
 /// # 判定规则
 ///
-/// 有序，第一条命中即停。最后一条必须是兜底（无 `field`），
-/// 否则「响应不认识」会被静默当成功。
+/// 有序，第一条命中即停。最后一条必须是兜底（只由不带 `field` 的叶子组成，
+/// 不含 any / not 分组），否则「响应不认识」会被静默当成功。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Outcome {
-    /// 作用域，断言默认继承
+    /// 作用域，条件里的叶子断言默认继承
     pub scope: Scope,
-    /// 断言（合取）
+    /// 条件（顶层合取，元素可以是分组）
     #[serde(rename = "assert")]
-    pub asserts: Vec<Assert>,
+    pub asserts: Vec<Condition>,
     /// 结论
     pub verdict: Verdict,
     /// 分类码，进死信与前端「能否改报文重投」
@@ -660,7 +722,7 @@ impl TaskSpec {
             }
         }
 
-        self.validate_asserts("match", &self.match_conds, Scope::Record, &mut issues);
+        self.validate_conditions("match", &self.match_conds, Scope::Record, &mut issues);
         self.validate_mapping(&mut issues);
         self.validate_actions(&mut issues);
         self.validate_guards(&mut issues);
@@ -673,47 +735,24 @@ impl TaskSpec {
         }
     }
 
-    fn validate_asserts(
+    /// 顶层条件数组恒为 AND；分组由 `validate_condition` 递归下去
+    fn validate_conditions(
         &self,
         path: &str,
-        asserts: &[Assert],
+        conds: &[Condition],
         default: Scope,
         issues: &mut Vec<SpecIssue>,
     ) {
-        for (i, a) in asserts.iter().enumerate() {
-            let at = format!("{path}[{i}]");
-            let scope = a.scope.unwrap_or(default);
-            // status 作用域断言的是状态码，带 field 一定是配错了
-            if scope == Scope::Status && a.field.is_some() {
-                issues.push(SpecIssue::new(
-                    &at,
-                    SpecIssueKind::Conflict,
-                    "status 作用域的断言不能带 field",
-                ));
-            }
-            if scope != Scope::Status && a.field.as_deref().unwrap_or("").trim().is_empty() {
-                issues.push(SpecIssue::new(
-                    &at,
-                    SpecIssueKind::Missing,
-                    "该作用域的断言必须写 field",
-                ));
-            }
-            if a.op.needs_value() && a.value.is_none() {
-                issues.push(SpecIssue::new(
-                    &at,
-                    SpecIssueKind::Missing,
-                    format!("操作符 {} 需要 value", op_name(a.op)),
-                ));
-            }
-            if matches!(a.op, Operator::In | Operator::NotIn)
-                && !a.value.as_ref().is_some_and(Value::is_array)
-            {
-                issues.push(SpecIssue::new(
-                    &at,
-                    SpecIssueKind::Invalid,
-                    "in / not_in 的 value 必须是数组",
-                ));
-            }
+        let mut count = 0usize;
+        for (i, c) in conds.iter().enumerate() {
+            validate_condition(
+                &format!("{path}[{i}]"),
+                c,
+                default,
+                0,
+                &mut count,
+                issues,
+            );
         }
     }
 
@@ -842,14 +881,9 @@ impl TaskSpec {
                 ));
             }
             if let Some(w) = &g.when {
-                self.validate_asserts(
-                    &format!("{at}.when"),
-                    std::slice::from_ref(w),
-                    Scope::Record,
-                    issues,
-                );
+                validate_assert(&format!("{at}.when[0]"), w, Scope::Record, issues);
             }
-            self.validate_asserts(&format!("{at}.asserts"), &g.asserts, Scope::Record, issues);
+            self.validate_conditions(&format!("{at}.asserts"), &g.asserts, Scope::Record, issues);
         }
     }
 
@@ -863,7 +897,7 @@ impl TaskSpec {
             return;
         }
         for (i, o) in self.outcomes.iter().enumerate() {
-            self.validate_asserts(
+            self.validate_conditions(
                 &format!("outcomes[{i}].asserts"),
                 &o.asserts,
                 o.scope,
@@ -871,10 +905,7 @@ impl TaskSpec {
             );
         }
         let last = self.outcomes.last().expect("已判空");
-        let is_fallback = last
-            .asserts
-            .iter()
-            .all(|a| a.field.is_none() && matches!(a.op, Operator::In | Operator::Eq));
+        let is_fallback = last.asserts.iter().all(is_fallback_condition);
         if !is_fallback {
             issues.push(SpecIssue::new(
                 format!("outcomes[{}]", self.outcomes.len() - 1),
@@ -882,6 +913,127 @@ impl TaskSpec {
                 "最后一条必须是兜底规则（不带 field）：响应不认识时必须失败，不能静默成功",
             ));
         }
+    }
+}
+
+/// 递归校验一个条件节点。`path` 一路带到叶子，编辑器能把问题标在分组内的那一行。
+fn validate_condition(
+    at: &str,
+    cond: &Condition,
+    default: Scope,
+    depth: usize,
+    count: &mut usize,
+    issues: &mut Vec<SpecIssue>,
+) {
+    *count += 1;
+    if depth > MAX_CONDITION_DEPTH {
+        issues.push(SpecIssue::new(
+            at,
+            SpecIssueKind::Invalid,
+            "条件分组最多嵌套 8 层",
+        ));
+        return;
+    }
+    if *count > MAX_CONDITION_NODES {
+        issues.push(SpecIssue::new(
+            at,
+            SpecIssueKind::Invalid,
+            "条件节点超过 200 个",
+        ));
+        return;
+    }
+    match cond {
+        Condition::Assert(a) => validate_assert(at, a, default, issues),
+        Condition::All(g) => {
+            validate_children(&format!("{at}.all"), &g.all, default, depth, count, issues);
+        }
+        Condition::Any(g) => {
+            validate_children(&format!("{at}.any"), &g.any, default, depth, count, issues);
+        }
+        Condition::Not(g) => validate_condition(
+            &format!("{at}.not"),
+            g.not.as_ref(),
+            default,
+            depth + 1,
+            count,
+            issues,
+        ),
+    }
+}
+
+fn validate_children(
+    path: &str,
+    conds: &[Condition],
+    default: Scope,
+    depth: usize,
+    count: &mut usize,
+    issues: &mut Vec<SpecIssue>,
+) {
+    // 空 all 恒真、空 any 恒假，都能绕过「末条兜底」的意图，直接拦掉
+    if conds.is_empty() {
+        issues.push(SpecIssue::new(
+            path,
+            SpecIssueKind::Invalid,
+            "分组里至少要有一条条件",
+        ));
+        return;
+    }
+    for (i, c) in conds.iter().enumerate() {
+        validate_condition(
+            &format!("{path}[{i}]"),
+            c,
+            default,
+            depth + 1,
+            count,
+            issues,
+        );
+    }
+}
+
+fn validate_assert(at: &str, a: &Assert, default: Scope, issues: &mut Vec<SpecIssue>) {
+    let scope = a.scope.unwrap_or(default);
+    // status 作用域断言的是状态码，带 field 一定是配错了
+    if scope == Scope::Status && a.field.is_some() {
+        issues.push(SpecIssue::new(
+            at,
+            SpecIssueKind::Conflict,
+            "status 作用域的断言不能带 field",
+        ));
+    }
+    if scope != Scope::Status && a.field.as_deref().unwrap_or("").trim().is_empty() {
+        issues.push(SpecIssue::new(
+            at,
+            SpecIssueKind::Missing,
+            "该作用域的断言必须写 field",
+        ));
+    }
+    if a.op.needs_value() && a.value.is_none() {
+        issues.push(SpecIssue::new(
+            at,
+            SpecIssueKind::Missing,
+            format!("操作符 {} 需要 value", op_name(a.op)),
+        ));
+    }
+    if matches!(a.op, Operator::In | Operator::NotIn)
+        && !a.value.as_ref().is_some_and(Value::is_array)
+    {
+        issues.push(SpecIssue::new(
+            at,
+            SpecIssueKind::Invalid,
+            "in / not_in 的 value 必须是数组",
+        ));
+    }
+}
+
+/// 兜底规则只能由「不带 field 的 eq / in 叶子」与 all 分组组成。
+/// any / not 可能恒假，放进末条就等于没有兜底。
+fn is_fallback_condition(c: &Condition) -> bool {
+    match c {
+        Condition::Assert(a) => {
+            a.field.is_none() && matches!(a.op, Operator::In | Operator::Eq)
+        }
+        Condition::All(g) => !g.all.is_empty() && g.all.iter().all(is_fallback_condition),
+        Condition::Any(_) | Condition::Not(_) => false,
     }
 }
 
@@ -911,6 +1063,100 @@ fn op_name(op: Operator) -> &'static str {
         Operator::Contains => "contains",
         Operator::Regex => "regex",
         Operator::Gt => "gt",
+        Operator::Gte => "gte",
         Operator::Lt => "lt",
+        Operator::Lte => "lte",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn base_spec() -> Value {
+        json!({
+            "id": "t", "topic": "tp", "priority": 1,
+            "target": {"service": "s", "base": "/b"},
+            "mapping": {"rows": [{"to": "id", "from": "$.id"}]},
+            "actions": [{"op": "c", "method": "POST"}, {"op": "r", "method": "POST"}],
+            "outcomes": []
+        })
+    }
+
+    #[test]
+    fn legacy_assert_array_is_still_an_and_tree() {
+        let conds: Vec<Condition> = serde_json::from_value(json!([
+            {"op": "eq", "value": 200},
+            {"scope": "body", "field": "$.result", "op": "gt", "value": 0}
+        ]))
+        .unwrap();
+        assert_eq!(conds.len(), 2);
+        assert!(matches!(conds[0], Condition::Assert(_)));
+        assert!(matches!(conds[1], Condition::Assert(_)));
+    }
+
+    #[test]
+    fn nested_groups_round_trip() {
+        let conds: Vec<Condition> = serde_json::from_value(json!([
+            {"op": "eq", "value": 200},
+            {"any": [
+                {"scope": "body", "field": "$.extra.code", "op": "eq", "value": "OK"},
+                {"not": {"all": [{"scope": "body", "field": "$.extra.code", "op": "exists"}]}}
+            ]}
+        ]))
+        .unwrap();
+        assert!(matches!(conds[1], Condition::Any(_)));
+        let back = serde_json::to_value(&conds).unwrap();
+        assert_eq!(back[1]["any"][1]["not"]["all"][0]["op"], "exists");
+    }
+
+    #[test]
+    fn fallback_rejects_any_group() {
+        let mut v = base_spec();
+        v["outcomes"] = json!([
+            {"scope": "status", "assert": [{"op": "eq", "value": 200}], "verdict": "success"},
+            {"scope": "status", "assert": [{"any": [{"op": "eq", "value": 200}, {"op": "eq", "value": 201}]}],
+             "verdict": "fatal", "code": "unexpected"}
+        ]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        let issues = spec.validate().unwrap_err();
+        assert!(issues.iter().any(|i| i.message.contains("兜底")));
+    }
+
+    #[test]
+    fn fallback_accepts_all_group_of_status_leaves() {
+        let mut v = base_spec();
+        v["outcomes"] = json!([
+            {"scope": "status", "assert": [{"all": [{"op": "eq", "value": 200}]}], "verdict": "fatal"}
+        ]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn empty_group_and_deep_nesting_are_rejected() {
+        let mut v = base_spec();
+        v["outcomes"] = json!([{
+            "scope": "status", "assert": [{"any": []}], "verdict": "fatal"
+        }]);
+        let spec: TaskSpec = serde_json::from_value(v.clone()).unwrap();
+        assert!(spec
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|i| i.message.contains("至少要有一条")));
+
+        let mut nested = json!({"op": "eq", "value": 200});
+        for _ in 0..MAX_CONDITION_DEPTH + 2 {
+            nested = json!({"all": [nested]});
+        }
+        v["outcomes"] = json!([{"scope": "status", "assert": [nested], "verdict": "fatal"}]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        assert!(spec
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|i| i.message.contains("8 层")));
     }
 }

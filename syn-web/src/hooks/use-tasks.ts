@@ -1,8 +1,15 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { tasks, type Page, type SyncTask, type TaskQuery } from "@/lib/api";
-
-/** 分页缓存的固定前缀：乐观更新要靠它一次命中所有筛选条件下的分页数据 */
-const PAGE_PREFIX = ["tasks", "page"] as const;
+import { tasks, type Page, type SyncTask, type TaskQuery, type TaskToggleResult } from "@/lib/api";
+import {
+  PAGE_PREFIX,
+  forgetToggleSeq,
+  isLatestToggle,
+  nextToggleSeq,
+  patchTaskEnabled,
+  restoreTaskCaches,
+  snapshotTaskCaches,
+  type CacheSnapshot,
+} from "./task-cache";
 
 export const taskKeys = {
   all: ["tasks"] as const,
@@ -29,30 +36,56 @@ export function useAllTasks() {
   });
 }
 
+interface ToggleContext {
+  snapshot: CacheSnapshot;
+  id: string;
+  seq: number;
+}
+
 export function useTaskMutations() {
   const queryClient = useQueryClient();
   const invalidate = () => queryClient.invalidateQueries({ queryKey: taskKeys.all });
 
   /**
-   * 启停是「点了就该立刻看到」的开关：先改缓存、再发请求，失败回滚。
-   * 只等接口往返的话，网络稍慢就会被当成「点了没反应」再去点第二下（又切回去）。
+   * 启停是「点了就该立刻看到」的开关。
+   *
+   * 之前这里有三处会让开关看起来点不动／弹回去：
+   * - `onMutate` 先 `await cancelQueries` 才改缓存，慢一拍；且 cancel 默认 revert，
+   *    会把在途 fetch 开始时的旧值恢复回来，正好抹掉乐观值；
+   * - `onSuccess` 立刻 `invalidate()` 触发 refetch，在途的旧 list 响应把值盖回去；
+   * - 只补 `enabled` 不补 `spec.enabled`，随后编辑保存任务时用旧 spec 反推列，
+   *   把刚打开的开关又关掉（实时模式才有，演示模式 `mock.toggle` 两边都写）。
+   *
+   * 现在：同步落地乐观值（含 spec）→ 请求 → 只有最后一次点击能用服务端值收尾，
+   * 并只把缓存标脏、不立刻重拉。具体规则见 `task-cache.ts`。
    */
-  const toggle = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => tasks.toggle(id, enabled),
+  const toggle = useMutation<TaskToggleResult, Error, TaskToggleResult, ToggleContext>({
+    mutationFn: ({ id, enabled }) => tasks.toggle(id, enabled),
     onMutate: async ({ id, enabled }) => {
+      const snapshot = snapshotTaskCaches(queryClient);
+      const seq = nextToggleSeq(id);
+      // 1) 同步落地乐观值：点击当场就能看到，不等任何 await
+      patchTaskEnabled(queryClient, id, enabled);
+      // 2) 取消在途 refetch。cancelQueries 默认 `revert: true`，会把 query state 恢复到
+      //    那次 fetch 开始时的旧值 —— 正好可能把刚写进去的乐观值抹掉，所以取消后
+      //    无条件再补一次。界面不等这个 await，请求晚一个微任务发出无感。
       await queryClient.cancelQueries({ queryKey: taskKeys.all });
-      const snapshot = queryClient.getQueriesData({ queryKey: taskKeys.all });
-      const patch = (t: SyncTask) => (t.id === id ? { ...t, enabled } : t);
-      queryClient.setQueriesData<SyncTask[]>({ queryKey: taskKeys.list() }, (rows) => rows?.map(patch));
-      queryClient.setQueriesData<Page<SyncTask>>({ queryKey: PAGE_PREFIX }, (page) =>
-        page ? { ...page, list: page.list.map(patch) } : page,
-      );
-      return { snapshot };
+      if (isLatestToggle(id, seq)) patchTaskEnabled(queryClient, id, enabled);
+      return { snapshot, id, seq };
     },
-    onError: (_error, _vars, context) => {
-      for (const [key, data] of context?.snapshot ?? []) queryClient.setQueryData(key, data);
+    onError: (_error, { id }, context) => {
+      if (!context || !isLatestToggle(id, context.seq)) return;
+      restoreTaskCaches(queryClient, context.snapshot);
     },
-    onSuccess: () => void invalidate(),
+    onSuccess: (server, { id, enabled }, context) => {
+      if (!context || !isLatestToggle(id, context.seq)) return;
+      // 服务端值优先；响应形状不完整时退回本次请求值（乐观值已经是它）
+      patchTaskEnabled(queryClient, id, typeof server?.enabled === "boolean" ? server.enabled : enabled);
+      void queryClient.invalidateQueries({ queryKey: taskKeys.all, refetchType: "none" });
+    },
+    onSettled: (_data, _error, { id }, context) => {
+      if (context) forgetToggleSeq(id, context.seq);
+    },
   });
 
   const remove = useMutation({

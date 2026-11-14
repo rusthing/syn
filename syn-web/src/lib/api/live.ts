@@ -41,6 +41,7 @@ import type {
   SyncTask,
   TaskSpec,
   TaskStats,
+  TaskToggleResult,
   Verdict,
 } from "./types";
 
@@ -436,11 +437,21 @@ export const liveTasks = {
       toTask,
     ),
 
-  toggle: (id: string, enabled: boolean): Promise<SyncTask> =>
-    request<WireTask>(`/syn/task/${encodeURIComponent(id)}/enabled`, {
+  /**
+   * 启停只关心「服务端最终认了哪个值」。
+   *
+   * 这里刻意不 `toTask(extra)`：开关是按钮，返回体哪怕少几个字段、`extra` 为 null
+   * （不同版本 Ro 的包装差异）也不该让一次成功的启停在转换函数里抛错、进而被
+   * React Query 判成失败把乐观值回滚。真要完整实体，调 `tasks.get(id)`。
+   */
+  toggle: (id: string, enabled: boolean): Promise<TaskToggleResult> =>
+    request<{ enabled?: boolean } | null>(`/syn/task/${encodeURIComponent(id)}/enabled`, {
       method: "PUT",
       body: { enabled },
-    }).then(toTask),
+    }).then((extra) => ({
+      id,
+      enabled: typeof extra?.enabled === "boolean" ? extra.enabled : enabled,
+    })),
 
   remove: (id: string): Promise<null> =>
     request<void>(`/syn/task/${encodeURIComponent(id)}`, { method: "DELETE" }).then(() => null),

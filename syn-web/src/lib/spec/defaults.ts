@@ -9,6 +9,7 @@ import type {
   Action,
   Assert,
   BodyMode,
+  Condition,
   Method,
   OnEmpty,
   Op,
@@ -40,17 +41,58 @@ export const OPERATORS: OperatorMeta[] = [
   { value: "contains", label: "包含", needsValue: true, textual: true },
   { value: "regex", label: "正则", needsValue: true, textual: true },
   { value: "gt", label: "大于", needsValue: true },
+  { value: "gte", label: "大于等于", needsValue: true },
   { value: "lt", label: "小于", needsValue: true },
+  { value: "lte", label: "小于等于", needsValue: true },
 ];
 
 export const operatorMeta = (op: Operator): OperatorMeta =>
   OPERATORS.find((o) => o.value === op) ?? OPERATORS[0];
 
+/**
+ * `body` 在两段里不是同一份报文：守卫段看映射后的请求体，判定段看下游响应体。
+ * 标签曾经写成「请求体」，配判定规则时会被误导，所以统一叫「报文体」并在 hint 里说清。
+ */
 export const SCOPES: Array<{ value: Scope; label: string; hint: string }> = [
   { value: "record", label: "记录", hint: "sink 送进来的原始变更记录" },
-  { value: "body", label: "请求体", hint: "映射之后的报文" },
+  { value: "body", label: "报文体", hint: "守卫段 = 映射后的请求体；判定段 = 下游响应体" },
   { value: "status", label: "状态码", hint: "下游返回的 HTTP 状态码" },
 ];
+
+/* ------------------------------ 条件分组 ------------------------------ */
+
+/** 条件节点是叶子断言还是分组 */
+export const isAssert = (c: Condition): c is Assert => "op" in c;
+
+export type GroupKind = "all" | "any" | "not";
+
+export const GROUP_META: Record<GroupKind, { label: string; hint: string }> = {
+  all: { label: "全部满足", hint: "组内每条都要成立" },
+  any: { label: "任意满足", hint: "组内任意一条成立即可（或）" },
+  not: { label: "取反", hint: "组内全部满足时，整组不成立" },
+};
+
+/** 取分组的子条件；`not` 在编辑器里固定包一个 `all` 分组，运行时也可能只有单个节点 */
+export function groupChildren(c: Condition, kind: GroupKind): Condition[] {
+  if (kind === "not") {
+    const inner = (c as { not: Condition }).not;
+    return "all" in inner ? inner.all : [inner];
+  }
+  return (c as { all?: Condition[]; any?: Condition[] })[kind] ?? [];
+}
+
+/** 按连接词重建分组节点 */
+export function makeGroup(kind: GroupKind, children: Condition[]): Condition {
+  if (kind === "not") return { not: { all: children } };
+  return kind === "all" ? { all: children } : { any: children };
+}
+
+export function groupKindOf(c: Condition): GroupKind | null {
+  if ("all" in c) return "all";
+  if ("any" in c) return "any";
+  if ("not" in c) return "not";
+  return null;
+}
 
 export const OPS: Array<{ value: Op; label: string; note: string }> = [
   { value: "c", label: "新增", note: "insert" },

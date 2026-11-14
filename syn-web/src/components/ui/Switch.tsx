@@ -3,12 +3,22 @@ import { cn } from "@/lib/utils";
 export interface SwitchProps {
   checked: boolean;
   onChange: (checked: boolean) => void;
+  /** 真正不可操作（例如演示模式禁用某个动作）；请求进行中请用 `busy`，不要用这个 */
   disabled?: boolean;
+  /**
+   * 请求进行中：只给视觉/无障碍提示，**不禁用按钮**。
+   *
+   * 原生 `disabled` 的 button 连 `pointerdown` / `click` 都不派发。启停这类开关
+   * 一旦在 mutate 前置灰，网络稍慢时用户会以为「点了没用」再点第二下；更糟的是
+   * 请求失败/超时后如果置灰没解开，开关就永久点不动了。乐观更新已经能让每次
+   * 点击立刻看到结果，请求期间保持可点、由最后一次点击决定终值才是对的。
+   */
+  busy?: boolean;
   label?: string;
   size?: "sm" | "md";
 }
 
-export function Switch({ checked, onChange, disabled, label, size = "md" }: SwitchProps) {
+export function Switch({ checked, onChange, disabled, busy, label, size = "md" }: SwitchProps) {
   const track = size === "sm" ? "h-[18px] w-[32px]" : "h-5 w-9";
   const knob = size === "sm" ? "size-3.5" : "size-4";
   const shift = size === "sm" ? "translate-x-[14px]" : "translate-x-4";
@@ -19,6 +29,7 @@ export function Switch({ checked, onChange, disabled, label, size = "md" }: Swit
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      aria-busy={busy || undefined}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
@@ -28,6 +39,7 @@ export function Switch({ checked, onChange, disabled, label, size = "md" }: Swit
         checked
           ? "border-accent-strong/30 bg-accent"
           : "border-line-strong/60 bg-[#e6e8e1] hover:bg-[#dde0d8]",
+        busy && "ring-2 ring-accent/25",
         disabled && "cursor-not-allowed opacity-50",
       )}
     >

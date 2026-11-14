@@ -30,7 +30,7 @@ export const nodeId = (kind: CanvasNodeKind, key: string): string => `${kind}:${
 
 export type NodeTone = "ok" | "warn" | "bad" | "muted";
 
-/** 任务卡里可点开的六段，值与任务抽屉的页签同名 */
+/** 任务卡里可点开的六段，值与任务窗体的页签同名 */
 export type TaskStage = "match" | "mapping" | "guards" | "actions" | "outcomes" | "target";
 
 export interface TaskSegment {
@@ -122,7 +122,7 @@ export function targetDetail(spec: TaskSpec): string {
 /**
  * 把一个任务的 spec 拆成六段概要。
  *
- * 段内只放「条数 / 名字」这类一眼能核对的信息，完整内容仍在抽屉里改 ——
+ * 段内只放「条数 / 名字」这类一眼能核对的信息，完整内容仍在窗体里改 ——
  * 卡片上塞下 `$.after.op in [c,r,u,d]` 会让卡变成第二份编辑器。
  */
 export function taskSegments(spec: TaskSpec): TaskSegment[] {

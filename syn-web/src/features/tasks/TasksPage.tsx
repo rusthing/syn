@@ -262,7 +262,7 @@ export function TasksPage() {
                         checked={task.enabled}
                         size="sm"
                         label={`${task.enabled ? "停用" : "启用"} ${task.name}`}
-                        disabled={toggle.isPending}
+                        busy={toggle.isPending}
                         onChange={(next) =>
                           toggle.mutate(
                             { id: task.id, enabled: next },
@@ -270,7 +270,7 @@ export function TasksPage() {
                               onSuccess: () =>
                                 toast.success(
                                   next ? "已启用" : "已停用",
-                                  "点顶栏「重载快照」后执行器才生效",
+                                  "已通知各副本刷新执行器快照",
                                 ),
                               onError: (err: Error) => toast.error("操作失败", err.message),
                             },
@@ -304,7 +304,7 @@ export function TasksPage() {
 
       <p className="mt-2 px-1 text-[11px] leading-relaxed text-muted">
         配置改的是库里的 <code className="font-mono">syn_task</code>，执行器读的是内存快照：
-        保存后点顶栏「重载快照」才生效，不需要重启进程。
+        每次写库都会发刷新信号、各副本下一拍自动重载，不需要重启进程；顶栏的「重载快照」是手动兜底。
       </p>
 
       <TaskEditorDrawer
@@ -333,7 +333,7 @@ export function TasksPage() {
           if (!removing) return;
           remove.mutate(removing.id, {
             onSuccess: () => {
-              toast.success("已删除", "记得重载快照");
+              toast.success("已删除", "已通知各副本刷新执行器快照");
               setRemoving(null);
             },
             onError: (err: Error) => toast.error("删除失败", err.message),

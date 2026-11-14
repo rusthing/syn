@@ -1,5 +1,5 @@
 /**
- * 数据源的新增 / 编辑抽屉。
+ * 数据源的新增 / 编辑窗体。
  *
  * 连接串（含账号密码）是唯一「只写不读」的字段：新建必填；编辑态输入框永远留空，
  * 只显示服务端返回的脱敏 target，绝不回显明文 url，留空保存即表示不修改连接串。
@@ -9,7 +9,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CircleCheck, KeyRound, ShieldCheck, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
-import { Drawer } from "@/components/ui/Drawer";
+import { Modal } from "@/components/ui/Drawer";
 import { Field, Input, Textarea } from "@/components/ui/Field";
 import { Switch } from "@/components/ui/Switch";
 import { useToast } from "@/components/ui/Toast";
@@ -104,10 +104,10 @@ export function DatasourceEditorDrawer({
   };
 
   return (
-    <Drawer
+    <Modal
       open={open}
       onClose={onClose}
-      width={600}
+      width={640}
       title={isEdit ? `编辑 ${datasource?.code ?? ""}` : "新增数据源"}
       subtitle={
         isEdit
@@ -236,7 +236,7 @@ export function DatasourceEditorDrawer({
           </span>
         </div>
       </div>
-    </Drawer>
+    </Modal>
   );
 }
 

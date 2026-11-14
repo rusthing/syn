@@ -60,7 +60,10 @@ export interface DrawerProps {
   subtitle?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
+  /** 右侧抽屉用固定宽度；居中窗体用最大宽度。默认 580 */
   width?: number;
+  /** `right` = 右侧抽屉（默认），`center` = 居中弹出窗体 */
+  placement?: "right" | "center";
   /** 标题区的额外内容（如状态徽标） */
   badge?: ReactNode;
 }
@@ -73,8 +76,10 @@ export function Drawer({
   children,
   footer,
   width = 580,
+  placement = "right",
   badge,
 }: DrawerProps) {
+  const centered = placement === "center";
   useBodyScrollLock(open);
   const dialogRef = useDialogFocus(open);
 
@@ -90,7 +95,12 @@ export function Drawer({
   if (!open) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex justify-end">
+    <div
+      className={cn(
+        "fixed inset-0 z-50 flex",
+        centered ? "items-center justify-center p-5" : "justify-end",
+      )}
+    >
       {/*
         遮罩**不要**加 `backdrop-blur`：一层覆盖整个视口的 backdrop-filter 会让浏览器每帧
         重新模糊遮罩下的整页（实测抽屉内滚动 55fps → 30fps，Retina 上按物理像素再翻 4 倍）。
@@ -103,8 +113,13 @@ export function Drawer({
         aria-modal="true"
         aria-label={typeof title === "string" ? title : undefined}
         tabIndex={-1}
-        className="relative flex h-full max-w-full animate-slide-left flex-col border-l border-line bg-surface shadow-float focus:outline-none"
-        style={{ width }}
+        className={cn(
+          "relative flex min-h-0 flex-col border-line bg-surface shadow-float focus:outline-none",
+          centered
+            ? "max-h-[calc(100vh-40px)] w-full animate-rise rounded-[14px] border"
+            : "h-full max-w-full animate-slide-left border-l",
+        )}
+        style={centered ? { maxWidth: width } : { width }}
       >
         <header className="flex items-start justify-between gap-3 border-b border-line px-5 py-3.5">
           <div className="min-w-0">
@@ -128,6 +143,17 @@ export function Drawer({
     </div>,
     document.body,
   );
+}
+
+/**
+ * 新增 / 编辑用的居中弹出窗体。
+ *
+ * 与 `Drawer` 共用遮罩、焦点圈定、ESC 与 body 滚动锁，只是位置和尺寸不同 ——
+ * 复制一套弹层逻辑迟早会在焦点或 ESC 上出现两份不一致的行为。编辑页签多、
+ * 表单宽，居中窗体比贴右抽屉更容易看清整行，也不会把画布完全盖住。
+ */
+export function Modal(props: Omit<DrawerProps, "placement">) {
+  return <Drawer {...props} placement="center" />;
 }
 
 export interface ConfirmDialogProps {

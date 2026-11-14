@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CircleCheck, CircleX, FlaskConical, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { Drawer } from "@/components/ui/Drawer";
+import { Modal } from "@/components/ui/Drawer";
 import { Field, Input, Select, Textarea } from "@/components/ui/Field";
 import { SuggestInput } from "@/components/ui/SuggestInput";
 import { Switch } from "@/components/ui/Switch";
@@ -20,7 +20,7 @@ import { OutcomeEditor } from "@/components/spec/OutcomeEditor";
 import { useTaskMutations } from "@/hooks/use-tasks";
 import { useDatasources, useServices } from "@/hooks/use-sources";
 
-/** 页签键：拓扑页点卡片上的某一段时，按这个值直接打开对应页签 */
+/** 页签键：控制面板点卡片上的某一段时，按这个值直接打开对应页签 */
 export type TaskTab =
   | "match"
   | "mapping"
@@ -56,11 +56,11 @@ function tabOfPath(path: string): Tab {
 }
 
 /**
- * 任务编辑抽屉。
+ * 任务编辑窗体。
  *
- * 没有独立的基本页签：code / 名称 / topic / 优先级是任务的身份证，常驻抽屉顶部，
+ * 没有独立的基本页签：code / 名称 / topic / 优先级是任务的身份证，常驻窗体顶部，
  * 任何页签下都看得到；启用 / 独占不在表单里 —— 启用在卡片右上角、独占在连线落点
- * （拓扑页），它们是运行态开关，和配置内容混在一起反而藏得住误触。
+ * （控制面板），它们是运行态开关，和配置内容混在一起反而藏得住误触。
  */
 export function TaskEditorDrawer({
   open,
@@ -71,7 +71,7 @@ export function TaskEditorDrawer({
 }: {
   open: boolean;
   task: SyncTask | null;
-  /** 打开时落在哪个页签；拓扑页点「3 校验」这段时用它直达 */
+  /** 打开时落在哪个页签；控制面板点「3 校验」这段时用它直达 */
   initialTab?: TaskTab;
   onClose: () => void;
   onSaved?: () => void;
@@ -147,8 +147,8 @@ export function TaskEditorDrawer({
           toast.success(
             task ? "已保存，版本 +1" : "已创建（默认停用）",
             task
-              ? "记得点顶栏的「重载快照」让它生效"
-              : "启用开关在列表或拓扑卡片的右上角，确认配置后再打开",
+              ? "已通知各副本刷新执行器快照"
+              : "启用开关在列表或控制面板卡片的右上角，确认配置后再打开",
           );
           onSaved?.();
           onClose();
@@ -159,12 +159,12 @@ export function TaskEditorDrawer({
   };
 
   return (
-    <Drawer
+    <Modal
       open={open}
       onClose={onClose}
-      width={880}
+      width={980}
       title={task ? `编辑 ${task.code}` : "新建同步任务"}
-      subtitle={task ? `v${task.version} · ${task.topic}` : "六段流水线一次配完，保存后需重载快照"}
+      subtitle={task ? `v${task.version} · ${task.topic}` : "六段流水线一次配完，保存后自动通知各副本刷新"}
       badge={
         issues.length > 0 ? (
           <Badge tone="danger" dot>
@@ -296,10 +296,10 @@ export function TaskEditorDrawer({
         <div className="space-y-3">
           <SectionIntro
             title="匹配"
-            body="回答「这条记录归不归我管」。全部条件满足才算命中；要表达「或」，拆成两个任务。空条件表示该 topic 全收。"
+            body="回答「这条记录归不归我管」。全部条件满足才算命中；要表达「或」，加一个「任意满足」分组，分组还能嵌套。空条件表示该 topic 全收。"
           />
           <AssertEditor
-            asserts={spec.match ?? []}
+            conditions={spec.match ?? []}
             onChange={(match) => patch({ match })}
             pathPrefix="match"
             issues={byPath}
@@ -563,7 +563,7 @@ export function TaskEditorDrawer({
           </Button>
         </div>
       )}
-    </Drawer>
+    </Modal>
   );
 }
 

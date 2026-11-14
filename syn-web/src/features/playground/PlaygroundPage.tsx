@@ -57,7 +57,7 @@ export function PlaygroundPage() {
   const [error, setError] = useState<string | null>(null);
   const [delivering, setDelivering] = useState(false);
 
-  // topic 由列表/编辑抽屉带过来时，把样例报文一起填好：空着让人自己编一份太不友好
+  // topic 由列表/编辑窗体带过来时，把样例报文一起填好：空着让人自己编一份太不友好
   useEffect(() => {
     if (!topic && topics.length > 0) setTopic(topics[0]);
   }, [topics, topic]);

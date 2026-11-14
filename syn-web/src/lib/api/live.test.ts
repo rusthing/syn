@@ -117,6 +117,22 @@ describe("liveTasks", () => {
     stubFetch(undefined);
     await expect(liveTasks.remove("1")).resolves.toBeNull();
   });
+
+  it("toggle 发 PUT /enabled 且只取权威 enabled，不解析完整任务实体", async () => {
+    const calls = capture({ ...taskVo, enabled: false });
+    await expect(liveTasks.toggle("18446744073709551615", false)).resolves.toEqual({
+      id: "18446744073709551615",
+      enabled: false,
+    });
+    expect(calls[0].url).toContain("/syn/task/18446744073709551615/enabled");
+    expect(calls[0].init.method).toBe("PUT");
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ enabled: false });
+  });
+
+  it("toggle 的 extra 为 null 时不抛错，退回请求值（成功的启停不能被判成失败）", async () => {
+    capture(null);
+    await expect(liveTasks.toggle("1", true)).resolves.toEqual({ id: "1", enabled: true });
+  });
 });
 
 describe("liveSources", () => {
