@@ -31,7 +31,7 @@ export const TRANSFORM_DOCS: Record<TransformName, { label: string; args?: strin
   strip_prefix: { label: "去前缀", args: '"BJ-"', note: "同上" },
   truncate: { label: "截断", args: "100", note: "按**字符**截，不是字节：中文名不会被截成乱码" },
   to_bool_01: { label: "转布尔", note: "1/0、true/false、t/f 都认；其它值报错" },
-  wkb_to_wkt: { label: "WKB→WKT", note: "Debezium 的 PostGIS 十六进制 WKB，支持 Point/Line/Polygon 及 Multi" },
+  wkb_to_wkt: { label: "WKB→WKT", note: "十六进制与 base64（Debezium bytea 默认编码）都认，支持 Point/Line/Polygon 及 Multi" },
   to_ms: { label: "补成毫秒", args: "", note: "小于 1e11 的按秒处理乘 1000，否则原样" },
   upper: { label: "转大写", note: "只对字符串生效" },
   lower: { label: "转小写", note: "只对字符串生效" },
@@ -292,9 +292,31 @@ function readGeometry(r: Reader, depth = 0): string {
   }
 }
 
-export function wkbToWkt(hex: string): string {
-  const bytes = decodeHex(hex);
-  if (!bytes || bytes.length === 0) throw new TransformError("wkb_to_wkt", "WKB 不是合法的十六进制");
+export function wkbToWkt(raw: string): string {
+  // 十六进制优先；不是合法十六进制时按 base64 解（Debezium 对 bytea 列的默认编码），
+  // 与 syn-core `wkb.rs` 的判定顺序保持同构
+  const stripped = raw.trim().startsWith("\\x") || raw.trim().startsWith("0x")
+    ? raw.trim().slice(2)
+    : raw.trim();
+  if (stripped.length === 0) throw new TransformError("wkb_to_wkt", "WKB 为空");
+  let parsed: { bytes: Uint8Array; wkt: string } | null = null;
+  try {
+    const bytes = decodeHex(stripped);
+    if (bytes && bytes.length > 0) parsed = { bytes, wkt: readAll(bytes) };
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) {
+    const bytes = decodeBase64(stripped);
+    if (!bytes || bytes.length === 0) {
+      throw new TransformError("wkb_to_wkt", "WKB 不是合法的十六进制或 base64");
+    }
+    parsed = { bytes, wkt: readAll(bytes) };
+  }
+  return parsed.wkt;
+}
+
+function readAll(bytes: Uint8Array): string {
   const reader = new Reader(bytes);
   const wkt = readGeometry(reader);
   if (reader.pos !== bytes.length) {
@@ -302,4 +324,35 @@ export function wkbToWkt(hex: string): string {
     throw new TransformError("wkb_to_wkt", `WKB 解析后剩余 ${bytes.length - reader.pos} 字节`);
   }
   return wkt;
+}
+
+const B64_TABLE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_URL_SAFE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+function b64Val(c: string): number {
+  const at = B64_TABLE.indexOf(c);
+  if (at >= 0) return at;
+  const atUrl = B64_URL_SAFE.indexOf(c);
+  if (atUrl >= 0) return atUrl;
+  return -1;
+}
+
+function decodeBase64(text: string): Uint8Array | null {
+  const data: number[] = [];
+  for (const c of text) {
+    if (/[A-Za-z0-9+/_-]/.test(c)) data.push(b64Val(c));
+  }
+  if (data.length % 4 === 1) return null;
+  const out: number[] = [];
+  for (let i = 0; i < data.length; i += 4) {
+    const chunk = data.slice(i, i + 4);
+    let acc = 0;
+    for (const v of chunk) acc = (acc << 6) | v;
+    // 尾块不足 4 字符时补零对齐到 24 位，再按整块取字节
+    acc <<= 6 * (4 - chunk.length);
+    if (chunk.length === 4) out.push((acc >> 16) & 255, (acc >> 8) & 255, acc & 255);
+    else if (chunk.length === 3) out.push((acc >> 16) & 255, (acc >> 8) & 255);
+    else out.push((acc >> 16) & 255);
+  }
+  return new Uint8Array(out);
 }
