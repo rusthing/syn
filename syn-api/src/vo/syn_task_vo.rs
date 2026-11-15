@@ -9,22 +9,20 @@ use crate::mo::syn_task::Model;
 
 /// # 同步任务
 ///
-/// `spec` 原样返回，前端拿它渲染五段编辑器；`code` 与几个索引列同时给出，
-/// 列表页不必先解析 `spec` 才能显示主题。
+/// `spec` 原样返回，前端拿它渲染五段编辑器；几个索引列同时给出，
+/// 列表页不必先解析 `spec` 才能显示主题与顺序。
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SynTaskVo {
     /// ID
     pub id: U64,
-    /// 任务编码
-    pub code: String,
     /// 名称
     pub name: String,
     /// 来源 topic
     pub topic: String,
-    /// 匹配优先级
-    pub priority: i32,
+    /// 同一主题内的排序值
+    pub sort_order: i32,
     /// 是否启用
     pub enabled: bool,
     /// 命中后是否停止匹配
@@ -49,10 +47,9 @@ impl From<Model> for SynTaskVo {
     fn from(m: Model) -> Self {
         Self {
             id: U64::from(m.id),
-            code: m.code,
             name: m.name,
             topic: m.topic,
-            priority: m.priority,
+            sort_order: m.sort_order,
             enabled: m.enabled,
             exclusive: m.exclusive,
             version: m.version,

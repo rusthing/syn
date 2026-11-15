@@ -145,10 +145,10 @@ export function OverviewPage() {
               ) : (
                 <ul className="divide-y divide-line/70">
                   {data.top_failures.map((item) => (
-                    <li key={`${item.task_code}-${item.code}`} className="flex items-center gap-2 px-3 py-2">
+                    <li key={`${item.task_name}-${item.code}`} className="flex items-center gap-2 px-3 py-2">
                       <span className="min-w-0 flex-1">
                         <span className="block truncate font-mono text-[11.5px] text-ink">{item.code}</span>
-                        <span className="block truncate font-mono text-[10.5px] text-muted">{item.task_code}</span>
+                        <span className="block truncate font-mono text-[10.5px] text-muted">{item.task_name}</span>
                       </span>
                       <span className="tnum shrink-0 font-mono text-[12px] text-danger">{item.count}</span>
                     </li>
@@ -179,7 +179,7 @@ export function OverviewPage() {
                     <span className="min-w-0 flex-1">
                       <span className="flex items-baseline gap-1.5">
                         <span className="truncate text-[12.5px] font-medium text-ink">{task.name}</span>
-                        <span className="shrink-0 font-mono text-[10.5px] text-muted">{task.code}</span>
+                        <span className="shrink-0 font-mono text-[10.5px] text-muted">#{task.sort_order}</span>
                       </span>
                       <span className="mt-0.5 block truncate font-mono text-[10.5px] text-muted">
                         {task.topic} · 命中 {task.stats.total.toLocaleString()}

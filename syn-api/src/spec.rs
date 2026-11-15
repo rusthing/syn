@@ -21,15 +21,17 @@ use crate::issue::{SpecIssue, SpecIssueKind};
 
 /// # 一个同步任务
 ///
-/// 对应 `syn_task.spec`，整个结构一次性进 jsonb；`topic` / `priority` /
-/// `enabled` 另外提成关系列建索引，避免每个请求都反序列化一遍全表。
+/// 对应 `syn_task.spec`，整个结构一次性进 jsonb；`topic` / `sort_order` /
+/// `enabled` / `exclusive` 另外提成关系列建索引，避免每个请求都反序列化一遍全表。
+///
+/// `id` / `name` 是**运行态字段**：不落进 `spec`，由快照加载时从 `syn_task` 的列注入。
+/// 任务的身份是主键 `id`，人读的名字是 `name` —— 配置里没有第二套编码。
 ///
 /// ## 示例
 ///
 /// ```yaml
-/// id: dtw_region
 /// topic: dtw.dtw_region
-/// priority: 100
+/// sort_order: 100
 /// enabled: true
 /// target: { service: dtw-rs-svr, base: /dtw/region }
 /// match:
@@ -37,15 +39,23 @@ use crate::issue::{SpecIssue, SpecIssueKind};
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskSpec {
-    /// 任务标识，与 `syn_task.code` 同值
-    ///
-    /// 库里以 `code` 列为准，`spec` 里可以不写；加载时用列值覆盖。
-    #[serde(default)]
-    pub id: String,
+    /// 任务主键，加载时注入；序列化回 `spec` 时丢掉
+    #[serde(skip)]
+    pub id: i64,
+    /// 任务名称，加载时注入，只用于日志与结果回显
+    #[serde(skip)]
+    pub name: String,
     /// 来源 topic（sink 侧 `topics` 里的名字）
     pub topic: String,
-    /// 匹配优先级，升序；首个命中即停
-    pub priority: i32,
+    /// 同一主题内的排序值，升序；首个命中即停
+    ///
+    /// 兼容旧配置的 `priority`：同一个语义改成了框架惯用的排序列名。
+    #[serde(
+        rename = "sort_order",
+        alias = "priority",
+        default = "default_sort_order"
+    )]
+    pub sort_order: i32,
     /// 停用后不参与匹配，但保留配置
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -70,8 +80,17 @@ pub struct TaskSpec {
     #[serde(default)]
     pub guards: Vec<Guard>,
     /// 响应判定，有序
-    #[serde(default)]
+    ///
+    /// 老形状，只读兼容：加载时若 `rules` 为空则由它映射（见 [`TaskSpec::verdict_rules`]）。
+    /// 序列化时为空就不写，避免和 `rules` 同时出现在库里。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outcomes: Vec<Outcome>,
+    /// 判定语句树（新形状），优先于 `outcomes`
+    ///
+    /// 为空时沿用 `outcomes` 的扁平写法；两者都写属于配置错误，校验会拦。
+    /// 保存时只写这一项 —— 存两种形状必然漂移，`topic` / `sort_order` 已经吃过一次亏。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<Rule>,
 }
 
 /// # 投递方式
@@ -289,6 +308,10 @@ pub enum Condition {
 /// 拖垮的树。超过上限在保存期就拦，不让运行期递归。
 pub const MAX_CONDITION_DEPTH: usize = 8;
 pub const MAX_CONDITION_NODES: usize = 200;
+
+/// 判定语句的嵌套上限。三层已经覆盖「按状态码分流 → 再看 msg → 再看某个业务字段」，
+/// 再深就是拿配置写脚本了：读的人已经无法在脑子里展开，不如把外层条件前移。
+pub const MAX_RULE_DEPTH: usize = 3;
 
 /// # 操作符
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -576,6 +599,78 @@ pub struct Outcome {
     pub code: String,
 }
 
+/// # 判定语句
+///
+/// 判定段是一串按顺序执行的语句，**首个命中即返回**。语句只有三种：`if` 的
+/// else-if 链就是 `branches` 里连续的项，`switch` 只是「按一个字段的值分流」的同义写法，
+/// `outcome` 是叶子结论。学三个概念就够，不再有第四种语法。
+///
+/// 分支体（`then` / `default`）里放的还是语句列表，**嵌套因此不需要单独语法**：
+/// 块里放块即可。代价是必须内建一条约束：每个分支体都要以「必然给出结论」的语句
+/// 收尾（叶子结论 / 带 else 的 if / 带 default 的 switch），否则「命中了一半却没有
+/// 结论」会让响应掉进 `UNCLASSIFIED` —— 这正是校验拦的东西。
+///
+/// 老配置用扁平的 `outcomes`，加载时由 [`TaskSpec::verdict_rules`] 映射成一串 `If`；
+/// 保存时只写 `rules`，`outcomes` 从此是只读兼容入口（映射见同一个函数）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Rule {
+    /// 条件分支：`branches` 依序求值，最后一项 `assert` 为空的当 else
+    If {
+        /// 至少一项
+        branches: Vec<Branch>,
+    },
+    /// 按一个字段的值分流
+    Switch {
+        /// 判别字段（JSON 路径）
+        on: String,
+        /// 判别字段的作用域，缺省 `body`（判定段的 body 是响应体）
+        #[serde(default = "default_body_scope")]
+        scope: Scope,
+        /// 取值臂，任一枚举值相等即命中
+        cases: Vec<CaseArm>,
+        /// 兜底臂，必须非空
+        #[serde(default)]
+        default: Vec<Rule>,
+    },
+    /// 叶子结论
+    Outcome {
+        /// 结论
+        verdict: Verdict,
+        /// 分类码，进死信与前端「能否改报文重投」
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        code: String,
+    },
+}
+
+/// # `if` 的一个分支
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Branch {
+    /// 条件（顶层合取，元素可以是分组）；为空表示「其余全部」，只能出现在最后
+    #[serde(rename = "assert", default)]
+    pub asserts: Vec<Condition>,
+    /// 条件里叶子断言的默认作用域，缺省 `body`
+    #[serde(default = "default_body_scope")]
+    pub scope: Scope,
+    /// 命中后执行的语句，必须以「必然给出结论」的语句收尾
+    #[serde(default)]
+    pub then: Vec<Rule>,
+}
+
+/// # `switch` 的一个取值臂
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaseArm {
+    /// 命中的取值集合（相等即命中），不允许为空
+    pub values: Vec<serde_json::Value>,
+    /// 命中后执行的语句，必须以「必然给出结论」的语句收尾
+    #[serde(default)]
+    pub then: Vec<Rule>,
+}
+
+fn default_body_scope() -> Scope {
+    Scope::Body
+}
+
 /// # 结论
 ///
 /// 执行器把结论翻译成给 sink 的 HTTP 状态码，**自己从不重试**：
@@ -636,6 +731,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_sort_order() -> i32 {
+    100
+}
+
 impl TaskSpec {
     /// # 结构校验
     ///
@@ -644,13 +743,6 @@ impl TaskSpec {
     pub fn validate(&self) -> Result<(), Vec<SpecIssue>> {
         let mut issues = Vec::new();
 
-        if self.id.trim().is_empty() {
-            issues.push(SpecIssue::new(
-                "id",
-                SpecIssueKind::Missing,
-                "任务标识不能为空",
-            ));
-        }
         if self.topic.trim().is_empty() {
             issues.push(SpecIssue::new(
                 "topic",
@@ -727,6 +819,7 @@ impl TaskSpec {
         self.validate_actions(&mut issues);
         self.validate_guards(&mut issues);
         self.validate_outcomes(&mut issues);
+        self.validate_rules(&mut issues);
 
         if issues.is_empty() {
             Ok(())
@@ -888,6 +981,16 @@ impl TaskSpec {
     }
 
     fn validate_outcomes(&self, issues: &mut Vec<SpecIssue>) {
+        if !self.rules.is_empty() {
+            if !self.outcomes.is_empty() {
+                issues.push(SpecIssue::new(
+                    "outcomes",
+                    SpecIssueKind::Invalid,
+                    "判定同时写了 outcomes 与 rules：保存只认 rules，把 outcomes 删掉",
+                ));
+            }
+            return;
+        }
         if self.outcomes.is_empty() {
             issues.push(SpecIssue::new(
                 "outcomes",
@@ -913,6 +1016,153 @@ impl TaskSpec {
                 "最后一条必须是兜底规则（不带 field）：响应不认识时必须失败，不能静默成功",
             ));
         }
+    }
+
+    /// 判定语句树的校验。`outcomes` 与 `rules` 只会活下来一个（见 `validate_outcomes`）。
+    fn validate_rules(&self, issues: &mut Vec<SpecIssue>) {
+        if self.rules.is_empty() {
+            return;
+        }
+        self.validate_rule_block("rules", &self.rules, 0, issues);
+    }
+
+    /// 一个语句块：非空、逐条校验、末尾必然产出结论
+    fn validate_rule_block(
+        &self,
+        at: &str,
+        block: &[Rule],
+        depth: usize,
+        issues: &mut Vec<SpecIssue>,
+    ) {
+        if depth > MAX_RULE_DEPTH {
+            issues.push(SpecIssue::new(
+                at,
+                SpecIssueKind::Invalid,
+                format!("判定最多嵌套 {MAX_RULE_DEPTH} 层：再深就读不懂了，把外层条件前移"),
+            ));
+            return;
+        }
+        if block.is_empty() {
+            issues.push(SpecIssue::new(
+                at,
+                SpecIssueKind::Missing,
+                "判定块是空的：命中这里之后拿不到结论",
+            ));
+            return;
+        }
+        for (i, rule) in block.iter().enumerate() {
+            self.validate_rule(&format!("{at}[{i}]"), rule, depth, issues);
+        }
+        if !block_concludes(block) {
+            issues.push(SpecIssue::new(
+                at,
+                SpecIssueKind::Invalid,
+                "判定块必须以「必然给出结论」的语句收尾（结论 / 带否则的 if / 带 default 的 switch）：\
+                 没命中的响应会变成 UNCLASSIFIED 致命",
+            ));
+        }
+    }
+
+    fn validate_rule(&self, at: &str, rule: &Rule, depth: usize, issues: &mut Vec<SpecIssue>) {
+        match rule {
+            Rule::Outcome { .. } => {}
+            Rule::If { branches } => {
+                if branches.is_empty() {
+                    issues.push(SpecIssue::new(
+                        format!("{at}.branches"),
+                        SpecIssueKind::Missing,
+                        "if 至少要有一个分支",
+                    ));
+                    return;
+                }
+                for (i, b) in branches.iter().enumerate() {
+                    let bat = format!("{at}.branches[{i}]");
+                    if b.asserts.is_empty() && i + 1 != branches.len() {
+                        issues.push(SpecIssue::new(
+                            &bat,
+                            SpecIssueKind::Invalid,
+                            "只有最后一个分支可以省条件（否则分支）：中间的省了，后面分支永远进不去",
+                        ));
+                    }
+                    self.validate_conditions(&format!("{bat}.assert"), &b.asserts, b.scope, issues);
+                    self.validate_rule_block(&format!("{bat}.then"), &b.then, depth + 1, issues);
+                }
+            }
+            Rule::Switch {
+                on,
+                cases,
+                default,
+                ..
+            } => {
+                if on.trim().is_empty() {
+                    issues.push(SpecIssue::new(
+                        format!("{at}.on"),
+                        SpecIssueKind::Missing,
+                        "switch 必须写判别字段",
+                    ));
+                }
+                if cases.is_empty() {
+                    issues.push(SpecIssue::new(
+                        format!("{at}.cases"),
+                        SpecIssueKind::Missing,
+                        "switch 至少要有一个 case",
+                    ));
+                }
+                for (i, c) in cases.iter().enumerate() {
+                    let cat = format!("{at}.cases[{i}]");
+                    if c.values.is_empty() {
+                        issues.push(SpecIssue::new(
+                            format!("{cat}.values"),
+                            SpecIssueKind::Missing,
+                            "case 的取值不能为空",
+                        ));
+                    }
+                    self.validate_rule_block(&format!("{cat}.then"), &c.then, depth + 1, issues);
+                }
+                if default.is_empty() {
+                    issues.push(SpecIssue::new(
+                        format!("{at}.default"),
+                        SpecIssueKind::Missing,
+                        "switch 必须有 default：没有臂匹配时不能没有结论",
+                    ));
+                }
+                self.validate_rule_block(&format!("{at}.default"), default, depth + 1, issues);
+            }
+        }
+    }
+
+    /// # 判定段的有效语句树
+    ///
+    /// `rules` 非空就用它；否则把扁平的 `outcomes` 一条条映射成「单分支 if」。
+    /// 映射与旧行为逐位等价：都不命中时仍然落到 `UNCLASSIFIED` 致命，只是换了形状。
+    /// 求值器只认这一个入口（`syn-core/src/verdict.rs`），不再各自读 `outcomes`。
+    pub fn verdict_rules(&self) -> Vec<Rule> {
+        if !self.rules.is_empty() {
+            return self.rules.clone();
+        }
+        self.outcomes
+            .iter()
+            .map(|o| Rule::If {
+                branches: vec![Branch {
+                    asserts: o.asserts.clone(),
+                    scope: o.scope,
+                    then: vec![Rule::Outcome {
+                        verdict: o.verdict,
+                        code: o.code.clone(),
+                    }],
+                }],
+            })
+            .collect()
+    }
+}
+
+/// 一个语句块是否「必然给出结论」：兜底只能靠最后一条
+fn block_concludes(block: &[Rule]) -> bool {
+    match block.last() {
+        Some(Rule::Outcome { .. }) => true,
+        Some(Rule::If { branches }) => branches.last().is_some_and(|b| b.asserts.is_empty()),
+        Some(Rule::Switch { default, .. }) => !default.is_empty(),
+        None => false,
     }
 }
 
@@ -1076,12 +1326,157 @@ mod tests {
 
     fn base_spec() -> Value {
         json!({
-            "id": "t", "topic": "tp", "priority": 1,
+            "topic": "tp", "sort_order": 1,
             "target": {"service": "s", "base": "/b"},
             "mapping": {"rows": [{"to": "id", "from": "$.id"}]},
             "actions": [{"op": "c", "method": "POST"}, {"op": "r", "method": "POST"}],
             "outcomes": []
         })
+    }
+
+    #[test]
+    fn legacy_priority_still_loads_as_sort_order() {
+        let mut v = base_spec();
+        let sort_order = v.as_object_mut().unwrap().remove("sort_order").unwrap();
+        v["priority"] = sort_order;
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        assert_eq!(spec.sort_order, 1);
+        let back = serde_json::to_value(&spec).unwrap();
+        assert_eq!(back["sort_order"], 1);
+        assert!(back.get("priority").is_none());
+    }
+
+    #[test]
+    fn legacy_outcomes_map_to_if_statements_verbatim() {
+        let mut v = base_spec();
+        v["outcomes"] = json!([
+            {"scope": "body", "assert": [{"field": "$.code", "op": "eq", "value": 500}], "verdict": "retriable", "code": "UPSTREAM_500"},
+            {"scope": "status", "assert": [{"op": "in", "value": [200]}], "verdict": "success"}
+        ]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        let rules = spec.verdict_rules();
+        assert_eq!(rules.len(), 2, "一条 outcome 映射成一条 if");
+        let Rule::If { branches } = &rules[0] else {
+            panic!("映射结果必须是 if");
+        };
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].asserts.len(), 1);
+        assert!(matches!(branches[0].then[0], Rule::Outcome { .. }));
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn rules_block_must_end_with_something_that_concludes() {
+        let mut v = base_spec();
+        v["outcomes"] = json!([]);
+        v["rules"] = json!([
+            {"kind": "if", "branches": [
+                {"assert": [{"op": "eq", "value": 500}], "then": [{"kind": "outcome", "verdict": "retriable"}]}
+            ]}
+        ]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.iter().any(|i| i.message.contains("必然给出结论")),
+            "顶层块没有否则时必须报错：{err:?}"
+        );
+    }
+
+    #[test]
+    fn nested_block_needs_its_own_fallback() {
+        let mut v = base_spec();
+        v["outcomes"] = json!([]);
+        v["rules"] = json!([
+            {"kind": "if", "branches": [
+                {"assert": [{"op": "eq", "value": 500}], "then": [
+                    {"kind": "if", "branches": [
+                        {"assert": [{"field": "$.msg", "op": "contains", "value": "timeout"}],
+                         "then": [{"kind": "outcome", "verdict": "retriable"}]}
+                    ]}
+                ]},
+                {"assert": [], "then": [{"kind": "outcome", "verdict": "success"}]}
+            ]}
+        ]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.iter()
+                .any(|i| i.path == "rules[0].branches[0].then" && i.message.contains("必然给出结论")),
+            "嵌套块缺兜底要定位到 then：{err:?}"
+        );
+    }
+
+    #[test]
+    fn switch_requires_cases_and_default() {
+        let mut v = base_spec();
+        v["outcomes"] = json!([]);
+        v["rules"] = json!([
+            {"kind": "switch", "on": "$.code", "cases": [{"values": []}], "default": []}
+        ]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        let err = spec.validate().unwrap_err();
+        let paths: Vec<&str> = err.iter().map(|i| i.path.as_str()).collect();
+        assert!(paths.contains(&"rules[0].cases[0].values"), "{paths:?}");
+        assert!(paths.contains(&"rules[0].default"), "{paths:?}");
+    }
+
+    #[test]
+    fn rules_win_and_outcomes_must_be_removed() {
+        let mut v = base_spec();
+        v["outcomes"] = json!([{"scope": "status", "assert": [], "verdict": "success"}]);
+        v["rules"] = json!([{"kind": "outcome", "verdict": "success"}]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.iter().any(|i| i.path == "outcomes"),
+            "两处都写必须报错，否则保存后行为由 order 决定：{err:?}"
+        );
+    }
+
+    #[test]
+    fn rules_round_trip_without_outcomes() {
+        let mut v = base_spec();
+        v["outcomes"] = json!([]);
+        v["rules"] = json!([
+            {"kind": "switch", "on": "$.code", "scope": "body",
+             "cases": [{"values": [200, 204], "then": [{"kind": "outcome", "verdict": "skip", "code": "dup"}]}],
+             "default": [{"kind": "outcome", "verdict": "success"}]}
+        ]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        assert!(spec.validate().is_ok(), "{:?}", spec.validate().unwrap_err());
+        let back = serde_json::to_value(&spec).unwrap();
+        assert_eq!(back["rules"][0]["kind"], "switch");
+        assert!(
+            back.get("outcomes").is_none(),
+            "保存只写 rules，outcomes 不能跟着一起落库"
+        );
+    }
+
+    #[test]
+    fn rule_depth_is_capped() {
+        let mut v = base_spec();
+        v["outcomes"] = json!([]);
+        let mut block = json!([{"kind": "outcome", "verdict": "success"}]);
+        for _ in 0..MAX_RULE_DEPTH + 1 {
+            block = json!([{"kind": "if", "branches": [{"assert": [], "then": block}]}]);
+        }
+        v["rules"] = block;
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.iter().any(|i| i.message.contains("最多嵌套")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn runtime_identity_is_not_persisted_into_spec() {
+        let mut spec: TaskSpec = serde_json::from_value(base_spec()).unwrap();
+        spec.id = 42;
+        spec.name = "人员同步".to_string();
+        let back = serde_json::to_value(&spec).unwrap();
+        assert!(back.get("id").is_none());
+        assert!(back.get("name").is_none());
     }
 
     #[test]

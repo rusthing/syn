@@ -8,6 +8,7 @@
  * 这里只放纯逻辑（顺序、概要、问题归段），方便单测；渲染在 `TaskStageRail`。
  */
 import type { TaskSpec } from "@/lib/api/types";
+import { countRules, verdictRules } from "@/lib/spec/rules";
 
 /** 控制面板点卡片上的某一段时，按这个值直接打开对应段；`json` 是额外的高级入口 */
 export type TaskTab =
@@ -44,6 +45,7 @@ export function tabOfPath(path: string): TaskTab {
   if (path.startsWith("actions")) return "actions";
   if (path.startsWith("guards")) return "guards";
   if (path.startsWith("outcomes")) return "outcomes";
+  if (path.startsWith("rules")) return "outcomes";
   if (path.startsWith("target")) return "target";
   // id / topic 在顶部身份证区直接标红，其余未知路径落到第一段
   return "match";
@@ -71,8 +73,10 @@ export function stageSummary(spec: TaskSpec, key: TaskTab): string {
       return spec.target.kind === "db"
         ? `db · ${spec.target.datasource?.trim() || "未选数据源"}`
         : `http · ${spec.target.service?.trim() || "未填服务名"}`;
-    case "outcomes":
-      return `${spec.outcomes?.length ?? 0} 条规则`;
+    case "outcomes": {
+      const n = countRules(verdictRules(spec));
+      return n === 0 ? "未配置判定" : `${n} 条语句`;
+    }
     case "json":
       return "整份 spec 原文";
   }
@@ -97,7 +101,8 @@ export function stageFilled(spec: TaskSpec, key: TaskTab): boolean {
         ? Boolean(spec.target.datasource?.trim() && spec.target.table?.trim())
         : Boolean(spec.target.service?.trim() && spec.target.base?.trim());
     case "outcomes":
-      return (spec.outcomes?.length ?? 0) > 0;
+      // 判定段两套形状：新任务与升级过的任务写 rules，老任务仍是扁平 outcomes
+      return countRules(verdictRules(spec)) > 0;
     case "json":
       return false;
   }

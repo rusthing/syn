@@ -12,8 +12,8 @@ use utoipa::ToSchema;
 pub struct SynDeliveryQueryDto {
     /// 关键字，匹配 `idem_key` / 分类码
     pub keyword: Option<String>,
-    /// 按任务编码精确筛
-    pub task_code: Option<String>,
+    /// 按任务名称精确筛
+    pub task_name: Option<String>,
     /// 按结论筛：`success` / `skip` / `fatal` / `retriable`
     pub verdict: Option<String>,
     /// 页码，从 1 开始

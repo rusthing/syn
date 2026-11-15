@@ -6,9 +6,9 @@ use validator::Validate;
 
 /// # 保存任务（新增与修改共用）
 ///
-/// `spec` 是完整的五段规则，**任务的标识与索引列都从它派生**：
-/// `spec.id → code`、`spec.topic → topic`、`spec.priority → priority`、
-/// `spec.enabled → enabled`、`spec.exclusive → exclusive`。
+/// 任务的索引列都从 `spec` 派生：`spec.topic → topic`、`spec.sort_order → sort_order`、
+/// `spec.enabled → enabled`、`spec.exclusive → exclusive`。身份只有主键 `id`
+/// （新增时由 idworker 生成），人读的名字就是 `name`，没有第二套编码。
 ///
 /// 只提交一份规则、由服务端拆列，是为了避免「同一件事填两个地方」：
 /// 若让调用方同时传 `topic` 和 `spec.topic`，两者不一致时行为就取决于读取顺序。
@@ -39,7 +39,7 @@ pub struct SynTaskEnabledDto {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SynTaskQueryDto {
-    /// 关键字，匹配 `code` / `name` / `topic`
+    /// 关键字，匹配 `name` / `topic`
     pub keyword: Option<String>,
     /// 按来源 topic 精确筛
     pub topic: Option<String>,

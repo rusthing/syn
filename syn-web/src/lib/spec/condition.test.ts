@@ -14,9 +14,8 @@ import { isFallbackConditions, validateSpec } from "./validate";
 
 function baseSpec(): TaskSpec {
   return {
-    id: "t",
     topic: "tp",
-    priority: 1,
+    sort_order: 1,
     target: { service: "s", base: "/b" },
     mapping: { rows: [{ to: "id", from: "$.id" }] },
     actions: [

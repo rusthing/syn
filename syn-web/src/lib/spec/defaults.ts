@@ -151,11 +151,10 @@ export function emptyAction(op: Op = "c"): Action {
 }
 
 /** 新建任务的最小骨架：能通过校验，但不含任何业务字段 */
-export function newTask(topic = "dtw.region", code = "new_task"): TaskSpec {
+export function newTask(topic = "dtw.region", sortOrder = 100): TaskSpec {
   return {
-    id: code,
     topic,
-    priority: 100,
+    sort_order: sortOrder,
     enabled: false,
     exclusive: true,
     target: { service: "dtw-rs-svr", base: "/dtw/region" },
@@ -166,33 +165,47 @@ export function newTask(topic = "dtw.region", code = "new_task"): TaskSpec {
     },
     actions: [emptyAction("c"), emptyAction("r")],
     guards: [],
-    outcomes: [
+    // 判定写成语句树：一串按顺序执行的 if，最后一条是无条件结论 ——
+    // 「必然给出结论」由最后这条保证，等同于执行器原来的 UNCLASSIFIED 兜底
+    rules: [
       {
-        scope: "status",
-        assert: [{ op: "in", value: [200, 201, 204] }],
-        verdict: "success",
-        code: "ok",
+        kind: "if",
+        branches: [
+          {
+            assert: [{ scope: "status", op: "in", value: [200, 201, 204] }],
+            then: [{ kind: "outcome", verdict: "success", code: "ok" }],
+          },
+        ],
       },
       {
-        scope: "status",
-        assert: [{ op: "eq", value: 404 }],
-        verdict: "skip",
-        code: "not_found",
+        kind: "if",
+        branches: [
+          {
+            assert: [{ scope: "status", op: "eq", value: 404 }],
+            then: [{ kind: "outcome", verdict: "skip", code: "not_found" }],
+          },
+        ],
       },
       {
-        scope: "status",
-        assert: [{ op: "in", value: [500, 502, 503, 504] }],
-        verdict: "retriable",
-        code: "upstream_unavailable",
+        kind: "if",
+        branches: [
+          {
+            assert: [{ scope: "status", op: "in", value: [500, 502, 503, 504] }],
+            then: [{ kind: "outcome", verdict: "retriable", code: "upstream_unavailable" }],
+          },
+        ],
       },
       {
-        scope: "body",
-        assert: [{ field: "$.result", op: "lt", value: 0 }],
-        verdict: "fatal",
-        code: "business_error",
+        kind: "if",
+        branches: [
+          {
+            assert: [{ scope: "body", field: "$.result", op: "lt", value: 0 }],
+            then: [{ kind: "outcome", verdict: "fatal", code: "business_error" }],
+          },
+        ],
       },
-      // 没枚举到的状态码由执行器的 UNCLASSIFIED 兜底按 fatal 处理，不必再写一条
-
+      // 兜底：到这里说明前面的语句都没命中，与执行器的 UNCLASSIFIED 同义
+      { kind: "outcome", verdict: "fatal", code: "unclassified" },
     ],
   };
 }

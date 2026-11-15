@@ -2,9 +2,8 @@
   "name": "人员表 DB 直写（dtwrs_ui）",
   "remark": "env 联调：poll -> db sink on conflict do update",
   "spec": {
-    "id": "adm_person_to_dtw",
     "topic": "source:adm_person",
-    "priority": 100,
+    "sort_order": 100,
     "enabled": true,
     "exclusive": true,
     "target": {

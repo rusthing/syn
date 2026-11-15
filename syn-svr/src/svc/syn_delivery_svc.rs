@@ -10,7 +10,7 @@ use robotech::svc::SvcError;
 use sea_orm::{ColumnTrait, Condition};
 use syn_api::{SynDeliveryQueryDto, SynDeliveryVo};
 
-use super::syn_idem_svc::task_codes_and_topics;
+use super::syn_idem_svc::task_names_and_topics;
 use crate::dao::SynIdemDao;
 use crate::mo::syn_idem::{Column as IdemColumn, Model as IdemModel};
 use crate::mo::syn_task::{Column as TaskColumn, Model as TaskModel};
@@ -32,9 +32,9 @@ impl SynDeliverySvc {
                     .add(IdemColumn::Code.contains(kw)),
             );
         }
-        if let Some(code) = dto.task_code.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(name) = dto.task_name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             let tasks = SynTaskDao::list_by_condition::<_, TaskModel>(
-                Condition::all().add(TaskColumn::Code.eq(code)),
+                Condition::all().add(TaskColumn::Name.eq(name)),
                 &None,
                 db.as_ref(),
             )
@@ -56,15 +56,15 @@ impl SynDeliverySvc {
         )
         .await?;
 
-        let tasks = task_codes_and_topics(&rows, db.as_ref()).await?;
+        let tasks = task_names_and_topics(&rows, db.as_ref()).await?;
         let list = rows
             .into_iter()
             .map(|row| {
-                let (task_code, topic) = tasks
+                let (task_name, topic) = tasks
                     .get(&row.task_id)
                     .cloned()
                     .unwrap_or_else(|| (String::new(), String::new()));
-                SynDeliveryVo::new(row, task_code, (!topic.is_empty()).then_some(topic))
+                SynDeliveryVo::new(row, task_name, (!topic.is_empty()).then_some(topic))
             })
             .collect();
         Ok((total, list))

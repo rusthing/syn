@@ -6,7 +6,7 @@
 //!
 //! | 字段 | 来源 | 口径 |
 //! |---|---|---|
-//! | `task_code` / `topic` | `syn_task` 关联 | 任务编码与它订阅的 topic |
+//! | `task_name` / `topic` | `syn_task` 关联 | 任务名称与它订阅的 topic |
 //! | `record_key` | `syn_idem.idem_key` | sink 给的 `topic:partition:offset` |
 //! | `verdict` / `code` / `http_status` | 台账 | 上次执行给 sink 的结论 |
 //! | `stage` | 常量 `verdict` | 台账只记最终结论，不记中间轨迹 |
@@ -31,8 +31,8 @@ use crate::spec::Verdict;
 pub struct SynDeliveryVo {
     /// 台账行 ID
     pub id: U64,
-    /// 任务编码
-    pub task_code: String,
+    /// 任务名称
+    pub task_name: String,
     /// 任务订阅的 topic（由 `syn_task` 关联带出）
     pub topic: Option<String>,
     /// 变更操作。台账不记，恒为 `null`
@@ -57,11 +57,11 @@ pub struct SynDeliveryVo {
 
 impl SynDeliveryVo {
     /// 从台账行 + 关联任务信息构造
-    pub fn new(row: IdemModel, task_code: String, topic: Option<String>) -> Self {
+    pub fn new(row: IdemModel, task_name: String, topic: Option<String>) -> Self {
         let verdict = Verdict::from(SyncVerdict::from_i16(row.verdict).unwrap_or_default());
         Self {
             id: U64::from(row.id),
-            task_code,
+            task_name,
             topic,
             op: None,
             http_status: verdict.http_status(),

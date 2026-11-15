@@ -23,6 +23,7 @@ import type {
   SyncTask,
   TaskSpec,
 } from "@/lib/api/types";
+import { countRules, verdictRules } from "@/lib/spec/rules";
 import { validateSpec } from "@/lib/spec/validate";
 
 /** 节点 id：`类型:标识`。同一 code 在数据源和任务下是两个节点 */
@@ -131,7 +132,7 @@ export function taskSegments(spec: TaskSpec): TaskSegment[] {
     mapping: { detail: `${spec.mapping?.rows?.length ?? 0} 个字段`, issues: 0 },
     guards: { detail: `${spec.guards?.length ?? 0} 条`, issues: 0 },
     actions: { detail: `${spec.actions?.length ?? 0} 个`, issues: 0 },
-    outcomes: { detail: `${spec.outcomes?.length ?? 0} 条`, issues: 0 },
+    outcomes: { detail: `${countRules(verdictRules(spec))} 条`, issues: 0 },
     target: { detail: targetSummary(spec), issues: 0 },
   };
 
@@ -161,6 +162,9 @@ function stageOfPath(root: string): TaskStage | null {
     case "actions":
       return "actions";
     case "outcomes":
+      return "outcomes";
+    // 判定段的语句树挂在 rules 上：同一个圈号，不能因为换了字段就归不到段
+    case "rules":
       return "outcomes";
     case "target":
       return "target";
@@ -308,11 +312,12 @@ export function buildGraph({
     if (!task.enabled) hints.push("任务已停用，事件会继续落到下一个任务或死信");
 
     nodes.push({
-      id: nodeId("task", task.code),
+      // 任务节点的坐标键是主键 id：没有第二套编码要在画布和历史记录之间同步
+      id: nodeId("task", task.id),
       kind: "task",
-      key: task.code,
-      title: task.name || task.code,
-      subtitle: `${task.code} · 优先级 ${task.priority}${task.spec.exclusive === false ? "" : " · 独占"}`,
+      key: task.id,
+      title: task.name || `任务 ${task.id}`,
+      subtitle: `排序 ${task.sort_order}${task.spec.exclusive === false ? "" : " · 独占"}`,
       tone: !task.enabled ? "muted" : issues.length ? "bad" : "ok",
       status: !task.enabled ? "停用" : issues.length ? "待修正" : "启用",
       issues,
@@ -325,9 +330,9 @@ export function buildGraph({
 
     if (task.topic) {
       edges.push({
-        id: `e:${nodeId("topic", task.topic)}->${nodeId("task", task.code)}`,
+        id: `e:${nodeId("topic", task.topic)}->${nodeId("task", task.id)}`,
         from: nodeId("topic", task.topic),
-        to: nodeId("task", task.code),
+        to: nodeId("task", task.id),
         muted: !task.enabled,
       });
     }

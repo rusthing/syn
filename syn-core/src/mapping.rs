@@ -188,7 +188,7 @@ mod tests {
 
     fn spec_with(rows: Vec<MappingRow>) -> TaskSpec {
         serde_json::from_value(json!({
-            "id": "t", "topic": "tp", "priority": 1, "enabled": true,
+            "topic": "tp", "sort_order": 1, "enabled": true,
             "target": {"service": "s", "base": "/b"},
             "mapping": {"omit_null": true, "rows": []},
             "actions": [{"op": "c", "method": "POST", "path": "/x"}],

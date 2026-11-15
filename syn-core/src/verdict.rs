@@ -6,14 +6,17 @@
 //! 不给配置。这一层只管「HTTP 200 响应体里那个业务失败到底算什么」——
 //! 下游把业务失败塞进 200 + `{"result": -1}` 是现状，只能逐服务配。
 
-use syn_api::{TaskSpec, Verdict};
+use syn_api::{Rule, TaskSpec, Verdict};
 
-use crate::assertion::{Context, eval_all};
+use crate::assertion::{eval_all, json_eq, value_at, Context};
 
 /// # 判定结果
 #[derive(Debug, Clone)]
 pub struct Judgement {
-    /// 命中的规则序号（从 1 开始），0 表示兜底
+    /// 命中的**顶层**语句序号（从 1 开始），0 表示兜底
+    ///
+    /// 嵌套块内部命中哪一臂不在这里暴露：对使用方来说「第几条语句管住了这条响应」
+    /// 才是要写进死信与界面的话，再深的编号只会让人去数缩进。
     pub index: usize,
     /// 结论
     pub verdict: Verdict,
@@ -24,6 +27,9 @@ pub struct Judgement {
 }
 
 /// # 执行判定
+///
+/// 语句树由 [`TaskSpec::verdict_rules`] 给出：新配置是 `rules`，老配置是
+/// `outcomes` 映射成的一串 `if`，两种形状在这里没有分支。
 pub fn judge(spec: &TaskSpec, status: u16, body: &serde_json::Value) -> Judgement {
     let record = serde_json::Value::Null;
     let ctx = Context::of(&record).with_status(status);
@@ -32,24 +38,59 @@ pub fn judge(spec: &TaskSpec, status: u16, body: &serde_json::Value) -> Judgemen
         None => ctx,
     };
 
-    for (i, rule) in spec.outcomes.iter().enumerate() {
-        if eval_all(&rule.asserts, &ctx, rule.scope) {
+    let rules = spec.verdict_rules();
+    for (i, rule) in rules.iter().enumerate() {
+        if let Some((verdict, code)) = eval_rule(rule, &ctx) {
             return Judgement {
                 index: i + 1,
-                verdict: rule.verdict,
-                code: rule.code.clone(),
+                verdict,
+                code,
                 fallback: false,
             };
         }
     }
 
-    // 配置校验要求最后一条是兜底，正常走不到这里。真走到了就按失败处理：
+    // 配置校验要求每层块都以兜底收尾，正常走不到这里。真走到了就按失败处理：
     // 「不认识的响应」被当成成功，是这条链路上最贵的一种错误。
     Judgement {
         index: 0,
         verdict: Verdict::Fatal,
         code: "UNCLASSIFIED".into(),
         fallback: true,
+    }
+}
+
+/// 顺序执行一个语句块，首个给出结论的语句胜出
+fn eval_block(block: &[Rule], ctx: &Context<'_>) -> Option<(Verdict, String)> {
+    block.iter().find_map(|r| eval_rule(r, ctx))
+}
+
+fn eval_rule(rule: &Rule, ctx: &Context<'_>) -> Option<(Verdict, String)> {
+    match rule {
+        Rule::Outcome { verdict, code } => Some((*verdict, code.clone())),
+        // 空条件数组恒真，这就是「否则」分支
+        Rule::If { branches } => branches.iter().find_map(|b| {
+            if eval_all(&b.asserts, ctx, b.scope) {
+                eval_block(&b.then, ctx)
+            } else {
+                None
+            }
+        }),
+        Rule::Switch {
+            on,
+            scope,
+            cases,
+            default,
+        } => {
+            let lhs = value_at(ctx, *scope, on);
+            for c in cases {
+                // 相等语义与断言共用 `json_eq`：`1` 等于 `1.0`，别在这里另立一套
+                if c.values.iter().any(|v| lhs.is_some_and(|l| json_eq(l, v))) {
+                    return eval_block(&c.then, ctx);
+                }
+            }
+            eval_block(default, ctx)
+        }
     }
 }
 
@@ -60,7 +101,7 @@ mod tests {
 
     fn spec() -> TaskSpec {
         serde_json::from_value(json!({
-            "id": "t", "topic": "tp", "priority": 1, "enabled": true,
+            "topic": "tp", "sort_order": 1, "enabled": true,
             "target": {"service": "s", "base": "/b"},
             "mapping": {"rows": [{"to": "id", "from": "$.after.id"}]},
             "actions": [{"op": "c", "method": "POST", "path": "/x"}],
@@ -72,6 +113,75 @@ mod tests {
             ]
         }))
         .unwrap()
+    }
+
+    fn rules_spec(rules: serde_json::Value) -> TaskSpec {
+        serde_json::from_value(json!({
+            "topic": "tp", "sort_order": 1,
+            "target": {"service": "s", "base": "/b"},
+            "mapping": {"rows": [{"to": "id", "from": "$.after.id"}]},
+            "actions": [{"op": "c", "method": "POST", "path": "/x"}],
+            "rules": rules
+        }))
+        .unwrap()
+    }
+
+    /// switch 的臂里再嵌 if：外层按 code 分流，内层按 msg 细分
+    #[test]
+    fn nested_if_narrows_within_an_arm() {
+        let s = rules_spec(json!([
+            {"kind": "switch", "on": "$.code", "scope": "body",
+             "cases": [{"values": [500], "then": [
+                 {"kind": "if", "branches": [
+                     {"assert": [{"field": "$.msg", "op": "contains", "value": "timeout"}],
+                      "then": [{"kind": "outcome", "verdict": "retriable", "code": "UPSTREAM_TIMEOUT"}]},
+                     {"assert": [], "then": [{"kind": "outcome", "verdict": "fatal", "code": "UPSTREAM_500"}]}
+                 ]}
+             ]}],
+             "default": [{"kind": "outcome", "verdict": "success"}]}
+        ]));
+        assert_eq!(
+            judge(&s, 500, &json!({"code": 500, "msg": "gateway timeout"})).code,
+            "UPSTREAM_TIMEOUT"
+        );
+        assert_eq!(judge(&s, 500, &json!({"code": 500, "msg": "boom"})).code, "UPSTREAM_500");
+        let ok = judge(&s, 200, &json!({"code": 200}));
+        assert_eq!(ok.verdict, Verdict::Success);
+        assert!(!ok.fallback, "default 命中不算兜底");
+    }
+
+    /// case 与断言共用一套相等语义：`500` 与 `500.0` 相等
+    #[test]
+    fn switch_matches_numbers_by_value() {
+        let s = rules_spec(json!([
+            {"kind": "switch", "on": "$.code", "scope": "body",
+             "cases": [{"values": [500], "then": [{"kind": "outcome", "verdict": "retriable"}]}],
+             "default": [{"kind": "outcome", "verdict": "success"}]}
+        ]));
+        assert_eq!(
+            judge(&s, 200, &json!({"code": 500.0})).verdict,
+            Verdict::Retriable
+        );
+    }
+
+    /// 嵌套里命中，序号仍指最外层那条语句：界面与死信都按「第几条」说话
+    #[test]
+    fn index_points_at_the_top_level_statement() {
+        let s = rules_spec(json!([
+            {"kind": "if", "branches": [
+                {"assert": [{"op": "eq", "value": 400}], "then": [{"kind": "outcome", "verdict": "fatal"}]}
+            ]},
+            {"kind": "switch", "on": "$.code", "scope": "body",
+             "cases": [{"values": [500], "then": [
+                 {"kind": "if", "branches": [
+                     {"assert": [{"field": "$.msg", "op": "contains", "value": "x"}],
+                      "then": [{"kind": "outcome", "verdict": "retriable"}]},
+                     {"assert": [], "then": [{"kind": "outcome", "verdict": "fatal"}]}
+                 ]}
+             ]}],
+             "default": [{"kind": "outcome", "verdict": "success"}]}
+        ]));
+        assert_eq!(judge(&s, 500, &json!({"code": 500, "msg": "x"})).index, 2);
     }
 
     #[test]

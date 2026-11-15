@@ -98,7 +98,7 @@ export function IdemPage() {
               {list.map((record) => (
                 <tr key={record.id} className="hover:bg-sunken/50">
                   <Td mono className="text-[11px]">
-                    {record.task_code}
+                    {record.task_name}
                   </Td>
                   <Td mono className="max-w-[380px] truncate text-[11px] text-ink-soft">
                     <span title={record.idem_key}>{record.idem_key}</span>

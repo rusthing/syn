@@ -94,10 +94,9 @@ const BIND_SAMPLE = {
 let idSeq = 0;
 
 function task(
-  code: string,
   name: string,
   topic: string,
-  priority: number,
+  sort_order: number,
   enabled: boolean,
   spec: TaskSpec,
   stats: Partial<SyncTask["stats"]>,
@@ -110,10 +109,9 @@ function task(
   const skip = stats.skip ?? Math.round(total * 0.03);
   return {
     id: String(19_0000_0000 + (idSeq += 1)),
-    code,
     name,
     topic,
-    priority,
+    sort_order,
     enabled,
     version,
     spec,
@@ -134,9 +132,8 @@ function task(
 }
 
 const REGION_SPEC: TaskSpec = {
-  id: "dtw_region",
   topic: "dtw.region",
-  priority: 100,
+  sort_order: 100,
   enabled: true,
   exclusive: true,
   target: { service: "dtw-rs-svr", base: "/dtw/region" },
@@ -196,9 +193,8 @@ const REGION_SPEC: TaskSpec = {
 };
 
 const PERSON_SPEC: TaskSpec = {
-  id: "dtw_person",
   topic: "dtw.person",
-  priority: 100,
+  sort_order: 100,
   enabled: true,
   // 一份人员数据要同时进定位库与报警库：前一个任务不独占，走完继续往下匹配
   exclusive: false,
@@ -230,9 +226,8 @@ const PERSON_SPEC: TaskSpec = {
 };
 
 const PERSON_ALARM_SPEC: TaskSpec = {
-  id: "dtw_person_alarm",
   topic: "dtw.person",
-  priority: 200,
+  sort_order: 200,
   enabled: true,
   exclusive: true,
   target: { service: "alarm-svr", base: "/alarm/person" },
@@ -255,18 +250,56 @@ const PERSON_ALARM_SPEC: TaskSpec = {
     { op: "u", method: "POST", path: "/upsert", body: "mapped" },
   ],
   guards: [],
-  outcomes: [
-    // 业务失败排在状态码之前：它属于「HTTP 200 里的失败」，越具体越靠前
-    { scope: "body", assert: [{ field: "$.result", op: "lt", value: 0, scope: "body" }], verdict: "fatal", code: "business_error" },
-    { scope: "status", assert: [{ op: "in", value: [200, 201] }], verdict: "success", code: "ok" },
-    { scope: "status", assert: [{ op: "in", value: [429, 500, 502, 503] }], verdict: "retriable", code: "upstream_busy" },
+  // 这一份用语句树（`spec.rules`）：演示 if / switch 两种语句与嵌套。
+  // 顺序就是优先级：先按状态码挡掉下游不可用，再按业务码分流 —— 业务失败是
+  // 「HTTP 200 里的失败」，越具体越靠前。最后一条 switch 的 default 必然给出结论。
+  rules: [
+    {
+      kind: "if",
+      branches: [
+        {
+          assert: [{ scope: "status", op: "in", value: [429, 500, 502, 503] }],
+          then: [{ kind: "outcome", verdict: "retriable", code: "upstream_busy" }],
+        },
+      ],
+    },
+    {
+      // 其余非 2xx 一律失败：不能让它掉进下面的业务码分流里被判成成功
+      kind: "if",
+      branches: [
+        {
+          assert: [{ scope: "status", op: "not_in", value: [200, 201] }],
+          then: [{ kind: "outcome", verdict: "fatal", code: "http_error" }],
+        },
+      ],
+    },
+    {
+      kind: "switch",
+      on: "$.result",
+      scope: "body",
+      cases: [
+        { values: [-2], then: [{ kind: "outcome", verdict: "skip", code: "duplicate" }] },
+        { values: [-1, -3], then: [{ kind: "outcome", verdict: "fatal", code: "business_error" }] },
+      ],
+      default: [
+        {
+          kind: "if",
+          branches: [
+            {
+              assert: [{ scope: "body", field: "$.result", op: "lt", value: 0 }],
+              then: [{ kind: "outcome", verdict: "fatal", code: "business_error" }],
+            },
+          ],
+        },
+        { kind: "outcome", verdict: "success", code: "ok" },
+      ],
+    },
   ],
 };
 
 const BIND_SPEC: TaskSpec = {
-  id: "dtw_locator_bind",
   topic: "dtw.locator_bind",
-  priority: 100,
+  sort_order: 100,
   enabled: true,
   exclusive: true,
   target: { service: "dtw-rs-svr", base: "/dtw/locator/bind" },
@@ -300,9 +333,8 @@ const BIND_SPEC: TaskSpec = {
 };
 
 const ORDERS_SPEC: TaskSpec = {
-  id: "adt_orders_archive",
   topic: "source:adt_orders",
-  priority: 300,
+  sort_order: 300,
   enabled: false,
   exclusive: true,
   target: { service: "oss-rs", base: "/oss/order" },
@@ -324,7 +356,7 @@ const ORDERS_SPEC: TaskSpec = {
 };
 
 let TASKS: SyncTask[] = [
-  task("dtw_region", "区域同步", "dtw.region", 100, true, REGION_SPEC, {
+  task("区域同步", "dtw.region", 100, true, REGION_SPEC, {
     total: 18_420,
     skip: 512,
     fatal: 31,
@@ -332,7 +364,7 @@ let TASKS: SyncTask[] = [
     p95_ms: 164,
     last_hit_ms: NOW - 18_000,
   }),
-  task("dtw_person", "人员同步", "dtw.person", 100, true, PERSON_SPEC, {
+  task("人员同步", "dtw.person", 100, true, PERSON_SPEC, {
     total: 9_860,
     skip: 204,
     fatal: 12,
@@ -340,7 +372,7 @@ let TASKS: SyncTask[] = [
     p95_ms: 142,
     last_hit_ms: NOW - 51_000,
   }),
-  task("dtw_person_alarm", "人员→报警库", "dtw.person", 200, true, PERSON_ALARM_SPEC, {
+  task("人员→报警库", "dtw.person", 200, true, PERSON_ALARM_SPEC, {
     total: 9_402,
     skip: 0,
     fatal: 47,
@@ -348,7 +380,7 @@ let TASKS: SyncTask[] = [
     p95_ms: 231,
     last_hit_ms: NOW - 51_000,
   }),
-  task("dtw_locator_bind", "定位器绑定", "dtw.locator_bind", 100, true, BIND_SPEC, {
+  task("定位器绑定", "dtw.locator_bind", 100, true, BIND_SPEC, {
     total: 3_106,
     skip: 120,
     fatal: 2,
@@ -356,7 +388,7 @@ let TASKS: SyncTask[] = [
     p95_ms: 118,
     last_hit_ms: NOW - 6 * MIN,
   }),
-  task("adt_orders_archive", "订单归档（自拉）", "source:adt_orders", 300, false, ORDERS_SPEC, {
+  task("订单归档（自拉）", "source:adt_orders", 300, false, ORDERS_SPEC, {
     total: 0,
     skip: 0,
     fatal: 0,
@@ -473,7 +505,7 @@ function buildDeliveries(): Delivery[] {
     const id = 8000 + Math.floor(rand() * 2000);
     out.push({
       id: `dlv-${String(i).padStart(5, "0")}`,
-      task_code: t.code,
+      task_name: t.name,
       topic: t.topic,
       op,
       verdict,
@@ -506,7 +538,7 @@ function buildIdem(): IdemRecord[] {
     const first = NOW - Math.floor(rand() * 12 * 60 * MIN);
     out.push({
       id: `idem-${String(i).padStart(5, "0")}`,
-      task_code: t.code,
+      task_name: t.name,
       idem_key: `${t.topic}:${8000 + Math.floor(rand() * 2000)}:${Math.floor(rand() * 9)}`,
       hits: 1 + Math.floor(rand() * 4),
       verdict: rand() < 0.9 ? "success" : "skip",
@@ -546,13 +578,13 @@ export async function overview(query: { window?: string } = {}): Promise<Overvie
   for (const d of DELIVERIES) byVerdict[d.verdict] += 1;
   const sum = DELIVERIES.length;
 
-  const failureMap = new Map<string, { code: string; task_code: string; count: number }>();
+  const failureMap = new Map<string, { code: string; task_name: string; count: number }>();
   for (const d of DELIVERIES) {
     if (d.verdict !== "fatal" && d.verdict !== "retriable") continue;
-    const key = `${d.task_code}|${d.code}`;
+    const key = `${d.task_name}|${d.code}`;
     const hit = failureMap.get(key);
     if (hit) hit.count += 3;
-    else failureMap.set(key, { code: d.code, task_code: d.task_code, count: 3 });
+    else failureMap.set(key, { code: d.code, task_name: d.task_name, count: 3 });
   }
 
   return {
@@ -599,11 +631,7 @@ export const mockTasks = {
       if (query.topic && t.topic !== query.topic) return false;
       if (query.enabled !== undefined && t.enabled !== query.enabled) return false;
       if (!keyword) return true;
-      return (
-        t.code.toLowerCase().includes(keyword) ||
-        t.name.toLowerCase().includes(keyword) ||
-        t.topic.toLowerCase().includes(keyword)
-      );
+      return t.name.toLowerCase().includes(keyword) || t.topic.toLowerCase().includes(keyword);
     });
     return paginate(list, query.pageNum, query.pageSize);
   },
@@ -613,17 +641,16 @@ export const mockTasks = {
   },
 
   async get(id: string): Promise<SyncTask> {
-    const hit = TASKS.find((t) => t.id === id || t.code === id);
+    const hit = TASKS.find((t) => t.id === id);
     if (!hit) throw new Error(`任务 ${id} 不存在`);
     return hit;
   },
 
   async create(input: { name: string; spec: TaskSpec }): Promise<SyncTask> {
     const created = task(
-      input.spec.id ?? "new_task",
       input.name,
       input.spec.topic,
-      input.spec.priority,
+      input.spec.sort_order,
       input.spec.enabled ?? false,
       input.spec,
       { total: 0, skip: 0, fatal: 0, retriable: 0, p95_ms: 0, last_hit_ms: null },
@@ -640,7 +667,7 @@ export const mockTasks = {
       ...current,
       name: patch.name,
       topic: patch.spec.topic,
-      priority: patch.spec.priority,
+      sort_order: patch.spec.sort_order,
       enabled: patch.spec.enabled ?? current.enabled,
       version: current.version + 1,
       spec: patch.spec,
@@ -935,7 +962,7 @@ export const mockSources = {
 };
 
 export interface DeliveryQuery {
-  task_code?: string;
+  task_name?: string;
   verdict?: Verdict;
   keyword?: string;
   pageNum?: number;
@@ -946,13 +973,13 @@ export const mockDeliveries = {
   async page(query: DeliveryQuery = {}): Promise<Page<Delivery>> {
     const keyword = query.keyword?.trim().toLowerCase();
     const list = DELIVERIES.filter((d) => {
-      if (query.task_code && d.task_code !== query.task_code) return false;
+      if (query.task_name && d.task_name !== query.task_name) return false;
       if (query.verdict && d.verdict !== query.verdict) return false;
       if (!keyword) return true;
       return (
         d.record_key.toLowerCase().includes(keyword) ||
         d.code.toLowerCase().includes(keyword) ||
-        d.task_code.toLowerCase().includes(keyword)
+        d.task_name.toLowerCase().includes(keyword)
       );
     });
     return paginate(list, query.pageNum, query.pageSize);
@@ -966,7 +993,7 @@ export const mockIdem = {
       (r) =>
         !keyword ||
         r.idem_key.toLowerCase().includes(keyword) ||
-        r.task_code.toLowerCase().includes(keyword),
+        r.task_name.toLowerCase().includes(keyword),
     );
     return paginate(list, query.pageNum, query.pageSize);
   },

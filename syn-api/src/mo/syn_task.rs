@@ -5,15 +5,18 @@ use serde::{Deserialize, Serialize};
 
 /// # 同步任务
 ///
-/// 五段规则的载体。`topic` / `priority` / `enabled` / `exclusive` 在这里是**列**，
+/// 五段规则的载体。`topic` / `sort_order` / `enabled` / `exclusive` 在这里是**列**，
 /// 同时也是 `spec` 里的字段 —— 不是冗余，而是两层职责：
 ///
-/// - 列要建索引、要能被 `where topic = ? order by priority` 直接筛，执行器每来一条
+/// - 列要建索引、要能被 `where topic = ? order by sort_order` 直接筛，执行器每来一条
 ///   记录都要用；
 /// - `spec` 是整体消费的 JSONB，没有任何一列参与检索。
 ///
 /// **写入口以 `spec` 为准、落库时同步列**（`SynTaskSvc` 负责），读取时以列为准
 /// （`store::reload` 会覆盖并用 warn 记录不一致）。这样两份数据不会各自漂移。
+///
+/// 任务的身份就是主键 `id`，`name` 只承担人读展示：没有第二套编码需要在
+/// 画布坐标、投递记录、日志里同步维护。
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, Default)]
 #[sea_orm(table_name = "syn_task")]
@@ -21,15 +24,12 @@ pub struct Model {
     /// 主键，idworker 生成
     #[sea_orm(primary_key, auto_increment = false, unique)]
     pub id: i64,
-    /// 任务编码，人写可读的稳定标识（对外指代任务一律用它）
-    #[sea_orm(unique)]
-    pub code: String,
     /// 名称
     pub name: String,
     /// 来源 topic：push 入口是 Kafka topic，poll 入口是 `source:{code}`
     pub topic: String,
-    /// 匹配优先级，升序；同 topic 下数字小的先试
-    pub priority: i32,
+    /// 同一主题内的排序值，升序；数字小的先试
+    pub sort_order: i32,
     /// 是否启用（停用只影响匹配，规则原样保留）
     pub enabled: bool,
     /// 命中后是否停止匹配后续任务（false = 一分多）

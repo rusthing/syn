@@ -18,8 +18,8 @@ use crate::dic::SyncVerdict;
 pub struct SynIdemVo {
     /// ID
     pub id: U64,
-    /// 任务编码（对外一律用编码，不用 ID）
-    pub task_code: String,
+    /// 任务名称（台账只存 task_id，名称由关联带出）
+    pub task_name: String,
     /// 幂等键，形如 `topic:partition:offset`
     pub idem_key: String,
     /// 上次的结论

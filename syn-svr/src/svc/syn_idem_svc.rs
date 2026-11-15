@@ -3,8 +3,8 @@
 //! 只读。`syn_idem` 由执行器在带 `X-Idempotency-Key` 的同步请求里写，控制台不提供
 //! 写接口：手改台账等于把「这次到底做没做过」变成可以商量的事。
 //!
-//! 列表要显示任务**编码**而不是雪花 ID，所以查完台账再按 `task_id` 批量回查一次
-//! `syn_task`。两次查询换来的是「台账表里不冗余存编码」—— 编码可改、ID 不变，
+//! 列表要显示任务**名称**而不是雪花 ID，所以查完台账再按 `task_id` 批量回查一次
+//! `syn_task`。两次查询换来的是「台账表里不冗余存名称」—— 名称可改、ID 不变，
 //! 冗余进去就得跟着改。
 
 use robotech::api::U64;
@@ -33,9 +33,9 @@ impl SynIdemSvc {
                     .add(IdemColumn::Code.contains(kw)),
             );
         }
-        if let Some(code) = dto.task_code.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(name) = dto.task_name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             let tasks = SynTaskDao::list_by_condition::<_, TaskModel>(
-                Condition::all().add(TaskColumn::Code.eq(code)),
+                Condition::all().add(TaskColumn::Name.eq(name)),
                 &None,
                 db.as_ref(),
             )
@@ -54,14 +54,14 @@ impl SynIdemSvc {
         )
         .await?;
 
-        let codes = task_codes(&rows, db.as_ref()).await?;
+        let names = task_names(&rows, db.as_ref()).await?;
         let list = rows
             .into_iter()
             .map(|row| {
-                let task_code = codes.get(&row.task_id).cloned().unwrap_or_default();
+                let task_name = names.get(&row.task_id).cloned().unwrap_or_default();
                 SynIdemVo {
                     id: U64::from(row.id),
-                    task_code,
+                    task_name,
                     idem_key: row.idem_key,
                     verdict: syn_api::SyncVerdict::from_i16(row.verdict).unwrap_or_default(),
                     code: row.code,
@@ -74,8 +74,8 @@ impl SynIdemSvc {
     }
 }
 
-/// # 批量取 `task_id → 任务编码`
-pub(crate) async fn task_codes<C: ConnectionTrait>(
+/// # 批量取 `task_id → 任务名称`
+pub(crate) async fn task_names<C: ConnectionTrait>(
     rows: &[IdemModel],
     db: &C,
 ) -> Result<HashMap<i64, String>, SvcError> {
@@ -94,13 +94,13 @@ pub(crate) async fn task_codes<C: ConnectionTrait>(
         db,
     )
     .await?;
-    Ok(tasks.into_iter().map(|m| (m.id, m.code)).collect())
+    Ok(tasks.into_iter().map(|m| (m.id, m.name)).collect())
 }
 
-/// # 批量取 `task_id → (编码, topic)`
+/// # 批量取 `task_id → (名称, topic)`
 ///
 /// 投递记录页要显示任务订阅的 topic，台账里只有 ID。
-pub(crate) async fn task_codes_and_topics<C: ConnectionTrait>(
+pub(crate) async fn task_names_and_topics<C: ConnectionTrait>(
     rows: &[IdemModel],
     db: &C,
 ) -> Result<HashMap<i64, (String, String)>, SvcError> {
@@ -121,6 +121,6 @@ pub(crate) async fn task_codes_and_topics<C: ConnectionTrait>(
     .await?;
     Ok(tasks
         .into_iter()
-        .map(|m| (m.id, (m.code, m.topic)))
+        .map(|m| (m.id, (m.name, m.topic)))
         .collect())
 }

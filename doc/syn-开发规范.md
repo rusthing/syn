@@ -203,35 +203,37 @@ struct JobxGroupRouter;
 | 对象 | 规则 | 例子 |
 |---|---|---|
 | 表 | `{模块}_{实体}`，snake_case | `syn_task` / `syn_task_version` |
-| 列 | snake_case，**不加表名前缀** | `syn_task.code` 不是 `syn_task_code` |
+| 列 | snake_case，**不加表名前缀** | `syn_task.sort_order` 不是 `syn_task_sort_order` |
 | 主键 | 恒为 `id`，`INT8` | — |
 | 主键约束 | `PK_{TABLE}` | `PK_SYN_TASK` |
-| 唯一约束 | `AK_{COL1}[_AND_COL2]_{TABLE}` | `AK_CODE_SYN_TASK`、`AK_TASK_ID_AND_VERSION_SYN_TASK_VERSION` |
+| 唯一约束 | `AK_{COL1}[_AND_COL2]_{TABLE}` | `AK_CODE_SYN_SOURCE`、`AK_TASK_ID_AND_VERSION_SYN_TASK_VERSION` |
 | 普通索引 | `idx_{table}_{列或用途}` | `idx_syn_idem_create_ms` |
 | 外键 | `fk_{子表列}__from__{父表}` | `fk_task_id__from__syn_task` |
 
 两点要知道：
 
-1. **唯一约束名必须能被框架算出来**。`#[dao(unique_keys: [("name", "名称")])]` 生成的冲突判定按 `ak_{列名}_{表名}` 拼（PG 把未加引号的标识符统一成小写，所以 `AK_CODE_SYN_TASK` 与 `ak_code_syn_task` 是同一个）。多列用 `_and_` 连接。模型里 Key/Identifier 的 `Code` 就按这个拼（`task_id_and_version`），别写成中文或者 `Identifier_2`。
+1. **唯一约束名必须能被框架算出来**。`#[dao(unique_keys: [("name", "名称")])]` 生成的冲突判定按 `ak_{列名}_{表名}` 拼（PG 把未加引号的标识符统一成小写，所以 `AK_CODE_SYN_SOURCE` 与 `ak_code_syn_source` 是同一个）。多列用 `_and_` 连接。模型里 Key/Identifier 的 `Code` 就按这个拼（`task_id_and_version`），别写成中文或者 `Identifier_2`。
 2. **外键名会重复**。PD 的外键模板只用到「子表列 + 父表」，所以 `syn_task_version` 和 `syn_idem` 的 `task_id` 外键同名。PG 的约束名只需在表内唯一，这是合法的，兄弟服务里 `fk_region_id__from__dtw_region` 重复了 8 次。**不要为了唯一去改名**，改了下次 PD 生成又变回来。
 
 ---
 
 ## 4. 数据模型规范
 
-### 4.1 主键一律 `INT8`，业务标识用 `code` + 唯一键
+### 4.1 主键一律 `INT8`，`code` 只在「会被别处按名字引用」时才加
 
 所有表的主键都是 `INT8`、由 `idworker` 生成（`#[crud_dto]` 的 `id: Option<U64>`、`#[dao]` 的按 id 查询都假定这一点）。
 
-人读的标识另立一列：
-
-```sql
-id    INT8  not null,     -- idworker，接口内部用
-code  VARCHAR(64) not null,  -- 如 dtw_region，日志/配置/排障用
-constraint AK_CODE_SYN_TASK unique (code)
-```
-
 不要用 `VARCHAR` 当主键——框架的 CRUD 宏、`Ro<PageRx<..>>`、Bean Searcher 兼容检索全都按 `U64` 的 `id` 走，字符串主键等于放弃这一整套。
+
+`code` 不是「每张配置表都该有的列」，它只在**别的记录/配置会把它当作外键名字**时才需要，判据是一句话：**换个名字，别处要跟着改吗？**
+
+| 表 | 有没有 `code` | 理由 |
+|---|---|---|
+| `syn_source` | 有（`code`，AK 唯一） | 任务用 `from: { source: dtw_region }` 按名字引用它；日志与排障也报来源名 |
+| `syn_datasource` | 有（`code`，AK 唯一） | 来源/任务用 `datasource: "dtw_pg"` 引用；连接串不在名字里 |
+| `syn_task` | **没有** | 任务只被 `id` 引用（`syn_delivery.task_id` / `syn_idem.task_id` / 画布 `node_key`），人读用 `name`；`name` 可改，改完不需要同步任何地方 |
+
+`syn_task` 早期有过 `code` + `AK_CODE_SYN_TASK`，2026-11 删掉：它既没参与任何引用，又被迫人工维护唯一性，与 `name` 的职责重叠。新增配置表时先按上表判一遍，再决定要不要加 `code`。
 
 ### 4.2 审计四列：每张表都有，没有例外
 
@@ -253,10 +255,10 @@ update_ms  INT8 not null,
 `dto` 的 `@len` / `@range` 校验、`dic` 的枚举取值、文档里的单位，全部从**列注释**派生。改列宽必须同步改注释，否则校验和库对不上。
 
 ```sql
-comment on column syn_task.code is
-'任务编码
-人写可读的稳定标识，配置、日志、排障都用它指代一条任务；接口按它查询
-@len 1..=64';
+comment on column syn_task.sort_order is
+'排序值
+同一主题内升序，越小越靠前；匹配与列表都按 (sort_order, id) 升序
+@range 0..=9999';
 ```
 
 | 注解 | 语义 | 对应实现 |
@@ -306,7 +308,7 @@ pub enum JobType { Manual = 0, Cron = 1, FixedDelay = 2, FixedRate = 3 }
 2. 永远整体消费，**没有任何一层要参与检索/排序/分组**；
 3. 变更频率与宿主行一致（改一个字节就整行重写，可以接受）。
 
-`syn_task.spec`（五段规则）三条都满足。反过来，`topic` / `priority` / `enabled` / `exclusive` 要建索引、要排序，所以**提成关系列**，并且规定「以列为准，spec 里的同名字段只是导入来源」——两份数据不一致时行为不能取决于读取顺序。
+`syn_task.spec`（五段规则）三条都满足。反过来，`topic` / `sort_order` / `enabled` / `exclusive` 要建索引、要排序，所以**提成关系列**，并且规定「以列为准，spec 里的同名字段只是导入来源」——两份数据不一致时行为不能取决于读取顺序。
 
 `JSONB` 列在 mo 里是 `Json` + `#[sea_orm(column_type = "JsonBinary")]`，在 VO 里是 `serde_json::Value` + `#[schema(value_type = Object)]`。
 
@@ -439,7 +441,7 @@ mo    ── 表结构映射（SeaORM 实体，由 sea-orm-codegen 生成后手�
 
 | 资源 | 不能用宏的原因 |
 |---|---|
-| `syn_task` | `code` / `topic` / `priority` / `enabled` / `exclusive` 是 `spec`（JSONB）的投影，接口只收 `{ name, spec, remark }`。`#[crud_dto]` 按表形状生成会逼调用方把同一件事填两遍，两边不一致时行为取决于读取顺序。 |
+| `syn_task` | `topic` / `sort_order` / `enabled` / `exclusive` 是 `spec`（JSONB）的投影，接口只收 `{ name, spec, remark }`。`#[crud_dto]` 按表形状生成会逼调用方把同一件事填两遍，两边不一致时行为取决于读取顺序。 |
 | `syn_source` | 表形状，但 `spec` 是 JSONB，`#[crud_dto]` 会把它塞进 `QueryDto` 当等值条件 —— 没人按「取数定义」查数据源。 |
 | `syn_delivery` / `syn_idem` / `syn_overview` | 不是一张表的镜像：投递记录是 `syn_idem` 的投影，台账要关联任务带出 `code`，总览是聚合结果。`#[vo]` 的 `From<Model>` 只能搬同名字段，拿不到这些。 |
 
@@ -492,7 +494,7 @@ pub async fn sync(Path(topic): Path<String>, headers: HeaderMap, body: Bytes) ->
 
 `get_current_user_id` / `get_current_ms`（`robotech::web::ctrl_utils`）已经把「缺头」「格式错」都做成带期望值与实际值的 `ValidationError`，不要再自己解析。
 
-`syn-svr` 的查询 DTO 全部带 `#[serde(rename_all = "camelCase")]`：`pageNum` / `pageSize` / `taskCode` / `stalledSources` 这类参数别写成 snake_case，serde_urlencoded 认不出来会静默忽略条件（查成全表，且不报错）。
+`syn-svr` 的查询 DTO 全部带 `#[serde(rename_all = "camelCase")]`：`pageNum` / `pageSize` / `taskName` / `stalledSources` 这类参数别写成 snake_case，serde_urlencoded 认不出来会静默忽略条件（查成全表，且不报错）。
 
 ---
 
@@ -572,8 +574,8 @@ feat(syn): 五段规则与记录转发
 
 这几处和兄弟服务**不一样**，理由记在这里，避免后来者「统一」回去：
 
-1. **任务标识用 `code` 不用 `id`**。`id` 是 idworker 的雪花 ID，不该出现在日志、Kafka topic 名、排障对话里。`TaskSpec.id` 装的是 `code`。
-2. **`spec` 用 `JSONB` 一列装五段规则**。五段是嵌套的（段 → 行 → 断言），拆表会得到 6 张从表 + 一堆枚举，配置一次要写二十几行，而且没有一层参与检索（见 §4.5）。
+1. **任务没有 `code`，身份是 `id`，人读是 `name`**（本条 2026-11 修订，推翻了早期「任务标识用 code」的做法）。雪花 ID 由框架与前端自己用，不出现在 Kafka topic 名和日志正文里；日志/排障要的是**名字**，直接读 `name`。任务之间只靠 `id` 引用（投递 / 幂等 / 画布节点），所以 `name` 可以随便改，改完不需要同步任何地方。`TaskSpec.id` / `TaskSpec.name` 是 `#[serde(skip)]` 的运行态字段，由 `store::reload` 从列注入，不落 `spec` JSON。
+2. **`spec` 用 `JSONB` 一列装五段规则**。五段是嵌套的（段 → 行 → 断言），拆表会得到 6 张从表 + 一堆枚举，配置一次要写二十几行，而且没有一层参与检索（见 §4.5）。判定段在 `spec` 里是**语句树**（`if` / `switch` / 结论，见 `syn-通用同步模型.md` §9.4）：`rules` 是新形状，`outcomes` 只读兼容，求值器只认 `TaskSpec::verdict_rules()` 这一个入口；两端求值器的用例只有一份（`fixtures/verdict-cases.json`），改语义先改用例，两边同时红才是对的。
 3. **不做 `syn-api-client`**。没有 Rust 调用方（见 §1）。
 4. **运行时表（`syn_idem` / `syn_cursor`）也带审计四列**。不是为了让它们「像配置表」，而是 `#[crud_dto]` / `#[dao]` 假定存在；少列编译不过。
 5. **游标独立成 `syn_cursor`**。它每轮都在写，`syn_source` 是低频配置；混在一张表里会让「读配置」和「推水位」争同一行。
@@ -679,7 +681,7 @@ feat(syn): 五段规则与记录转发
 | 数据源管理（`syn_datasource` 表 + 七个接口） | ✅ | 控制台可增删改（连接串 / 池上限 / 启停 / 备注）；明文只写不回显，读接口一律脱敏；改完发 `refresh.syn.datasource` 让各副本重建连接池；`[syn.datasources.*]` 降级为兜底，见 §11 第 13 条 |
 | `GET /syn/registry/services`（http 目标服务名候选） | ✅ | 走 `robotech::micro_svc::list_services`（Consul 取 `/v1/catalog/services`，etcd/nacos 默认返回空）；**失败降级为空数组不报错**，表单手输照常能存，见 §14.2 |
 | 控制面板（原「同步拓扑」，`GET/PUT /syn/canvas/layout` + `syn_canvas_layout`） | ✅ | 图不落库：节点来自三张业务表、连线来自引用，坐标独存一张表；保存是按 `(node_type, node_key)` 的 upsert（多人摆位不互抹）；投递是任务卡第六段画在卡内，不单独建节点；右侧属性栏单击即显，新增/编辑用居中窗体，见 §14.7 |
-| 真库端到端联调（migration → 源库查数 → db sink → 幂等命中 → pull 返回） | ✅ | `tests/e2e/run.sh` 一键跑 30+ 断言，覆盖三库、控制台五接口与前端 wire 契约；见 §15.1–§15.4。联调中还修掉了总览小时桶的 off-by-one（§11 第 12 条） |
+| 真库端到端联调（migration → 源库查数 → db sink → 幂等命中 → 判定语句树 → pull 返回） | ✅ | `tests/e2e/run.sh` 一键跑 75 条断言，覆盖三库、控制台五接口、前端 wire 契约与 `switch` 内嵌 `if` 的两层判定（老 `outcomes` 与新 `rules` 各跑一遍）；见 §15.1–§15.4。联调中还修掉了总览小时桶的 off-by-one（§11 第 12 条） |
 | 部署形态联调（consul 配置中心 + 业务库隔离表） | ✅ | `tests/env/run.sh` 一次跑 50 条断言，验的是「不加 `-c`、走默认 `syn-svr.toml` + consul KV 覆盖」这条路；见 §15.5 |
 | jobx 计划任务自动注册（取数心跳） | ✅ | 首次启动注册 `executor-code=syn.pull`，撞唯一键只确认分组；实测 6 个批次共 297 拍、0 失败，见 §15.7 |
 | 多副本游标乐观锁（CAS） | ✅ | `tests/env/concurrent-pull.sh` 起两副本抢同一批 300 行：水位只涨一轮、败方 `position` 为空且有 warn、重复投递由下游 upsert 吸收；见 §15.6 |
@@ -734,8 +736,26 @@ syn-web/
    地默认看请求体，就会和 `syn-core` 给出不同结论。另外 `body` 在守卫段是映射后的请求体、
    在判定段是下游**响应体**，界面标签统一写「报文体」并注明两段差异，别写成「请求体」。
 
+**判定段不是一张表，是一串可嵌套的语句**（`features/tasks/verdict/`）。语句只有三种：
+`if` / `switch` / `结论`，`if-elseif-else` 是同一个 `if` 的多个分支，分支体里还是语句列表，
+所以嵌套不需要第二套语法。四条约定：
+
+1. **块视图是唯一编辑面**。`lib/spec/rules.ts` 是语句树的纯逻辑唯一来源（默认语句、
+   句子摘要、`blockConcludes`、case 取值往返），校验器和渲染层都从那里取，不许各写一份。
+   判定语义仍只有一处实现（`syn-core/src/verdict.rs` + 共享用例 `fixtures/verdict-cases.json`）。
+2. **矩阵是同一份数据的第二种渲染，不是第二个功能**。`switch` 只有一个判别字段，表格就是
+   它的自然形态，可以直接改取值；`if` 的条件散在多个字段上，表格只读（一个格子可能对应
+   多条断言，就地改会悄悄改掉别的断言）。
+3. **静态检查只算能算准的**（`lib/spec/analyze.ts`）：`eq` / `in` / 范围比较可以求交与包含，
+   能抓出被前面分支或前面语句完全吃掉的死配置、重复的 case 取值、自相矛盾的条件；
+   `ne` / `not_in` / `contains` / `regex` / `any` / `not` 一律回「无法判定」。**宁可少报，
+   不许误报** —— 会误报的检查用户三天就学会无视了。
+4. 旧形状 `outcomes` 只在**第一次真实编辑**时升级成 `rules`，并补一条显式的
+   `fatal · UNCLASSIFIED` 兜底（把运行时那条隐式兜底显式化，判定结果逐字不变）；
+   `spec.rules` 本身缺兜底属于配置错误，界面不替用户补。
+
 「投递」是第 6 步而不是基本页的一部分：它是判定之后唯一的出口，与前五段是「同一批记录
-的不同出口」，与基本页的元信息（编码、topic、优先级、启停）不是一类东西。
+的不同出口」，与基本页的元信息（名称、topic、排序值、启停）不是一类东西。
 两个下拉都必须是**可手输的候选**（原生 `<input list>`）：注册中心 / 数据源表拿不到清单时
 自动退化成纯输入框，配置要能先于下游上线写好的。
 
@@ -793,8 +813,8 @@ Page<T> / 实体     types.ts，页面与 mock 共用
    列表刷新时回填；不知道就留 0。
 2. **U64 不转 `number`**。雪花 ID 有 19 位，只有用来算数/画图的值（`total` / `hour_ms` /
    各类计数）才 `Number(...)`。
-3. **写请求按 DTO 的 camelCase 发**。尤其 `DeliveryQuery.task_code` → query 里的
-   `taskCode`；写成 snake_case 会被 serde_urlencoded 静默忽略，查成全表且不报错。
+3. **写请求按 DTO 的 camelCase 发**。尤其 `DeliveryQuery.task_name` → query 里的
+   `taskName`；写成 snake_case 会被 serde_urlencoded 静默忽略，查成全表且不报错。
 
 `live.test.ts` 用 stub `fetch` 锁住每个转换点。改 VO 时**先让这里红**，再改 `live.ts`：
 这类形状漂移不会白屏、不会报错，只会安静地显示错数据，是最难在联调里发现的一类。
@@ -887,13 +907,20 @@ warn。端口 19007（单进程联调，显式写死好让脚本连），jobx �
 4. `X-Idempotency-Key`：首次写下游并记账；手工改下游值后同键重投**不再写**；缺冲突键
    返回 400 `DB_KEY_MISSING` 且**不记账**；同一键随后重投正常记录仍能成功。
 5. 控制台五类接口：`task/page` / `source/page`（`cursor.rowsSynced`）/ `delivery/page`
-   （含 `verdict` 与 `taskCode` 筛选）/ `idem/page` / `overview`（小时桶 success 之和
+   （含 `verdict` 与 `taskName` 筛选）/ `idem/page` / `overview`（小时桶 success 之和
    等于 `total`）/ `reload` 的 `extra`。这一组同时是 `live.ts` 适配层的 wire 契约。
 6. 数据源 CRUD：连接串只写不回显、改其它字段时留空连接串保持原值、停用 / 删除生效、
    `GET /syn/registry/services` 无注册中心降级为空数组。
 7. 画布布局：初始为空；一次存两个节点、读回一致；**只提交一个节点不抹掉另一个**
    （upsert 而非全量替换）；同键重复保存不新增行；空 `nodeKey` / 越界坐标返回 400
    且不落行。
+8. 判定语句树（`task-judge.json`，与前面用老 `outcomes` 的夹具互为对照）：
+   `switch $.affected` 的臂里再嵌一层 `if`。`on conflict nothing` 让同一个 id
+   第二次写回 `affected=0`，一个任务就造出两种响应：首次 `R_WROTE`（switch 命中 +
+   内层 if 首分支 → success）、重投 `R_DUPLICATE`（另一个 case 臂 → skip）且真的没覆盖
+   下游。另有一条负向断言：块尾给不出必然结论的 `rules` 必须当场 400，理由指向
+   「必然给出结论」，且不落库 —— 强制兜底是契约，不能存进库等运行时变成
+   `UNCLASSIFIED`。
 
 ### 15.3 联调暴露过的坑
 

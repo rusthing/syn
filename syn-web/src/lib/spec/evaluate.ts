@@ -16,12 +16,14 @@ import type {
   Guard,
   MappingRow,
   OnEmpty,
+  Rule,
   Scope,
   TaskSpec,
   Verdict,
 } from "@/lib/api/types";
 import { isAssert } from "./defaults";
 import { getPath, insertPath, scalarText } from "./jsonpath";
+import { verdictRules } from "./rules";
 import { applyTransform, TransformError } from "./transforms";
 
 export type Stage = "match" | "mapping" | "guard" | "action" | "verdict" | "transport";
@@ -327,6 +329,45 @@ function resolveRow(row: MappingRow, record: unknown): { value: unknown; note: s
 
 /* -------------------------------- 判定 -------------------------------- */
 
+// 语句树的形状、映射与兜底判断都在 `rules.ts`（编辑器与校验器共用同一份）；
+// 这里只负责求值，避免「谁有资格解释规则」出现第二个答案。
+export { verdictRules } from "./rules";
+
+type Hit = { verdict: Verdict; code: string };
+
+function evalBlock(block: Rule[] | undefined, ctx: Context): Hit | null {
+  for (const rule of block ?? []) {
+    const hit = evalRule(rule, ctx);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function evalRule(rule: Rule, ctx: Context): Hit | null {
+  switch (rule.kind) {
+    case "outcome":
+      return { verdict: rule.verdict, code: rule.code ?? "" };
+    case "if": {
+      // 空条件数组恒真，这就是「否则」分支
+      for (const b of rule.branches) {
+        if (evalConditions(b.assert ?? [], ctx, b.scope ?? "body").ok) {
+          return evalBlock(b.then, ctx);
+        }
+      }
+      return null;
+    }
+    case "switch": {
+      const scope = rule.scope ?? "body";
+      const lhs =
+        scope === "status" ? ctx.status : scope === "body" ? getPath(ctx.body, rule.on) : getPath(ctx.record, rule.on);
+      for (const c of rule.cases) {
+        if (c.values.some((v) => jsonEquals(lhs, v))) return evalBlock(c.then, ctx);
+      }
+      return evalBlock(rule.default, ctx);
+    }
+  }
+}
+
 export function judge(
   spec: TaskSpec,
   status: number,
@@ -337,14 +378,13 @@ export function judge(
     body: body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : undefined,
     status,
   };
-  const rules = spec.outcomes ?? [];
+  const rules = verdictRules(spec);
   for (let i = 0; i < rules.length; i += 1) {
-    const rule = rules[i];
-    if (evalConditions(rule.assert, ctx, rule.scope).ok) {
-      return { index: i + 1, verdict: rule.verdict, code: rule.code ?? "", fallback: false };
-    }
+    const hit = evalRule(rules[i], ctx);
+    // index 是**顶层**语句序号：嵌套里命中也算「第几条语句管住了这条响应」
+    if (hit) return { index: i + 1, verdict: hit.verdict, code: hit.code, fallback: false };
   }
-  // 校验要求最后一条兜底，正常走不到这里。真走到了按失败处理：
+  // 校验要求每层块都以兜底收尾，正常走不到这里。真走到了按失败处理：
   // 「不认识的响应」被当成成功，是这条链路上最贵的一种错误。
   return { index: 0, verdict: "fatal", code: "UNCLASSIFIED", fallback: true };
 }
@@ -413,10 +453,12 @@ export function renderRequest(
 export interface PreviewOptions {
   /** 只看匹配，不往下跑（任务列表里给「能不能命中」用） */
   matchOnly?: boolean;
+  /** 结果里回显的任务标签（名称）；不传就留空，别拿它当身份 */
+  task?: string;
 }
 
 export function preview(spec: TaskSpec, record: unknown, options: PreviewOptions = {}): PreviewResult {
-  const task = spec.id ?? "";
+  const task = options.task ?? "";
   const steps: StepResult[] = [];
   const stop = (verdict: Verdict, code: string, stage: Stage, detail: string): PreviewResult => ({
     task,
@@ -541,18 +583,27 @@ export function preview(spec: TaskSpec, record: unknown, options: PreviewOptions
 /**
  * 只回答「这条记录会被哪些任务接走」。
  *
- * 与服务端同一套规则：按 priority 升序，命中即停；任务标了 `exclusive: false`
+ * 与服务端同一套规则：按 sort_order 升序，命中即停；任务标了 `exclusive: false`
  * 就继续往下找。扇出判断必须和线上一致，否则试跑会把「两个任务都会收到」说成一个。
+ *
+ * 泛型 + `specOf` 是为了让调用方直接传 `SyncTask`：返回值仍是原对象，调用方
+ * 拿得到 id / 名称，不必把身份塞进 `spec` 再反查。
  */
-export function selectTasks(tasks: TaskSpec[], record: unknown): TaskSpec[] {
-  const ordered = [...tasks].sort((a, b) => a.priority - b.priority || (a.id ?? "").localeCompare(b.id ?? ""));
-  const chosen: TaskSpec[] = [];
+export function selectTasks<T>(
+  tasks: T[],
+  record: unknown,
+  specOf: (task: T) => TaskSpec,
+): T[] {
+  // Array#sort 是稳定排序：sort_order 相同时保持调用方给的顺序（通常是 id 升序）
+  const ordered = [...tasks].sort((a, b) => specOf(a).sort_order - specOf(b).sort_order);
+  const chosen: T[] = [];
   const ctx: Context = { record };
-  for (const task of ordered) {
-    if (task.enabled === false) continue;
-    if (evalConditions(task.match ?? [], ctx, "record").ok) {
-      chosen.push(task);
-      if (task.exclusive !== false) break;
+  for (const item of ordered) {
+    const spec = specOf(item);
+    if (spec.enabled === false) continue;
+    if (evalConditions(spec.match ?? [], ctx, "record").ok) {
+      chosen.push(item);
+      if (spec.exclusive !== false) break;
     }
   }
   return chosen;

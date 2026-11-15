@@ -151,9 +151,8 @@ task_json() { # code topic
   "name": "HTTP 全量直写（$1）",
   "remark": "env 联调：http poll -> db sink on conflict do update",
   "spec": {
-    "id": "$1",
     "topic": "source:$2",
-    "priority": 100,
+    "sort_order": 100,
     "enabled": true,
     "exclusive": true,
     "target": {

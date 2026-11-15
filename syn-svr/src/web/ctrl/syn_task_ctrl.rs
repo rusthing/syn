@@ -1,7 +1,7 @@
 //! # 同步任务控制器
 //!
-//! 七个手写接口。没有用 `#[ctrl]`/`#[crud_dto]`：任务的 `code/topic/priority/enabled/
-//! exclusive` 五列是 `spec` 的投影，接口只收 `{ name, spec, remark }`，让宏按表形状
+//! 七个手写接口。没有用 `#[ctrl]`/`#[crud_dto]`：任务的 `topic/sort_order/enabled/
+//! exclusive` 四列是 `spec` 的投影，接口只收 `{ name, spec, remark }`，让宏按表形状
 //! 生成 DTO 会把这层约定冲掉（见 `dto/mod.rs`）。
 
 use axum::Json;

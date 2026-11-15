@@ -2,9 +2,8 @@
   "name": "联调-服务发现不可用",
   "remark": "e2e: 注册中心不可用时 http 投递必须 fatal，绝不猜地址把数据发出去",
   "spec": {
-    "id": "it_http_unresolved",
     "topic": "source:it_http_unresolved",
-    "priority": 100,
+    "sort_order": 100,
     "enabled": true,
     "exclusive": true,
     "target": {

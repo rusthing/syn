@@ -87,14 +87,11 @@ export function PlaygroundPage() {
       return;
     }
     // 先按线上规则选出「谁会接这条记录」，再逐个预演：扇出判断必须和线上一致
-    const specs = topicTasks.map((t) => ({ ...t.spec, id: t.code }));
-    const chosen = selectTasks(specs, record)
-      .map((spec) => topicTasks.find((t) => t.code === spec.id))
-      .filter((t): t is SyncTask => Boolean(t));
+    const chosen = selectTasks(topicTasks, record, (t) => t.spec);
 
-    const targets = taskParam ? chosen.filter((t) => t.code === taskParam) : chosen;
-    const previews = (targets.length > 0 ? targets : taskParam ? topicTasks.filter((t) => t.code === taskParam) : []).map(
-      (t) => preview({ ...t.spec, id: t.code }, record),
+    const targets = taskParam ? chosen.filter((t) => t.id === taskParam) : chosen;
+    const previews = (targets.length > 0 ? targets : taskParam ? topicTasks.filter((t) => t.id === taskParam) : []).map(
+      (t) => preview(t.spec, record, { task: t.name }),
     );
 
     if (chosen.length === 0) {
@@ -236,17 +233,17 @@ export function PlaygroundPage() {
 
           {result && (
             <Panel>
-              <PanelHeader title="谁会接走" subtitle="按 priority 升序，命中即停；独占=否则继续" />
+              <PanelHeader title="谁会接走" subtitle="按排序值升序，命中即停；独占=否则继续" />
               <ol className="divide-y divide-line/70">
                 {topicTasks
                   .slice()
-                  .sort((a, b) => a.priority - b.priority || a.code.localeCompare(b.code))
+                  .sort((a, b) => a.sort_order - b.sort_order)
                   .map((task) => {
-                    const hit = result.chosen.some((t) => t.code === task.code);
+                    const hit = result.chosen.some((t) => t.id === task.id);
                     return (
-                      <li key={task.code} className="flex items-center gap-2 px-3 py-2">
+                      <li key={task.id} className="flex items-center gap-2 px-3 py-2">
                         <span className="tnum w-8 shrink-0 font-mono text-[10.5px] text-muted">
-                          {task.priority}
+                          {task.sort_order}
                         </span>
                         <span
                           className={cn(
@@ -254,7 +251,7 @@ export function PlaygroundPage() {
                             hit ? "font-medium text-ink" : "text-muted",
                           )}
                         >
-                          {task.code}
+                          {task.name}
                         </span>
                         {task.spec.exclusive === false && <Badge tone="violet">非独占</Badge>}
                         {hit ? (
@@ -315,7 +312,7 @@ export function PlaygroundPage() {
           )}
 
           {result?.previews.map((item) => {
-            const task = topicTasks.find((t) => t.code === item.task);
+            const task = topicTasks.find((t) => t.name === item.task);
             const Icon = VERDICT_ICON[item.verdict];
             return (
               <Panel key={item.task}>

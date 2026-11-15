@@ -57,7 +57,9 @@ impl Stage {
 /// 线上也是同一个结构，只是不落库。
 #[derive(Debug, Clone)]
 pub struct Execution {
-    /// 任务标识
+    /// 任务主键，落台账用
+    pub task_id: i64,
+    /// 任务名称，进日志与结果回显
     pub task: String,
     /// 最终结论
     pub verdict: Verdict,
@@ -96,7 +98,8 @@ impl Execution {
     ) -> Self {
         let detail = detail.into();
         Self {
-            task: spec.id.clone(),
+            task_id: spec.id,
+            task: spec.name.clone(),
             verdict,
             code: code.into(),
             stage,
@@ -134,7 +137,8 @@ pub async fn execute<T: Transport + ?Sized>(
         Ok(r) => r,
         Err(e) => {
             return Execution {
-                task: spec.id.clone(),
+                task_id: spec.id,
+                task: spec.name.clone(),
                 verdict: Verdict::Retriable,
                 code: format!("TRANSPORT_{}", e.kind.as_str()),
                 stage: Stage::Transport,
@@ -193,7 +197,8 @@ pub async fn execute_db<D: DbWriter + ?Sized>(
             finish(spec, prepared.body, preview, response)
         }
         Err(e) => Execution {
-            task: spec.id.clone(),
+            task_id: spec.id,
+            task: spec.name.clone(),
             verdict: if e.retriable {
                 Verdict::Retriable
             } else {
@@ -328,7 +333,8 @@ fn finish(
 ) -> Execution {
     let judgement = judge(spec, response.status, &response.body);
     Execution {
-        task: spec.id.clone(),
+        task_id: spec.id,
+        task: spec.name.clone(),
         verdict: judgement.verdict,
         code: judgement.code.clone(),
         stage: Stage::Verdict,
@@ -526,7 +532,7 @@ mod tests {
 
     fn region_spec() -> TaskSpec {
         serde_json::from_value(serde_json::json!({
-            "id": "dtw_region", "topic": "dtw.dtw_region", "priority": 100, "enabled": true,
+            "topic": "dtw.dtw_region", "sort_order": 100, "enabled": true,
             "target": {"service": "dtw-rs-svr", "base": "/dtw/region"},
             "match": [{"field": "$.op", "op": "in", "value": ["c", "r", "u", "d"]}],
             "mapping": {"omit_null": true, "rows": [

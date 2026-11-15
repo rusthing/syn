@@ -174,7 +174,7 @@ export function TopologyInspector({
                   <Row label="主题" mono>
                     {node.task.topic || "—"}
                   </Row>
-                  <Row label="优先级">{node.task.priority}</Row>
+                  <Row label="排序值">{node.task.sort_order}</Row>
                   <Row label="版本">v{node.task.version}</Row>
                   <Row label="最后修改">{formatDateTime(node.task.update_ms)}</Row>
                 </Section>

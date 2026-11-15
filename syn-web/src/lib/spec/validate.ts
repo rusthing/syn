@@ -6,8 +6,9 @@
  * 两边结论不一致就说明规则漏写了 —— 那种情况应当改代码，不是放宽前端。
  */
 
-import type { Assert, Condition, Scope, TaskSpec } from "@/lib/api/types";
+import type { Assert, Condition, Rule, Scope, TaskSpec } from "@/lib/api/types";
 import { isAssert } from "./defaults";
+import { MAX_RULE_DEPTH, blockConcludes } from "./rules";
 import { TRANSFORMS } from "./transforms";
 
 export type IssueKind = "missing" | "conflict" | "invalid" | "unknown_transform";
@@ -124,9 +125,6 @@ export function isFallbackConditions(conds: Condition[]): boolean {
 export function validateSpec(spec: TaskSpec): SpecIssue[] {
   const issues: SpecIssue[] = [];
 
-  if (!(spec.id ?? "").trim()) {
-    issues.push({ path: "id", kind: "missing", message: "任务标识不能为空" });
-  }
   if (!spec.topic.trim()) {
     issues.push({ path: "topic", kind: "missing", message: "topic 不能为空" });
   }
@@ -271,9 +269,19 @@ export function validateSpec(spec: TaskSpec): SpecIssue[] {
     validateConditions(`${at}.assert`, g.assert, "record", issues);
   });
 
-  // 判定
+  // 判定：rules 与 outcomes 只会活下来一个（同后端 validate_outcomes）
+  const rules = spec.rules ?? [];
   const outcomes = spec.outcomes ?? [];
-  if (outcomes.length === 0) {
+  if (rules.length > 0) {
+    if (outcomes.length > 0) {
+      issues.push({
+        path: "outcomes",
+        kind: "invalid",
+        message: "判定同时写了 outcomes 与 rules：保存只认 rules，把 outcomes 删掉",
+      });
+    }
+    validateRuleBlock("rules", rules, issues, 0);
+  } else if (outcomes.length === 0) {
     issues.push({ path: "outcomes", kind: "missing", message: "没有判定规则：响应将无法分类" });
   } else {
     outcomes.forEach((o, i) => {
@@ -291,6 +299,79 @@ export function validateSpec(spec: TaskSpec): SpecIssue[] {
   }
 
   return issues;
+}
+
+function validateRuleBlock(at: string, block: Rule[], issues: SpecIssue[], depth: number): void {
+  if (depth > MAX_RULE_DEPTH) {
+    issues.push({
+      path: at,
+      kind: "invalid",
+      message: `判定最多嵌套 ${MAX_RULE_DEPTH} 层：再深就读不懂了，把外层条件前移`,
+    });
+    return;
+  }
+  if (block.length === 0) {
+    issues.push({ path: at, kind: "missing", message: "判定块是空的：命中这里之后拿不到结论" });
+    return;
+  }
+  block.forEach((rule, i) => validateRule(`${at}[${i}]`, rule, issues, depth));
+  if (!blockConcludes(block)) {
+    issues.push({
+      path: at,
+      kind: "invalid",
+      message:
+        "判定块必须以「必然给出结论」的语句收尾（结论 / 带否则的 if / 带 default 的 switch）：没命中的响应会变成 UNCLASSIFIED 致命",
+    });
+  }
+}
+
+function validateRule(at: string, rule: Rule, issues: SpecIssue[], depth: number): void {
+  if (rule.kind === "outcome") return;
+  if (rule.kind === "if") {
+    if (rule.branches.length === 0) {
+      issues.push({ path: `${at}.branches`, kind: "missing", message: "if 至少要有一个分支" });
+      return;
+    }
+    rule.branches.forEach((b, i) => {
+      const bat = `${at}.branches[${i}]`;
+      const conds = b.assert ?? [];
+      if (conds.length === 0 && i + 1 !== rule.branches.length) {
+        issues.push({
+          path: bat,
+          kind: "invalid",
+          message: "只有最后一个分支可以省条件（否则分支）：中间的省了，后面分支永远进不去",
+        });
+      }
+      validateConditions(`${bat}.assert`, conds, b.scope ?? "body", issues);
+      validateRuleBlock(`${bat}.then`, b.then ?? [], issues, depth + 1);
+    });
+    return;
+  }
+  if (!rule.on.trim()) {
+    issues.push({ path: `${at}.on`, kind: "missing", message: "switch 必须写判别字段" });
+  }
+  if (rule.cases.length === 0) {
+    issues.push({ path: `${at}.cases`, kind: "missing", message: "switch 至少要有一个 case" });
+  }
+  rule.cases.forEach((c, i) => {
+    if (c.values.length === 0) {
+      issues.push({
+        path: `${at}.cases[${i}].values`,
+        kind: "missing",
+        message: "case 的取值不能为空",
+      });
+    }
+    validateRuleBlock(`${at}.cases[${i}].then`, c.then ?? [], issues, depth + 1);
+  });
+  const dft = rule.default ?? [];
+  if (dft.length === 0) {
+    issues.push({
+      path: `${at}.default`,
+      kind: "missing",
+      message: "switch 必须有 default：没有臂匹配时不能没有结论",
+    });
+  }
+  validateRuleBlock(`${at}.default`, dft, issues, depth + 1);
 }
 
 /** 按 path 建索引，方便逐行标红 */

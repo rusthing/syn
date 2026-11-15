@@ -21,9 +21,8 @@ import {
 
 function spec(enabled: boolean): TaskSpec {
   return {
-    id: "demo",
     topic: "iot.region",
-    priority: 10,
+    sort_order: 10,
     enabled,
     target: { kind: "http", service: "demo-svr", base: "/api" },
     mapping: { rows: [] },
@@ -33,10 +32,9 @@ function spec(enabled: boolean): TaskSpec {
 function task(id: string, enabled: boolean): SyncTask {
   return {
     id,
-    code: id,
     name: `任务 ${id}`,
     topic: "iot.region",
-    priority: 10,
+    sort_order: 10,
     enabled,
     version: 3,
     spec: spec(enabled),

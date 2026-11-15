@@ -13,6 +13,7 @@ import { useToast } from "@/components/ui/Toast";
 import { cn, percent } from "@/lib/utils";
 import { formatRelative } from "@/lib/time";
 import type { SyncTask } from "@/lib/api/types";
+import { countRules, verdictRules } from "@/lib/spec/rules";
 import { useTaskMutations, useTasksPage } from "@/hooks/use-tasks";
 import { useDebounced } from "@/hooks/use-debounce";
 import { TaskEditorDrawer } from "./TaskEditorDrawer";
@@ -60,7 +61,7 @@ export function TasksPage() {
     <>
       <PageHeader
         title="同步任务"
-        subtitle="一个 topic 下可以有多个任务：按优先级依次匹配，命中即停；关掉「独占」就继续往下走。"
+        subtitle="一个主题下可以有多个任务：按排序值依次匹配，命中即停；关掉「独占」就继续往下走。"
         actions={
           <>
             <Button
@@ -114,7 +115,7 @@ export function TasksPage() {
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted" />
             <Input
               value={keyword}
-              placeholder="搜 code / 名称 / topic"
+              placeholder="搜名称 / topic"
               className="h-8 w-[240px] pl-8 text-[12.5px]"
               onChange={(e) => setKeyword(e.target.value)}
             />
@@ -176,7 +177,7 @@ export function TasksPage() {
                 </Th>
                 <Th className="w-[150px]">topic</Th>
                 <Th align="center" className="w-[62px]">
-                  优先级
+                  排序
                 </Th>
                 <Th className="w-[150px]">目标</Th>
                 <Th className="w-[120px]">五段</Th>
@@ -219,14 +220,14 @@ export function TasksPage() {
                             v{task.version}
                           </span>
                         </span>
-                        <span className="truncate font-mono text-[10.5px] text-muted">{task.code}</span>
+                        <span className="truncate font-mono text-[10.5px] text-muted">#{task.id}</span>
                       </button>
                     </Td>
                     <Td mono className="text-[11px]">
                       {task.topic}
                     </Td>
                     <Td align="center" mono>
-                      {task.priority}
+                      {task.sort_order}
                     </Td>
                     <Td>
                       <span className="block text-[12px] text-ink-soft">{task.spec.target.service}</span>
@@ -282,7 +283,7 @@ export function TasksPage() {
                       <div className="flex items-center justify-end gap-0.5">
                         <IconButton
                           label="试跑这条任务"
-                          onClick={() => navigate(`/playground?topic=${encodeURIComponent(task.topic)}&task=${task.code}`)}
+                          onClick={() => navigate(`/playground?topic=${encodeURIComponent(task.topic)}&task=${task.id}`)}
                         >
                           <FlaskConical className="size-3.5" />
                         </IconButton>
@@ -319,7 +320,7 @@ export function TasksPage() {
 
       <ConfirmDialog
         open={removing !== null}
-        title={`删除任务 ${removing?.code ?? ""}？`}
+        title={`删除任务 ${removing?.name ?? ""}？`}
         description={
           <>
             任务配置会连同它的版本历史一起删除。已经发出去的数据不会回滚；
@@ -352,7 +353,7 @@ function StageDots({ task }: { task: SyncTask }) {
     { key: "映射", count: spec.mapping.rows.length, tone: "bg-info" },
     { key: "校验", count: spec.guards?.length ?? 0, tone: "bg-violet" },
     { key: "动作", count: spec.actions?.length ?? 0, tone: "bg-warn" },
-    { key: "判定", count: spec.outcomes?.length ?? 0, tone: "bg-success" },
+    { key: "判定", count: countRules(verdictRules(spec)), tone: "bg-success" },
   ];
   return (
     <div className="flex items-center gap-1" title={stages.map((s) => `${s.key} ${s.count}`).join(" · ")}>

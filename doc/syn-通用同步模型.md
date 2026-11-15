@@ -165,7 +165,7 @@ target:
 
 | 表 | 用途 |
 |---|---|
-| `syn_task` | 五段规则 + topic/priority/enabled |
+| `syn_task` | 五段规则 + topic/sort_order/enabled |
 | `syn_task_version` | 不可变版本快照，回滚只是指回去 |
 | `syn_source` | 自拉数据源定义（kind/topic/interval/batch/spec） |
 | `syn_cursor` | 每个 source 的水位 + 最近一次错误 |
@@ -199,6 +199,12 @@ P1 先做，因为它是纯本地的、当天能验收的，而且「不经下�
    是唯一入口，控制台只存名字不存连接串。
 3. **`syn_idem` 的键由谁生成**：sink 侧传 `X-Idempotency-Key`（`topic:partition:offset`），
    syn 不自己拼；不带键就不记账，不猜。
+4. **判定段是语句树，不是扁平规则表** —— 语句只有 `if` / `switch` / 结论三种，
+   分支体里放语句列表，所以嵌套不需要额外语法。落地方式：`spec.rules` 是新形状，
+   `spec.outcomes` 保留为只读兼容（加载时映射成一串单分支 `if`，保存只写 `rules`）。
+   语义与旧实现逐位一致：首个命中即返回，全都没命中仍然是 `UNCLASSIFIED` 致命；
+   差别只有一条——**每个分支体必须以「必然给出结论」的语句收尾**，否则校验就拦，
+   因为「命中了一半却没有结论」在配置里没有合法解释。
 
 下游地址不在配置里：`target.service` 只是服务名，运行时由框架的共享选址层解析
 （`robotech::micro_svc::instance_resolver`，Feign 客户端也用同一份实例快照）；

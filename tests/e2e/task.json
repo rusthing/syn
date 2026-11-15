@@ -2,9 +2,8 @@
   "name": "联调-人员表直写",
   "remark": "e2e: poll -> db sink",
   "spec": {
-    "id": "it_person_db",
     "topic": "source:it_person",
-    "priority": 100,
+    "sort_order": 100,
     "enabled": true,
     "exclusive": true,
     "target": {

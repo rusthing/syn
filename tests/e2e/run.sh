@@ -185,7 +185,8 @@ assert_eq "task/page total" 1 "$(curl -fsS "$API/syn/task/page" | jq -r '.extra.
 assert_eq "source/page 游标累计" 4 "$(curl -fsS "$API/syn/source/page" | jq -r '.extra.list[0].cursor.rowsSynced')"
 assert_eq "delivery/page total" 2 "$(curl -fsS "$API/syn/delivery/page" | jq -r '.extra.total')"
 assert_eq "fatal 筛选（失败不记账）" 0 "$(curl -fsS "$API/syn/delivery/page?verdict=fatal" | jq -r '.extra.total')"
-assert_eq "taskCode 筛选" 2 "$(curl -fsS "$API/syn/delivery/page?taskCode=it_person_db" | jq -r '.extra.total')"
+assert_eq "taskName 筛选" 2 \
+  "$(curl -fsS -G "$API/syn/delivery/page" --data-urlencode "taskName=联调-人员表直写" | jq -r '.extra.total')"
 assert_eq "idem/page total" 2 "$(curl -fsS "$API/syn/idem/page" | jq -r '.extra.total')"
 overview=$(curl -fsS "$API/syn/overview?window=24h")
 assert_eq "overview total" 2 "$(printf '%s' "$overview" | jq -r '.extra.total')"
@@ -238,13 +239,14 @@ save_layout() { # body
     -H 'X-User-Id: 1' --data "$1"
 }
 assert_eq "初始布局为空" 0 "$(layout | jq -r '.extra | length')"
-saved=$(save_layout '{"nodes":[{"nodeType":4,"nodeKey":"it_person_db","x":840,"y":120},{"nodeType":2,"nodeKey":"it_person","x":420,"y":120}]}')
+# 任务节点的 nodeKey 就是 syn_task.id（十进制字符串）：没有 code 可用了
+saved=$(save_layout "{\"nodes\":[{\"nodeType\":4,\"nodeKey\":\"$task_id\",\"x\":840,\"y\":120},{\"nodeType\":2,\"nodeKey\":\"it_person\",\"x\":420,\"y\":120}]}")
 assert_eq "一次存两个节点" 2 "$(printf '%s' "$saved" | jq -r '.extra | length')"
 assert_eq "读回两条坐标" 2 "$(layout | jq -r '.extra | length')"
-save_layout '{"nodes":[{"nodeType":4,"nodeKey":"it_person_db","x":900,"y":160}]}' >/dev/null
+save_layout "{\"nodes\":[{\"nodeType\":4,\"nodeKey\":\"$task_id\",\"x\":900,\"y\":160}]}" >/dev/null
 assert_eq "只拖一个不抹另一个" 2 "$(layout | jq -r '.extra | length')"
 assert_eq "拖过的节点是新坐标" 900 \
-  "$(layout | jq -r '[.extra[] | select(.nodeType==4 and .nodeKey=="it_person_db")][0].x')"
+  "$(layout | jq -r "[.extra[] | select(.nodeType==4 and .nodeKey==\"$task_id\")][0].x")"
 assert_eq "没拖的坐标保持原样" 420 \
   "$(layout | jq -r '[.extra[] | select(.nodeType==2 and .nodeKey=="it_person")][0].x')"
 assert_eq "同键重复保存不新增行" 2 \
@@ -290,6 +292,44 @@ assert_eq "第二条也是 TARGET_UNRESOLVED" "TARGET_UNRESOLVED" \
 hits=$(grep -c 'service discovery: syn-it-no-such-svr refresh failed' "$LOG" || true)
 assert_eq "注册中心只被查 1 次" 1 "$hits"
 assert_eq "fatal 不记幂等台账" 2 "$(q syn_it 'select count(*) from syn_idem')"
+
+# ---- 判定语句树（rules） ---------------------------------------------------
+# 前面几段全用老的扁平 outcomes（同一份夹具顺带锁住「老配置零迁移」）。
+# 这一段专测新形状：switch 按 affected 分流，臂里再嵌一层 if 看状态码。
+# on conflict do nothing 让同一个 id 第二次写回 affected=0，两种响应就都有了，
+# 不用为「造一个失败响应」去改库。
+say "判定语句：switch 分流 + 臂内 if 两层"
+judge_resp=$(curl -fsS -X POST "$API/syn/task" -H 'Content-Type: application/json' \
+  -H 'X-User-Id: 1' --data-binary @"$E2E/task-judge.json")
+judge_id=$(printf '%s' "$judge_resp" | jq -r '.extra.id')
+[ -n "$judge_id" ] && [ "$judge_id" != "null" ] || fail "判定任务创建失败：$judge_resp"
+assert_eq "reload 生效任务数（含判定任务）" 3 "$(curl -fsS -X POST "$API/syn/task/reload" | jq -r '.extra')"
+
+judge_rec='{"op":"r","after":{"id":7001,"name":"judge-1","updated_at":"2026-11-12T23:00:00Z"}}'
+assert_eq "首次写入 HTTP" 200 "$(sync it-judge-1 "$judge_rec" source:it_judge)"
+assert_eq "结论 success" "success" "$(jq -r '.result' "${TMPDIR:-/tmp}/syn-it-sync-body.json")"
+assert_eq "分类码 R_WROTE（switch 命中 + 内层 if 首分支）" "R_WROTE" \
+  "$(jq -r '.code' "${TMPDIR:-/tmp}/syn-it-sync-body.json")"
+assert_eq "下游写入 id=7001" "judge-1" "$(q syn_it_dst "select name from demo_person where id=7001")"
+
+judge_rec2='{"op":"r","after":{"id":7001,"name":"judge-2","updated_at":"2026-11-12T23:00:00Z"}}'
+assert_eq "重复写入 HTTP" 200 "$(sync it-judge-2 "$judge_rec2" source:it_judge)"
+assert_eq "结论 skip" "skip" "$(jq -r '.result' "${TMPDIR:-/tmp}/syn-it-sync-body.json")"
+assert_eq "分类码 R_DUPLICATE（另一个 case 臂）" "R_DUPLICATE" \
+  "$(jq -r '.code' "${TMPDIR:-/tmp}/syn-it-sync-body.json")"
+assert_eq "do nothing 真的没覆盖" "judge-1" \
+  "$(q syn_it_dst "select name from demo_person where id=7001")"
+
+# 强制兜底是契约不是建议：块尾给不出必然结论的配置必须当场被拒，不能存进库等运行时炸
+no_fallback=$(jq -c '.spec.rules = [{"kind":"if","branches":[{"assert":[{"field":"$.affected","op":"eq","value":1}],"then":[{"kind":"outcome","verdict":"success","code":"R_WROTE"}]}]}]' \
+  "$E2E/task-judge.json")
+assert_eq "块尾不必然给出结论被拒 HTTP" 400 \
+  "$(curl -sS -o "${TMPDIR:-/tmp}/syn-it-sync-body.json" -w '%{http_code}' \
+     -X POST "$API/syn/task" -H 'Content-Type: application/json' -H 'X-User-Id: 1' \
+     --data-binary "$no_fallback")"
+grep -q '必然给出结论' "${TMPDIR:-/tmp}/syn-it-sync-body.json" \
+  || fail "拒绝理由没指向「块尾必须给出结论」"
+assert_eq "被拒的配置没落库" 3 "$(curl -fsS "$API/syn/task/page" | jq -r '.extra.total')"
 
 say "全部通过"
 printf '  服务日志：%s\n' "$LOG"

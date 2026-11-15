@@ -2,17 +2,13 @@ use robotech::macros::dao;
 
 /// # 同步任务
 ///
-/// `code` 是唯一键（`AK_CODE_SYN_TASK`）：它是任务的对外标识，重复了就没有意义 ——
-/// 日志与 topic 匹配都按它指代，两条同名任务会让「改的是哪一条」变成猜。
+/// 身份只有主键 `id`；`name` 是人读的名字，不要求唯一（重名时按 `sort_order, id`
+/// 仍能排出稳定顺序，界面上也能用 ID 区分）。
 ///
-/// 模糊查询放在 `code` / `name` / `topic` 上：列表页的搜索框按这三个字段找任务，
+/// 模糊查询放在 `name` / `topic` / `remark` 上：列表页的搜索框按这三个字段找任务，
 /// 没人会去搜 JSONB 里的 `spec`。
 #[dao(
-    unique_keys: [
-        ("code", "任务编码"),
-    ],
     like_columns: [
-        Column::Code,
         Column::Name,
         Column::Topic,
         Column::Remark,

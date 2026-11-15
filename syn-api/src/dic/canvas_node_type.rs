@@ -18,6 +18,6 @@ pub enum CanvasNodeType {
     Source = 2,
     /// 主题：`node_key` 是 topic 名（CDC topic 或 `source:{code}`）
     Topic = 3,
-    /// 任务：`node_key` 是 `syn_task.code`
+    /// 任务：`node_key` 是 `syn_task.id`（十进制的字符串形式）
     Task = 4,
 }

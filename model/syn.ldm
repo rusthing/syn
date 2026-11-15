@@ -1754,19 +1754,6 @@ LABL 0 新宋体,8,N</a:FontList>
 <o:EntityAttribute Ref="o11"/>
 </c:Identifier.Attributes>
 </o:Identifier>
-<o:Identifier Id="o26">
-<a:ObjectID>C1AC833B-6E08-589E-884C-3FB614AFB25C</a:ObjectID>
-<a:Name>任务编码</a:Name>
-<a:Code>code</a:Code>
-<a:CreationDate>1794481012</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794481012</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<c:Identifier.Attributes>
-<o:EntityAttribute Ref="o12"/>
-</c:Identifier.Attributes>
-</o:Identifier>
 </c:Identifiers>
 <c:PrimaryIdentifier>
 <o:Identifier Ref="o25"/>
@@ -1783,22 +1770,6 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Comment>ID
 由 idworker 生成，全局唯一</a:Comment>
 <a:DataType>LI</a:DataType>
-<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
-<a:GlobalObjectID/>
-</o:EntityAttribute>
-<o:EntityAttribute Id="o12">
-<a:ObjectID>CCAB6048-3544-5DA4-BD74-EBC9F5B53AD3</a:ObjectID>
-<a:Name>任务编码</a:Name>
-<a:Code>code</a:Code>
-<a:CreationDate>1794481012</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794481012</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:Comment>任务编码
-人写可读的稳定标识，配置、日志、排障都用它指代一条任务；接口按它查询
-@len 1..=64</a:Comment>
-<a:DataType>VA64</a:DataType>
-<a:Length>64</a:Length>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
 <a:GlobalObjectID/>
 </o:EntityAttribute>
@@ -1836,14 +1807,14 @@ push 入口是 Kafka 的 topic；poll 入口是虚拟 topic（source:{数据源�
 </o:EntityAttribute>
 <o:EntityAttribute Id="o15">
 <a:ObjectID>5E7C3604-74F5-564E-8408-FCFF2E233B5A</a:ObjectID>
-<a:Name>匹配优先级</a:Name>
-<a:Code>priority</a:Code>
+<a:Name>排序值</a:Name>
+<a:Code>sort_order</a:Code>
 <a:CreationDate>1794481012</a:CreationDate>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794481012</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>匹配优先级
-升序匹配，同 topic 下按优先级逐个试；数字小的先试
+<a:Comment>排序值
+同一主题内升序，越小越靠前；匹配与列表都按 (sort_order, id) 升序
 @range 0..=9999</a:Comment>
 <a:DefaultValue>100</a:DefaultValue>
 <a:DataType>I</a:DataType>
@@ -1890,7 +1861,7 @@ false 表示这条记录还要继续喂给后面的任务（一分多）</a:Comm
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>五段规则（match / mapping / actions / guards / outcomes）
 嵌套结构，整体被执行器消费，没有任何一列参与检索，所以按 JSONB 存
-topic / priority / enabled / exclusive 以本表的列为准，spec 里的同名字段只是导入来源</a:Comment>
+topic / sort_order / enabled / exclusive 以本表的列为准，spec 里的同名字段只是导入来源</a:Comment>
 <a:DataType>JSONB</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
 <a:GlobalObjectID/>

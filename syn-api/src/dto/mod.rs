@@ -4,7 +4,7 @@
 //!
 //! | 接口 | 请求体 | 为什么不等于表 |
 //! |---|---|---|
-//! | `POST /syn/task`、`PUT /syn/task/{id}` | `{ name, spec, remark? }` | `code/topic/priority/enabled/exclusive` 五个列由 `spec` 派生，不让调用方填两遍 |
+//! | `POST /syn/task`、`PUT /syn/task/{id}` | `{ name, spec, remark? }` | `topic/sort_order/enabled/exclusive` 四个列由 `spec` 派生，不让调用方填两遍 |
 //! | `PUT /syn/task/{id}/enabled` | `{ enabled }` | 只动一列，改的是开关不是规则 |
 //! | `POST /syn/source`、`PUT /syn/source/{id}` | 表形状（`code/name/kind/...`） | 这个**是**表形状，但 `spec` 是 JSONB，`#[crud_dto]` 会把它当查询条件处理 |
 //!

@@ -4782,24 +4782,6 @@ DAT 1794481012</a:History>
 <a:Column.Mandatory>1</a:Column.Mandatory>
 <a:GlobalObjectID/>
 </o:Column>
-<o:Column Id="o8">
-<a:ObjectID>3BA5967F-E0CB-55ED-947D-1A976B87BEC8</a:ObjectID>
-<a:Name>任务编码</a:Name>
-<a:Code>code</a:Code>
-<a:CreationDate>1794481012</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794481012</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:Comment>任务编码
-人写可读的稳定标识，配置、日志、排障都用它指代一条任务；接口按它查询
-@len 1..=64</a:Comment>
-<a:History>ORG {CCAB6048-3544-5DA4-BD74-EBC9F5B53AD3}
-DAT 1794481012</a:History>
-<a:DataType>VARCHAR(64)</a:DataType>
-<a:Length>64</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
 <o:Column Id="o9">
 <a:ObjectID>79727B0A-9194-546C-B786-2AE3128F3702</a:ObjectID>
 <a:Name>名称</a:Name>
@@ -4838,14 +4820,14 @@ DAT 1794481012</a:History>
 </o:Column>
 <o:Column Id="o11">
 <a:ObjectID>ECA85341-A313-5C2A-96F1-F0FB549BB8A7</a:ObjectID>
-<a:Name>匹配优先级</a:Name>
-<a:Code>priority</a:Code>
+<a:Name>排序值</a:Name>
+<a:Code>sort_order</a:Code>
 <a:CreationDate>1794481012</a:CreationDate>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794481012</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>匹配优先级
-升序匹配，同 topic 下按优先级逐个试；数字小的先试
+<a:Comment>排序值
+同一主题内升序，越小越靠前；匹配与列表都按 (sort_order, id) 升序
 @range 0..=9999</a:Comment>
 <a:History>ORG {5E7C3604-74F5-564E-8408-FCFF2E233B5A}
 DAT 1794481012</a:History>
@@ -4899,7 +4881,7 @@ DAT 1794481012</a:History>
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>五段规则（match / mapping / actions / guards / outcomes）
 嵌套结构，整体被执行器消费，没有任何一列参与检索，所以按 JSONB 存
-topic / priority / enabled / exclusive 以本表的列为准，spec 里的同名字段只是导入来源</a:Comment>
+topic / sort_order / enabled / exclusive 以本表的列为准，spec 里的同名字段只是导入来源</a:Comment>
 <a:History>ORG {9725094D-B8DC-513A-8A1B-93638D3E7484}
 DAT 1794481012</a:History>
 <a:DataType>JSONB</a:DataType>
@@ -5028,21 +5010,6 @@ DAT 1794481012</a:History>
 <o:Column Ref="o7"/>
 </c:Key.Columns>
 </o:Key>
-<o:Key Id="o22">
-<a:ObjectID>C1AC833B-6E08-589E-884C-3FB614AFB25C</a:ObjectID>
-<a:Name>任务编码</a:Name>
-<a:Code>code</a:Code>
-<a:CreationDate>1794481012</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794481012</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {C1AC833B-6E08-589E-884C-3FB614AFB25C}
-DAT 1794481012</a:History>
-<a:GlobalObjectID/>
-<c:Key.Columns>
-<o:Column Ref="o8"/>
-</c:Key.Columns>
-</o:Key>
 </c:Keys>
 <c:Indexes>
 <o:Index Id="o23">
@@ -5071,36 +5038,6 @@ DAT 1794481012</a:History>
 </c:Column>
 <c:Elements>
 <o:Column Ref="o7"/>
-</c:Elements>
-</o:IndexColumn>
-</c:IndexColumns>
-</o:Index>
-<o:Index Id="o25">
-<a:ObjectID>27AF5A19-13E2-5281-BFC9-45B72BBB5494</a:ObjectID>
-<a:Name>syn_task_AK</a:Name>
-<a:Code>syn_task_AK</a:Code>
-<a:CreationDate>1794481012</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794481012</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<a:Unique>1</a:Unique>
-<c:LinkedObject>
-<o:Key Ref="o22"/>
-</c:LinkedObject>
-<c:IndexColumns>
-<o:IndexColumn Id="o26">
-<a:ObjectID>D83CA7D9-157C-593A-9D65-2430B30F61EA</a:ObjectID>
-<a:CreationDate>1794481012</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794481012</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<c:Column>
-<o:Column Ref="o8"/>
-</c:Column>
-<c:Elements>
-<o:Column Ref="o8"/>
 </c:Elements>
 </o:IndexColumn>
 </c:IndexColumns>

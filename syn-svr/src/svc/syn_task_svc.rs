@@ -2,11 +2,14 @@
 //!
 //! 任务的写入口只有一条：**提交五段规则，列由规则推导**。
 //!
-//! `code` / `topic` / `priority` / `enabled` / `exclusive` 在表里是列（要建索引、
-//! 要能 `where topic = ? order by priority` 直接筛），在 `spec` 里是同名字段。
+//! `topic` / `sort_order` / `enabled` / `exclusive` 在表里是列（要建索引、
+//! 要能 `where topic = ? order by sort_order` 直接筛），在 `spec` 里是同名字段。
 //! 如果让调用方两边都填，两者不一致时行为就取决于「读的时候以谁为准」——
 //! 所以这里只认 `spec`，落库时把列写成 `spec` 的投影，读的时候（[`crate::store`]）
 //! 再以列为准，两边永远相等。
+//!
+//! 任务的身份是主键 `id`，人读的名字是 `name`：没有第二套编码要同步维护，
+//! 也就没有「改编码等于换身份」这类规则。
 //!
 //! ## 版本
 //!
@@ -43,7 +46,6 @@ impl SynTaskSvc {
         if let Some(kw) = dto.keyword.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             cond = cond.add(
                 Condition::any()
-                    .add(Column::Code.contains(kw))
                     .add(Column::Name.contains(kw))
                     .add(Column::Topic.contains(kw)),
             );
@@ -57,7 +59,7 @@ impl SynTaskSvc {
 
         let (_, total, list) = SynTaskDao::page_by_condition::<_, Model>(
             cond,
-            &Some("priority:asc,id:asc".to_string()),
+            &Some("sort_order:asc,id:asc".to_string()),
             U64(dto.page_num()),
             U64(dto.page_size()),
             db.as_ref(),
@@ -74,7 +76,7 @@ impl SynTaskSvc {
         let db = get_db_conn()?;
         let list = SynTaskDao::list_by_condition::<_, Model>(
             Condition::all(),
-            &Some("priority:asc,id:asc".to_string()),
+            &Some("sort_order:asc,id:asc".to_string()),
             db.as_ref(),
         )
         .await?;
@@ -94,24 +96,14 @@ impl SynTaskSvc {
     pub async fn create(dto: SynTaskSaveDto, user: U64) -> Result<SynTaskVo, SvcError> {
         dto.validate()?;
         let spec = parse_spec(&dto.spec)?;
-        let code = spec.id.clone();
 
         let db = get_db_conn()?;
-        // 先查重再插入：唯一键冲突也会被 dao 翻译成 400，但那要等一次失败的写，
-        // 而且提示是「任务编码重复」而不是「哪一条重了」
-        if SynTaskDao::get_by_condition::<_, Model>(Condition::all().add(Column::Code.eq(&code)), db.as_ref())
-            .await?
-            .is_some()
-        {
-            return Err(invalid("code", format!("任务编码 {code} 已存在")));
-        }
-
         let tx = db.begin().await.map_err(db_err)?;
         let model = SynTaskDao::insert(build_model(&spec, &dto, None, user), &tx).await?;
         insert_version(&model, 1, &dto.remark, user, &tx).await?;
         tx.commit().await.map_err(db_err)?;
 
-        info!("任务 {code} 已创建（id={}）", model.id);
+        info!("任务 {} 已创建（id={}）", model.name, model.id);
         // 本副本立即生效；别的副本靠 store 的巡检在下一拍跟上
         // 发刷新信号：所有副本（含本副本）收到后各自重建快照，见 crate::store
         store::on_task_changed().await;
@@ -128,28 +120,6 @@ impl SynTaskSvc {
             .await?
             .ok_or_else(|| SvcError::NotFound(format!("任务 {id} 不存在")))?;
 
-        // 改编码等于换身份：日志、配置引用、幂等台账都按 code 指代，不允许原地改名
-        if existing.code != spec.id {
-            return Err(invalid(
-                "spec.id",
-                format!(
-                    "任务编码不可修改（当前 {}，提交 {}）：编码是任务的对外标识",
-                    existing.code, spec.id
-                ),
-            ));
-        }
-        if SynTaskDao::get_by_condition::<_, Model>(
-            Condition::all()
-                .add(Column::Code.eq(&spec.id))
-                .add(Column::Id.ne(id.value() as i64)),
-            db.as_ref(),
-        )
-        .await?
-        .is_some()
-        {
-            return Err(invalid("code", format!("任务编码 {} 已存在", spec.id)));
-        }
-
         let version = existing.version + 1;
         let tx = db.begin().await.map_err(db_err)?;
         let model = SynTaskDao::update(
@@ -160,7 +130,7 @@ impl SynTaskSvc {
         insert_version(&model, version, &dto.remark, user, &tx).await?;
         tx.commit().await.map_err(db_err)?;
 
-        info!("任务 {} 已更新到 v{version}", model.code);
+        info!("任务 {} 已更新到 v{version}", model.name);
         // 发刷新信号：所有副本（含本副本）收到后各自重建快照，见 crate::store
         store::on_task_changed().await;
         Ok(SynTaskVo::from(model))
@@ -202,9 +172,9 @@ impl SynTaskSvc {
         let model = SynTaskDao::get_by_id::<_, Model>(id, db.as_ref())
             .await?
             .ok_or_else(|| SvcError::NotFound(format!("任务 {id} 不存在")))?;
-        let code = model.code.clone();
+        let name = model.name.clone();
         SynTaskDao::delete(model.into_active_model(), db.as_ref()).await?;
-        info!("任务 {code} 已删除");
+        info!("任务 {name} 已删除");
         store::on_task_changed().await;
         Ok(())
     }
@@ -263,10 +233,9 @@ fn build_model(
         }
     };
     let spec_value = serde_json::to_value(spec).unwrap_or(serde_json::Value::Null);
-    am.code = sea_orm::ActiveValue::Set(spec.id.clone());
     am.name = sea_orm::ActiveValue::Set(dto.name.trim().to_string());
     am.topic = sea_orm::ActiveValue::Set(spec.topic.clone());
-    am.priority = sea_orm::ActiveValue::Set(spec.priority);
+    am.sort_order = sea_orm::ActiveValue::Set(spec.sort_order);
     am.enabled = sea_orm::ActiveValue::Set(spec.enabled);
     am.exclusive = sea_orm::ActiveValue::Set(spec.exclusive);
     am.spec = sea_orm::ActiveValue::Set(spec_value);

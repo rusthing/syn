@@ -153,10 +153,25 @@ fn eval_value(assert: &Assert, lhs: Option<&Value>) -> bool {
 }
 
 /// 数值相等，其余按 JSON 相等
-fn json_eq(a: &Value, b: &Value) -> bool {
+///
+/// 判定段的 `switch` 也要用同一套相等语义，所以这里是 `pub`：
+/// 「`1` 等于 `1.0`」这条只写一处，不然 `case` 与 `assert` 会给出不同答案。
+pub fn json_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),
         _ => a == b,
+    }
+}
+
+/// 按作用域取一个字段的值
+///
+/// `switch` 的判别字段走这里，语义与 [`eval`] 取左值完全一致（同一套 `get_path`）；
+/// `status` 作用域没有字段可读，返回 `None`。
+pub fn value_at<'a>(ctx: &Context<'a>, scope: Scope, field: &str) -> Option<&'a Value> {
+    match scope {
+        Scope::Status => None,
+        Scope::Record => get_path(ctx.record, field),
+        Scope::Body => ctx.body.and_then(|b| get_path_in_map(b, field)),
     }
 }
 

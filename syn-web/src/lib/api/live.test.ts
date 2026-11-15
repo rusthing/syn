@@ -61,14 +61,13 @@ afterEach(() => {
 
 const taskVo = {
   id: "18446744073709551615",
-  code: "person_to_dtw",
   name: "人员同步",
   topic: "adm.person",
-  priority: 10,
+  sortOrder: 10,
   enabled: true,
   exclusive: true,
   version: 3,
-  spec: { topic: "adm.person", priority: 10, target: {}, mapping: { rows: [] } },
+  spec: { topic: "adm.person", sort_order: 10, target: {}, mapping: { rows: [] } },
   createrId: "100237",
   createMs: "1763000000000",
   updaterId: "100238",
@@ -76,7 +75,7 @@ const taskVo = {
 };
 
 describe("liveTasks", () => {
-  it("PageRx → Page：total 去字符串，审计列回 snake_case，spec.id 以 code 列为准", async () => {
+  it("PageRx → Page：total 去字符串，审计列回 snake_case，排序列以 VO 为准", async () => {
     stubFetch({ pageNum: "1", total: "7", list: [taskVo] });
     const page = await liveTasks.page({ pageNum: 2, enabled: false });
 
@@ -84,7 +83,8 @@ describe("liveTasks", () => {
     expect(page.list).toHaveLength(1);
     const task = page.list[0];
     expect(task.id).toBe("18446744073709551615"); // U64 不被 Number 截断
-    expect(task.spec.id).toBe("person_to_dtw");
+    expect(task.sort_order).toBe(10);
+    expect(task.name).toBe("人员同步");
     expect(task.creater_id).toBe("100237");
     expect(task.create_ms).toBe("1763000000000");
     expect(task.updater_id).toBe("100238");
@@ -422,7 +422,7 @@ describe("liveDeliveries / liveIdem / liveOverview", () => {
       list: [
         {
           id: "9",
-          taskCode: "person_to_dtw",
+          taskName: "人员同步",
           verdict: "success",
           code: "ok",
           stage: "verdict",
@@ -433,9 +433,9 @@ describe("liveDeliveries / liveIdem / liveOverview", () => {
         },
       ],
     });
-    const page = await liveDeliveries.page({ task_code: "person_to_dtw" });
+    const page = await liveDeliveries.page({ task_name: "人员同步" });
     expect(page.list[0]).toMatchObject({
-      task_code: "person_to_dtw",
+      task_name: "人员同步",
       record_key: "adm.person:0:17",
       latency_ms: 0,
       http_status: 200,
@@ -446,11 +446,11 @@ describe("liveDeliveries / liveIdem / liveOverview", () => {
     });
   });
 
-  it("投递查询的 task_code 要改名成 taskCode", async () => {
+  it("投递查询的 task_name 要改名成 taskName", async () => {
     const urls = stubFetch({ total: "0", list: [] });
-    await liveDeliveries.page({ task_code: "abc", verdict: "fatal" });
-    expect(urls[0]).toContain("taskCode=abc");
-    expect(urls[0]).not.toContain("task_code");
+    await liveDeliveries.page({ task_name: "abc", verdict: "fatal" });
+    expect(urls[0]).toContain("taskName=abc");
+    expect(urls[0]).not.toContain("task_name");
   });
 
   it("幂等台账 INT2 verdict → 字符串，一行一个键所以 hits = 1", async () => {
@@ -459,7 +459,7 @@ describe("liveDeliveries / liveIdem / liveOverview", () => {
       list: [
         {
           id: "1",
-          taskCode: "t1",
+          taskName: "t1",
           idemKey: "k1",
           verdict: 2,
           code: "bad",
@@ -468,7 +468,7 @@ describe("liveDeliveries / liveIdem / liveOverview", () => {
         },
         {
           id: "2",
-          taskCode: "t2",
+          taskName: "t2",
           idemKey: "k2",
           verdict: 3,
           code: "retry",
@@ -480,7 +480,7 @@ describe("liveDeliveries / liveIdem / liveOverview", () => {
     const page = await liveIdem.page();
     expect(page.list[0]).toEqual({
       id: "1",
-      task_code: "t1",
+      task_name: "t1",
       idem_key: "k1",
       hits: 1,
       verdict: "fatal",
@@ -504,14 +504,14 @@ describe("liveDeliveries / liveIdem / liveOverview", () => {
       sources: 2,
       stalledSources: 1,
       series: [{ hourMs: "1762999200000", success: 10, fatal: 1, retriable: 0 }],
-      topFailures: [{ code: "GUARD_FAILED", taskCode: "t1", count: 2 }],
+      topFailures: [{ code: "GUARD_FAILED", taskName: "t1", count: 2 }],
     });
     const data = await liveOverview.get("24h");
     expect(data).toMatchObject({
       p95_ms: 0,
       enabled_tasks: 3,
       stalled_sources: 1,
-      top_failures: [{ code: "GUARD_FAILED", task_code: "t1", count: 2 }],
+      top_failures: [{ code: "GUARD_FAILED", task_name: "t1", count: 2 }],
     });
     expect(data.series[0]).toEqual({
       hour_ms: 1762999200000,

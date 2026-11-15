@@ -25,8 +25,8 @@ pub struct SynOverviewHourVo {
 pub struct SynOverviewFailureVo {
     /// 分类码
     pub code: String,
-    /// 任务编码
-    pub task_code: String,
+    /// 任务名称
+    pub task_name: String,
     /// 次数
     pub count: u64,
 }

@@ -1,0 +1,213 @@
+{
+  "_comment": "判定段的共享用例：Rust（syn-core/tests/verdict_cases.rs）与前端（syn-web/src/lib/spec/verdict-cases.test.ts）跑同一份。改语义必须先改这里，两边红了才是对的。",
+  "base": {
+    "topic": "tp",
+    "sort_order": 1,
+    "target": { "service": "s", "base": "/b" },
+    "mapping": { "rows": [{ "to": "id", "from": "$.after.id" }] },
+    "actions": [{ "op": "c", "method": "POST", "path": "/x" }]
+  },
+  "cases": [
+    {
+      "name": "老形状：扁平 outcomes 第一条命中",
+      "spec": {
+        "outcomes": [
+          {
+            "scope": "body",
+            "assert": [{ "field": "$.extra.code", "op": "eq", "value": "RTW00001" }],
+            "verdict": "skip",
+            "code": "duplicate"
+          },
+          {
+            "scope": "body",
+            "assert": [{ "field": "$.result", "op": "lt", "value": 0 }],
+            "verdict": "fatal",
+            "code": "business_error"
+          },
+          { "scope": "status", "assert": [{ "op": "in", "value": [200, 201] }], "verdict": "success" }
+        ]
+      },
+      "status": 200,
+      "body": { "result": -1, "extra": { "code": "RTW00001" } },
+      "expect": { "index": 1, "verdict": "skip", "code": "duplicate", "fallback": false }
+    },
+    {
+      "name": "老形状：落到最后一条兜底",
+      "spec": {
+        "outcomes": [
+          {
+            "scope": "body",
+            "assert": [{ "field": "$.extra.code", "op": "eq", "value": "RTW00001" }],
+            "verdict": "skip",
+            "code": "duplicate"
+          },
+          { "scope": "status", "assert": [{ "op": "in", "value": [200, 201] }], "verdict": "success" }
+        ]
+      },
+      "status": 201,
+      "body": { "whatever": true },
+      "expect": { "index": 2, "verdict": "success", "code": "", "fallback": false }
+    },
+    {
+      "name": "switch 的臂里嵌 if：命中 timeout",
+      "spec": {
+        "rules": [
+          {
+            "kind": "switch",
+            "on": "$.code",
+            "scope": "body",
+            "cases": [
+              {
+                "values": [500],
+                "then": [
+                  {
+                    "kind": "if",
+                    "branches": [
+                      {
+                        "assert": [{ "field": "$.msg", "op": "contains", "value": "timeout" }],
+                        "then": [{ "kind": "outcome", "verdict": "retriable", "code": "UPSTREAM_TIMEOUT" }]
+                      },
+                      { "assert": [], "then": [{ "kind": "outcome", "verdict": "fatal", "code": "UPSTREAM_500" }] }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "default": [{ "kind": "outcome", "verdict": "success" }]
+          }
+        ]
+      },
+      "status": 500,
+      "body": { "code": 500, "msg": "gateway timeout" },
+      "expect": { "index": 1, "verdict": "retriable", "code": "UPSTREAM_TIMEOUT", "fallback": false }
+    },
+    {
+      "name": "switch 的臂里嵌 if：没命中内层条件落到内层否则",
+      "spec": {
+        "rules": [
+          {
+            "kind": "switch",
+            "on": "$.code",
+            "scope": "body",
+            "cases": [
+              {
+                "values": [500],
+                "then": [
+                  {
+                    "kind": "if",
+                    "branches": [
+                      {
+                        "assert": [{ "field": "$.msg", "op": "contains", "value": "timeout" }],
+                        "then": [{ "kind": "outcome", "verdict": "retriable", "code": "UPSTREAM_TIMEOUT" }]
+                      },
+                      { "assert": [], "then": [{ "kind": "outcome", "verdict": "fatal", "code": "UPSTREAM_500" }] }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "default": [{ "kind": "outcome", "verdict": "success" }]
+          }
+        ]
+      },
+      "status": 500,
+      "body": { "code": 500, "msg": "boom" },
+      "expect": { "index": 1, "verdict": "fatal", "code": "UPSTREAM_500", "fallback": false }
+    },
+    {
+      "name": "switch 落到 default：不算兜底",
+      "spec": {
+        "rules": [
+          {
+            "kind": "switch",
+            "on": "$.code",
+            "scope": "body",
+            "cases": [{ "values": [500], "then": [{ "kind": "outcome", "verdict": "retriable" }] }],
+            "default": [{ "kind": "outcome", "verdict": "success" }]
+          }
+        ]
+      },
+      "status": 200,
+      "body": { "code": 200 },
+      "expect": { "index": 1, "verdict": "success", "code": "", "fallback": false }
+    },
+    {
+      "name": "case 与断言共用相等语义：500 与 500.0 相等",
+      "spec": {
+        "rules": [
+          {
+            "kind": "switch",
+            "on": "$.code",
+            "scope": "body",
+            "cases": [{ "values": [500], "then": [{ "kind": "outcome", "verdict": "retriable" }] }],
+            "default": [{ "kind": "outcome", "verdict": "success" }]
+          }
+        ]
+      },
+      "status": 200,
+      "body": { "code": 500.0 },
+      "expect": { "index": 1, "verdict": "retriable", "code": "", "fallback": false }
+    },
+    {
+      "name": "顶层语句都没命中：UNCLASSIFIED 致命，不是成功",
+      "spec": {
+        "rules": [
+          {
+            "kind": "if",
+            "branches": [
+              {
+                "assert": [{ "op": "eq", "value": 400 }],
+                "then": [{ "kind": "outcome", "verdict": "fatal" }]
+              }
+            ]
+          }
+        ]
+      },
+      "status": 200,
+      "body": { "code": 200 },
+      "expect": { "index": 0, "verdict": "fatal", "code": "UNCLASSIFIED", "fallback": true }
+    },
+    {
+      "name": "嵌套里命中也只报最外层语句序号",
+      "spec": {
+        "rules": [
+          {
+            "kind": "if",
+            "branches": [
+              {
+                "assert": [{ "op": "eq", "value": 400 }],
+                "then": [{ "kind": "outcome", "verdict": "fatal" }]
+              }
+            ]
+          },
+          {
+            "kind": "switch",
+            "on": "$.code",
+            "scope": "body",
+            "cases": [
+              {
+                "values": [500],
+                "then": [
+                  {
+                    "kind": "if",
+                    "branches": [
+                      {
+                        "assert": [{ "field": "$.msg", "op": "contains", "value": "x" }],
+                        "then": [{ "kind": "outcome", "verdict": "retriable" }]
+                      },
+                      { "assert": [], "then": [{ "kind": "outcome", "verdict": "fatal" }] }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "default": [{ "kind": "outcome", "verdict": "success" }]
+          }
+        ]
+      },
+      "status": 500,
+      "body": { "code": 500, "msg": "x" },
+      "expect": { "index": 2, "verdict": "retriable", "code": "", "fallback": false }
+    }
+  ]
+}

@@ -24,7 +24,7 @@ const VERDICT_FILTERS: Array<{ value: "" | Verdict; label: string }> = [
 const PAGE_SIZE = 25;
 
 export function DeliveriesPage() {
-  const [taskCode, setTaskCode] = useState("");
+  const [taskName, setTaskName] = useState("");
   const [verdict, setVerdict] = useState<"" | Verdict>("");
   const [keyword, setKeyword] = useState("");
   const [page, setPage] = useState(1);
@@ -34,13 +34,13 @@ export function DeliveriesPage() {
 
   const query = useMemo(
     () => ({
-      task_code: taskCode || undefined,
+      task_name: taskName || undefined,
       verdict: verdict || undefined,
       keyword: debounced.trim() || undefined,
       pageNum: page,
       pageSize: PAGE_SIZE,
     }),
-    [taskCode, verdict, debounced, page],
+    [taskName, verdict, debounced, page],
   );
 
   const { data, isLoading, error, refetch, isFetching } = useDeliveries(query);
@@ -69,17 +69,17 @@ export function DeliveriesPage() {
             />
           </div>
           <Select
-            value={taskCode}
+            value={taskName}
             className="h-8 w-[190px] text-[12px]"
             onChange={(e) => {
-              setTaskCode(e.target.value);
+              setTaskName(e.target.value);
               setPage(1);
             }}
           >
             <option value="">全部任务</option>
             {(tasks ?? []).map((t) => (
-              <option key={t.code} value={t.code}>
-                {t.code}
+              <option key={t.id} value={t.name}>
+                {t.name}
               </option>
             ))}
           </Select>
@@ -153,7 +153,7 @@ export function DeliveriesPage() {
                     {formatCompact(d.create_ms)}
                   </Td>
                   <Td mono className="text-[11px]">
-                    {d.task_code}
+                    {d.task_name}
                   </Td>
                   <Td align="center" mono className="text-[11px] uppercase text-muted">
                     {d.op ?? "—"}

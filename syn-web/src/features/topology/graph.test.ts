@@ -58,9 +58,8 @@ function src(code: string, topic: string, over: Partial<SyncSource> = {}): SyncS
 
 function specOf(topic: string, over: Partial<TaskSpec> = {}): TaskSpec {
   return {
-    id: "dtw-region",
     topic,
-    priority: 100,
+    sort_order: 100,
     enabled: true,
     exclusive: true,
     target: { kind: "http", service: "dtw-rs-svr", base: "/dtw/region" },
@@ -83,10 +82,9 @@ function specOf(topic: string, over: Partial<TaskSpec> = {}): TaskSpec {
 function task(code: string, topic: string, over: Partial<SyncTask> = {}, specOver: Partial<TaskSpec> = {}): SyncTask {
   return {
     id: code,
-    code,
     name: `${code} 任务`,
     topic,
-    priority: 100,
+    sort_order: 100,
     enabled: true,
     version: 1,
     spec: specOf(topic, specOver),

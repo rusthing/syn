@@ -66,6 +66,16 @@ export interface DrawerProps {
   placement?: "right" | "center";
   /** 标题区的额外内容（如状态徽标） */
   badge?: ReactNode;
+  /**
+   * 居中窗体的固定高度（px）。编辑类窗体用它把「头部 / 内容 / 底部」钉死，
+   * 长表单只在内容区滚动，标题和保存按钮不会跟着跑；不传仍按内容撑开。
+   */
+  height?: number;
+  /**
+   * 内容区是否由弹层自己滚动（默认 true）。传 false 时内容区是 `flex flex-col`
+   * 且不滚 —— 让窗体内部自己分栏滚（如编辑窗体的左右两列）。
+   */
+  scroll?: boolean;
 }
 
 export function Drawer({
@@ -78,6 +88,8 @@ export function Drawer({
   width = 580,
   placement = "right",
   badge,
+  height,
+  scroll = true,
 }: DrawerProps) {
   const centered = placement === "center";
   useBodyScrollLock(open);
@@ -119,7 +131,7 @@ export function Drawer({
             ? "max-h-[calc(100vh-40px)] w-full animate-rise rounded-[14px] border"
             : "h-full max-w-full animate-slide-left border-l",
         )}
-        style={centered ? { maxWidth: width } : { width }}
+        style={centered ? { maxWidth: width, height } : { width }}
       >
         <header className="flex items-start justify-between gap-3 border-b border-line px-5 py-3.5">
           <div className="min-w-0">
@@ -134,7 +146,14 @@ export function Drawer({
           </IconButton>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
+        <div
+          className={cn(
+            "min-h-0 flex-1 px-5 py-4",
+            scroll ? "overflow-y-auto" : "flex flex-col overflow-hidden",
+          )}
+        >
+          {children}
+        </div>
 
         {footer && (
           <footer className="border-t border-line bg-sunken/70 px-5 py-3">{footer}</footer>

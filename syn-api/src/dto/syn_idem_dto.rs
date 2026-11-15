@@ -9,10 +9,10 @@ use utoipa::ToSchema;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SynIdemQueryDto {
-    /// 关键字，匹配 `idem_key` / 任务编码
+    /// 关键字，匹配 `idem_key` / 任务名称
     pub keyword: Option<String>,
-    /// 按任务编码精确筛
-    pub task_code: Option<String>,
+    /// 按任务名称精确筛
+    pub task_name: Option<String>,
     /// 页码，从 1 开始
     pub page_num: Option<u64>,
     /// 每页条数

@@ -16,12 +16,15 @@
 # 安全边界：只碰这三处，绝不改任何已有业务表、任何其它 consul 键：
 #   1. consul KV `dev/syn-svr.toml`
 #   2. `admrs.public.syn_it_person` / `dtwrs_ui.public.syn_it_person`（本脚本建的隔离表）
-#   3. `syn` 库里 code 精确等于 adm_person / adm_person_to_dtw / tmp_delete_me 的配置行
+#   3. `syn` 库里 code 为 adm_person / tmp_delete_me 的来源行，与 name 等于联调任务名的任务行
+#      （任务没有 code，身份是主键 id，人读用 name，见 syn/doc/syn-开发规范.md §4.1）
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_DIR="$ROOT/tests/env"
+# 任务没有 code 列了，清理与筛选都按 name 走；名字只有一处来源（夹具）
+TASK_NAME="$(sed -n 's/.*"name": "\(.*\)",/\1/p' "$ENV_DIR/task.json" | head -1)"
 BIN="$ROOT/target/debug/syn-svr"
 CONSUL="${CONSUL_URL:-http://127.0.0.1:8500}"
 API="http://127.0.0.1:9007"
@@ -64,13 +67,13 @@ stop_server() {
 }
 trap stop_server EXIT
 
-# 只清联调自己写的行；按 code 精确匹配，级联表先删
+# 只清联调自己写的行：来源按 code 精确匹配，任务按 name 精确匹配；级联表先删
 clean_config() {
   pg syn -c "
-    delete from syn_idem where task_id in (select id from syn_task where code = 'adm_person_to_dtw');
-    delete from syn_task_version where task_id in (select id from syn_task where code = 'adm_person_to_dtw');
+    delete from syn_idem where task_id in (select id from syn_task where name = '$TASK_NAME');
+    delete from syn_task_version where task_id in (select id from syn_task where name = '$TASK_NAME');
     delete from syn_cursor where source_id in (select id from syn_source where code in ('adm_person','tmp_delete_me'));
-    delete from syn_task where code = 'adm_person_to_dtw';
+    delete from syn_task where name = '$TASK_NAME';
     delete from syn_source where code in ('adm_person','tmp_delete_me');
   " >/dev/null
 }
@@ -205,8 +208,8 @@ req GET '/syn/source/page?pageNum=1&pageSize=10' >/dev/null
 assert_eq "来源分页带水位" "4" "$(resp '.extra.list[0].cursor.rowsSynced')"
 req GET '/syn/delivery/page?verdict=fatal' >/dev/null
 assert_eq "失败不出现在投递记录" "0" "$(resp '.extra.total')"
-req GET '/syn/delivery/page?taskCode=adm_person_to_dtw' >/dev/null
-assert_eq "按 taskCode 筛选" "2" "$(resp '.extra.total')"
+curl -sS -G "${API}/syn/delivery/page" --data-urlencode "taskName=${TASK_NAME}" -o "$RESP" >/dev/null
+assert_eq "按 taskName 筛选" "2" "$(jq -r '.extra.total' "$RESP")"
 req GET '/syn/idem/page?pageNum=1&pageSize=20' >/dev/null
 assert_eq "幂等分页" "2" "$(resp '.extra.total')"
 req GET '/syn/overview?window=24h' >/dev/null

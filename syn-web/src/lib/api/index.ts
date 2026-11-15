@@ -168,7 +168,7 @@ export const registry = {
 };
 
 export interface DeliveryQuery {
-  task_code?: string;
+  task_name?: string;
   verdict?: Verdict;
   keyword?: string;
   pageNum?: number;

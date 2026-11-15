@@ -145,11 +145,58 @@ export interface Outcome {
   code?: string;
 }
 
+/**
+ * 判定语句：与 `syn_api::Rule` 一一对应。
+ *
+ * 判定段是一串按顺序执行的语句，首个命中即返回。语句只有三种，`if` 的 else-if 链
+ * 就是 `branches` 里连续的项，`switch` 是「按一个字段的值分流」的同义写法。
+ * 分支体 `then` / `default` 里还是语句列表，所以嵌套不需要单独语法。
+ */
+export type Rule = IfRule | SwitchRule | OutcomeRule;
+
+export interface IfRule {
+  kind: "if";
+  /** 至少一项；最后一项 `assert` 为空表示 else */
+  branches: Branch[];
+}
+
+export interface Branch {
+  /** 条件（顶层合取）；为空表示「其余全部」，只能在最后 */
+  assert?: Condition[];
+  /** 条件里叶子断言的默认作用域，缺省 body */
+  scope?: Scope;
+  /** 命中后执行的语句，必须以「必然给出结论」的语句收尾 */
+  then?: Rule[];
+}
+
+export interface SwitchRule {
+  kind: "switch";
+  /** 判别字段（JSON 路径） */
+  on: string;
+  /** 判别字段的作用域，缺省 body */
+  scope?: Scope;
+  /** 取值臂，任一枚举值相等即命中 */
+  cases: CaseArm[];
+  /** 兜底臂，必须非空 */
+  default?: Rule[];
+}
+
+export interface CaseArm {
+  /** 命中取值集合，不允许为空 */
+  values: unknown[];
+  then?: Rule[];
+}
+
+export interface OutcomeRule {
+  kind: "outcome";
+  verdict: Verdict;
+  code?: string;
+}
+
 export interface TaskSpec {
-  /** 与 `syn_task.code` 同值；库里以列为准 */
-  id?: string;
   topic: string;
-  priority: number;
+  /** 同一主题内的排序值，升序；首命中即停 */
+  sort_order: number;
   enabled?: boolean;
   /** 默认 true：命中后停止匹配后续任务 */
   exclusive?: boolean;
@@ -159,6 +206,8 @@ export interface TaskSpec {
   actions?: Action[];
   guards?: Guard[];
   outcomes?: Outcome[];
+  /** 判定语句树（新形状），优先于 outcomes */
+  rules?: Rule[];
 }
 
 /* ---------- 拓扑画布 ---------- */
@@ -172,7 +221,7 @@ export type CanvasNodeKind = "datasource" | "source" | "topic" | "task";
 /** 一个节点的世界坐标（与缩放无关） */
 export interface CanvasNodePos {
   kind: CanvasNodeKind;
-  /** 数据源 / 取数来源 / 任务填 code，主题填 topic 名 */
+  /** 数据源 / 取数来源填 code，任务填 id，主题填 topic 名 */
   key: string;
   x: number;
   y: number;
@@ -201,10 +250,9 @@ export interface TaskStats {
 
 export interface SyncTask extends Audit {
   id: string;
-  code: string;
   name: string;
   topic: string;
-  priority: number;
+  sort_order: number;
   enabled: boolean;
   version: number;
   spec: TaskSpec;
@@ -336,7 +384,7 @@ export interface SyncSource extends Audit {
 /** 一次投递（执行记录） */
 export interface Delivery {
   id: string;
-  task_code: string;
+  task_name: string;
   topic: string;
   op: Op | null;
   verdict: Verdict;
@@ -352,7 +400,7 @@ export interface Delivery {
 /** 幂等台账 */
 export interface IdemRecord {
   id: string;
-  task_code: string;
+  task_name: string;
   idem_key: string;
   hits: number;
   verdict: Verdict;
@@ -375,7 +423,7 @@ export interface Overview {
   /** 最近 24 小时的每小时桶，用于吞吐曲线 */
   series: Array<{ hour_ms: number; success: number; fatal: number; retriable: number }>;
   /** 失败分类 Top */
-  top_failures: Array<{ code: string; task_code: string; count: number }>;
+  top_failures: Array<{ code: string; task_name: string; count: number }>;
 }
 
 export interface Page<T> {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CircleCheck, CircleX, FlaskConical, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -15,10 +15,11 @@ import { AssertEditor } from "@/components/spec/AssertEditor";
 import { MappingEditor } from "@/components/spec/MappingEditor";
 import { ActionEditor } from "@/components/spec/ActionEditor";
 import { GuardEditor } from "@/components/spec/GuardEditor";
-import { OutcomeEditor } from "@/components/spec/OutcomeEditor";
-import { useTaskMutations } from "@/hooks/use-tasks";
+import { rulesForEditing } from "@/lib/spec/rules";
+import { useAllTasks, useTaskMutations } from "@/hooks/use-tasks";
 import { useDatasources, useServices } from "@/hooks/use-sources";
 import { TaskStageRail } from "./TaskStageRail";
+import { RuleBlockEditor } from "./verdict/RuleBlockEditor";
 import { STAGES, tabOfPath, type TaskTab } from "./task-stages";
 
 /** 控制面板按这个类型直达某一段，历史入口保留在本模块上 */
@@ -29,7 +30,7 @@ type Tab = TaskTab;
 /**
  * 任务编辑窗体。
  *
- * 没有独立的基本页签：code / 名称 / topic / 优先级是任务的身份证，常驻窗体顶部，
+ * 没有独立的基本页签：名称 / topic / 排序值常驻窗体顶部，
  * 任何段下都看得到；六段配置在左侧轨道上点选，右侧一次只编辑一段（见 TaskStageRail）。
  * 启用 / 独占不在表单里 —— 启用在卡片右上角、独占在连线落点（控制面板），
  * 它们是运行态开关，和配置内容混在一起反而藏得住误触。
@@ -62,9 +63,22 @@ export function TaskEditorDrawer({
   const [jsonText, setJsonText] = useState("");
   const [jsonError, setJsonError] = useState<string | null>(null);
 
+  const { data: allTasks } = useAllTasks();
+  // 用 ref 读最新列表：把 allTasks 放进依赖里，列表一到就会把正在填的草稿重置掉
+  const siblings = useRef<SyncTask[]>([]);
+  siblings.current = allTasks ?? [];
+
   useEffect(() => {
     if (!open) return;
-    const next = task ? cloneSpec(task.spec) : newTask();
+    // 新建时排到同主题末尾：同一主题下 sort_order 才有意义，跨主题比大小没有语义
+    const next = task
+      ? cloneSpec(task.spec)
+      : newTask(
+          "dtw.region",
+          siblings.current
+            .filter((t) => t.topic === "dtw.region")
+            .reduce((max, t) => Math.max(max, t.sort_order), 90) + 10,
+        );
     setSpec(next);
     setName(task?.name ?? "");
     setTab(initialTab ?? "match");
@@ -87,7 +101,8 @@ export function TaskEditorDrawer({
       case "guards":
         return issuesUnder(byPath, "guards");
       case "outcomes":
-        return issuesUnder(byPath, "outcomes");
+        // 判定段两套形状都要收：未升级的任务问题挂在 outcomes，升级后挂在 rules
+        return [...issuesUnder(byPath, "outcomes"), ...issuesUnder(byPath, "rules")];
       default:
         return [];
     }
@@ -116,7 +131,7 @@ export function TaskEditorDrawer({
       return;
     }
     if (!name.trim()) {
-      toast.error("缺少任务名称", "名称是列表里唯一的可读标识，别只留 code");
+      toast.error("缺少任务名称", "名称是任务唯一的可读标识，列表与日志都靠它");
       return;
     }
     save.mutate(
@@ -142,7 +157,9 @@ export function TaskEditorDrawer({
       open={open}
       onClose={onClose}
       width={980}
-      title={task ? `编辑 ${task.code}` : "新建同步任务"}
+      height={720}
+      scroll={false}
+      title={task ? `编辑 ${task.name}` : "新建同步任务"}
       subtitle={task ? `v${task.version} · ${task.topic}` : "六段流水线一次配完，保存后自动通知各副本刷新"}
       badge={
         issues.length > 0 ? (
@@ -189,22 +206,13 @@ export function TaskEditorDrawer({
         </div>
       }
     >
-      {/* 身份证区：任何页签下都可见。id / topic 的校验问题直接标在这里 */}
-      <div className="mb-4 grid grid-cols-2 gap-3 rounded-lg border border-line bg-sunken/40 p-3">
+      {/* 身份证区：任何页签下都可见。名称 / topic 的校验问题直接标在这里 */}
+      <div className="mb-4 grid shrink-0 grid-cols-3 gap-3 rounded-lg border border-line bg-sunken/40 p-3">
         <Field
-          label="任务标识 code"
+          label="名称"
           required
-          hint="与 spec.id 同值；同一 topic 下唯一。库里的列说了算"
-          error={byPath.get("id")?.[0]?.message}
+          hint={task ? "任务的唯一可读标识；重名只能靠 ID 区分" : "任务的可读标识，列表、投递记录、日志都按它指代"}
         >
-          <Input
-            value={spec.id ?? ""}
-            spellCheck={false}
-            className="h-9 font-mono text-[12.5px]"
-            onChange={(e) => patch({ id: e.target.value })}
-          />
-        </Field>
-        <Field label="名称" required hint="列表里给人看的那一行">
           <Input value={name} className="h-9" onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field
@@ -220,12 +228,12 @@ export function TaskEditorDrawer({
             onChange={(e) => patch({ topic: e.target.value })}
           />
         </Field>
-        <Field label="优先级" hint="升序匹配，小的先命中">
+        <Field label="排序值" hint="同一主题内升序，小的先命中；默认排到末尾 +10">
           <Input
             type="number"
-            value={spec.priority}
+            value={spec.sort_order}
             className="h-9 tnum"
-            onChange={(e) => patch({ priority: Number(e.target.value) })}
+            onChange={(e) => patch({ sort_order: Number(e.target.value) })}
           />
         </Field>
       </div>
@@ -234,14 +242,16 @@ export function TaskEditorDrawer({
         六段轨道在左、当前段的设置在右。整块贴到窗体边缘（抵消滚动容器的内边距），
         左侧自己带底色和竖分隔，看起来才是「一条轨道 + 一张工作台」而不是两个卡片。
       */}
-      <div className="-mx-5 -mb-4 grid min-h-[380px] grid-cols-[208px_minmax(0,1fr)] border-t border-line">
-        <TaskStageRail
-          tab={tab}
-          spec={spec}
-          issueCount={(key) => tabIssues(key).length}
-          onSelect={selectTab}
-        />
-        <div className="min-w-0 px-5 py-4">
+      <div className="-mx-5 -mb-4 grid min-h-0 flex-1 grid-cols-[208px_minmax(0,1fr)] border-t border-line">
+        <div className="min-h-0 overflow-y-auto">
+          <TaskStageRail
+            tab={tab}
+            spec={spec}
+            issueCount={(key) => tabIssues(key).length}
+            onSelect={selectTab}
+          />
+        </div>
+        <div className="min-h-0 min-w-0 overflow-y-auto px-5 py-4">
           {tab === "match" && (
             <div className="space-y-3">
               <SectionIntro
@@ -320,14 +330,27 @@ export function TaskEditorDrawer({
             <div className="space-y-3">
               <SectionIntro
                 title="判定"
-                body="投递的响应 → 结论（第 6 步）。有序、首命中即停；分类码会进死信，也是判断「能否改报文重投」的依据。"
+                body="投递的响应 → 结论（第 6 步）。语句从上往下执行、首个命中即停；if 多分支、switch 按字段分流，分支体里还能再放语句。分类码会进死信，也是判断「能否改报文重投」的依据。"
               />
-              <OutcomeEditor
-                outcomes={spec.outcomes ?? []}
-                onChange={(outcomes) => patch({ outcomes })}
-                pathPrefix="outcomes"
+              {(spec.rules ?? []).length === 0 && (spec.outcomes ?? []).length > 0 && (
+                <div className="rounded-lg bg-info-soft px-3 py-2 text-[11.5px] leading-relaxed text-info">
+                  这个任务还是旧的扁平规则，已按语句树展示：每条规则 = 一个单分支的{" "}
+                  <code className="font-mono">if</code>，末尾那条「失败 · UNCLASSIFIED」是执行器原来就有的隐式兜底
+                  —— 现在显式写出来，判定结果不变。第一次修改会存成语句树（
+                  <code className="font-mono">spec.rules</code>），旧字段不再写回。
+                </div>
+              )}
+              <RuleBlockEditor
+                rules={rulesForEditing(spec)}
+                onChange={(rules) => patch({ rules, outcomes: undefined })}
+                path="rules"
                 issues={byPath}
               />
+              <p className="text-[10.5px] leading-relaxed text-muted">
+                每个块的最后一条语句必须「必然给出结论」（结论 / 带否则的 if / 带 default 的 switch）：
+                没被任何语句命中的响应会按 <code className="font-mono">UNCLASSIFIED</code> 致命处理，不能静默成功。
+                <span className="ml-1 text-ink-soft">Alt+↑/↓ 移动语句 —— 顺序就是优先级。</span>
+              </p>
             </div>
           )}
 

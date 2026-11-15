@@ -117,7 +117,7 @@ impl SynOverviewSvc {
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        let codes: HashMap<i64, String> = if task_ids.is_empty() {
+        let names: HashMap<i64, String> = if task_ids.is_empty() {
             HashMap::new()
         } else {
             SynTaskDao::list_by_condition::<_, TaskModel>(
@@ -127,14 +127,14 @@ impl SynOverviewSvc {
             )
             .await?
             .into_iter()
-            .map(|m| (m.id, m.code))
+            .map(|m| (m.id, m.name))
             .collect()
         };
         let top_failures = pairs
             .into_iter()
             .map(|(code, task_id, count)| SynOverviewFailureVo {
                 code,
-                task_code: codes.get(&task_id).cloned().unwrap_or_default(),
+                task_name: names.get(&task_id).cloned().unwrap_or_default(),
                 count,
             })
             .collect();

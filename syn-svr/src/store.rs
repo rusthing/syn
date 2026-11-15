@@ -1,16 +1,17 @@
 //! # 任务快照
 //!
-//! 配置读进内存后**只读**，按 `topic` 建索引、按 `priority` 排序，匹配时线性扫一个小列表。
+//! 配置读进内存后**只读**，按 `topic` 建索引、按 `sort_order` 排序，匹配时线性扫一个小列表。
 //! 一个 topic 下通常只有个位数任务，线性扫比建 map 更快也更简单。
 //!
 //! ## 为什么列为准
 //!
-//! `topic` / `priority` / `enabled` / `exclusive` 既是列、也在 `spec` 里。加载时以
+//! `topic` / `sort_order` / `enabled` / `exclusive` 既是列、也在 `spec` 里。加载时以
 //! **列**为准，`spec` 里的同名字段被覆盖并记一条 warn —— 两份数据不一致时，行为不能
 //! 取决于读取顺序。写入口（`SynTaskSvc`）保证两者一致，这里只是兜底。
 //!
-//! `syn_task.id` 是 idworker 生成的 INT8 主键，对外指代任务用 `code`
-//! （`TaskSpec::id` 装的就是 `code`）：日志、配置、排障都不该出现一个雪花 ID。
+//! 任务的身份是 `syn_task.id`（idworker 生成的 INT8）。`TaskSpec.id` / `name` 是
+//! **运行态字段**，不写进 `spec`：加载时从列注入，执行器与日志直接用，省掉
+//! 「按编码反查 ID」那次查询。
 //!
 //! ## 为什么用刷新信号，不再轮询
 //!
@@ -56,53 +57,52 @@ pub async fn reload() -> anyhow::Result<usize> {
     let db = get_db_conn()?;
     let rows = SynTaskDao::list_by_condition::<_, TaskModel>(
         sea_orm::Condition::all(),
-        &Some("priority:asc,id:asc".to_string()),
+        &Some("sort_order:asc,id:asc".to_string()),
         db.as_ref(),
     )
     .await?;
 
     let mut tasks = Vec::with_capacity(rows.len());
     for row in rows {
-        let code = row.code.clone();
+        let name = row.name.clone();
         let mut task: TaskSpec = match serde_json::from_value(row.spec.clone()) {
             Ok(t) => t,
             Err(e) => {
-                warn!("任务 {code} 配置反序列化失败，已跳过: {e}");
+                warn!("任务 {name} 配置反序列化失败，已跳过: {e}");
                 continue;
             }
         };
-        if task.id != row.code
-            || task.topic != row.topic
-            || task.priority != row.priority
+        if task.topic != row.topic
+            || task.sort_order != row.sort_order
             || task.enabled != row.enabled
             || task.exclusive != row.exclusive
         {
             warn!(
-                "任务 {code} 的 spec 与列不一致（spec: {}/{}/{}/{}/{}，列: {}/{}/{}/{}/{}），以列为准",
-                task.id,
+                "任务 {name} 的 spec 与列不一致（spec: {}/{}/{}/{}，列: {}/{}/{}/{}），以列为准",
                 task.topic,
-                task.priority,
+                task.sort_order,
                 task.enabled,
                 task.exclusive,
-                row.code,
                 row.topic,
-                row.priority,
+                row.sort_order,
                 row.enabled,
                 row.exclusive
             );
-            task.id = row.code;
             task.topic = row.topic;
-            task.priority = row.priority;
+            task.sort_order = row.sort_order;
             task.enabled = row.enabled;
             task.exclusive = row.exclusive;
         }
+        // 身份与名字始终取列：spec 里没有这两项
+        task.id = row.id;
+        task.name = name.clone();
         if let Err(issues) = task.validate() {
             let detail = issues
                 .iter()
                 .map(|i| i.to_string())
                 .collect::<Vec<_>>()
                 .join("; ");
-            warn!("任务 {code} 配置不合法，已跳过: {detail}");
+            warn!("任务 {name} 配置不合法，已跳过: {detail}");
             continue;
         }
         tasks.push(task);

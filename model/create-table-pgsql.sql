@@ -9,10 +9,9 @@
 /*==============================================================*/
 create table syn_task (
    id                   INT8                 not null,
-   code                 VARCHAR(64)          not null,
    name                 VARCHAR(100)         not null,
    topic                VARCHAR(255)         not null,
-   priority             INT4                 not null default 100,
+   sort_order           INT4                 not null default 100,
    enabled              BOOL                 not null default true,
    exclusive            BOOL                 not null default true,
    spec                 JSONB                not null,
@@ -22,8 +21,7 @@ create table syn_task (
    create_ms            INT8                 not null,
    updater_id           INT8                 not null,
    update_ms            INT8                 not null,
-   constraint PK_SYN_TASK primary key (id),
-   constraint AK_CODE_SYN_TASK unique (code)
+   constraint PK_SYN_TASK primary key (id)
 );
 
 comment on table syn_task is
@@ -33,14 +31,9 @@ comment on column syn_task.id is
 'ID
 由 idworker 生成，全局唯一';
 
-comment on column syn_task.code is
-'任务编码
-人写可读的稳定标识，配置、日志、排障都用它指代一条任务；接口按它查询
-@len 1..=64';
-
 comment on column syn_task.name is
 '名称
-给人看的名字，列表页展示
+给人看的名字，列表页、投递记录与日志都按它指代任务
 @len 1..=100';
 
 comment on column syn_task.topic is
@@ -48,9 +41,9 @@ comment on column syn_task.topic is
 push 入口是 Kafka 的 topic；poll 入口是虚拟 topic（source:{数据源编码}）
 @len 1..=255';
 
-comment on column syn_task.priority is
-'匹配优先级
-升序匹配，同 topic 下按优先级逐个试；数字小的先试
+comment on column syn_task.sort_order is
+'排序值
+同一主题内升序，越小越靠前；匹配与列表都按 (sort_order, id) 升序
 @range 0..=9999';
 
 comment on column syn_task.enabled is
@@ -64,7 +57,7 @@ false 表示这条记录还要继续喂给后面的任务（一分多）';
 comment on column syn_task.spec is
 '五段规则（match / mapping / actions / guards / outcomes）
 嵌套结构，整体被执行器消费，没有任何一列参与检索，所以按 JSONB 存
-topic / priority / enabled / exclusive 以本表的列为准，spec 里的同名字段只是导入来源';
+topic / sort_order / enabled / exclusive 以本表的列为准，spec 里的同名字段只是导入来源';
 
 comment on column syn_task.version is
 '配置版本号

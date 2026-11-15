@@ -14,7 +14,7 @@
  * 2. **U64 不转 number**。雪花 ID 有 19 位，超过 `Number.MAX_SAFE_INTEGER`；只有
  *    用来算数/画图的值（`total` / `hour_ms` / 计数）才 `Number(...)`。
  * 3. **写请求按 DTO 的 camelCase 发**，查询参数也一样（后端 QueryDto 带
- *    `#[serde(rename_all = "camelCase")]`），别把前端实体的 `task_code` 直接塞进 query。
+ *    `#[serde(rename_all = "camelCase")]`），别把前端实体的 `task_name` 直接塞进 query。
  *
  * 路径见 `doc/syn-开发规范.md` §7；所有接口都已在 `syn-svr` 落地，404 只可能是
  * 网关前缀没配对，由 `ApiError.isMissing` 给出明确提示。
@@ -56,10 +56,9 @@ interface WirePage<T> {
 
 interface WireTask {
   id: string;
-  code: string;
   name: string;
   topic: string;
-  priority: number;
+  sortOrder: number;
   enabled: boolean;
   exclusive: boolean;
   version: number;
@@ -150,7 +149,7 @@ interface WirePull {
 
 interface WireDelivery {
   id: string;
-  taskCode: string;
+  taskName: string;
   topic?: string | null;
   op?: string | null;
   verdict: Verdict;
@@ -165,7 +164,7 @@ interface WireDelivery {
 
 interface WireIdem {
   id: string;
-  taskCode: string;
+  taskName: string;
   idemKey: string;
   /** `SyncVerdict` 是 `#[dic]`：0=success 1=skip 2=fatal 3=retriable */
   verdict: number;
@@ -183,7 +182,7 @@ interface WireHour {
 
 interface WireFailure {
   code: string;
-  taskCode: string;
+  taskName: string;
   count: number;
 }
 
@@ -226,15 +225,14 @@ const ZERO_STATS: TaskStats = {
 };
 
 function toTask(v: WireTask): SyncTask {
-  // 库里以 code 列为准：老配置的 spec 可能没写 id，加载时补齐，
-  // 否则编辑器会把它当成「还没起名的任务」，保存时触发「编码不可修改」。
-  const spec: TaskSpec = { ...(v.spec ?? ({} as TaskSpec)), id: v.spec?.id || v.code };
+  // 身份只有主键 id：老配置 spec 里残留的 id / priority 已经不再读，
+  // 排序列一律以 VO 的 sortOrder 为准（加载时后端已按列覆盖 spec）。
+  const spec: TaskSpec = { ...(v.spec ?? ({} as TaskSpec)), sort_order: v.sortOrder };
   return {
     id: v.id,
-    code: v.code,
     name: v.name,
     topic: v.topic,
-    priority: v.priority,
+    sort_order: v.sortOrder,
     enabled: v.enabled,
     version: v.version,
     spec,
@@ -352,7 +350,7 @@ function toSourceSaveBody(input: SourceSaveInput) {
 function toDelivery(v: WireDelivery): Delivery {
   return {
     id: v.id,
-    task_code: v.taskCode,
+    task_name: v.taskName,
     topic: v.topic ?? "",
     op: (v.op ?? null) as Op | null,
     verdict: v.verdict,
@@ -369,7 +367,7 @@ function toDelivery(v: WireDelivery): Delivery {
 function toIdem(v: WireIdem): IdemRecord {
   return {
     id: v.id,
-    task_code: v.taskCode,
+    task_name: v.taskName,
     idem_key: v.idemKey,
     // 一个 (task_id, idem_key) 只有一行，表里没有命中次数字段；
     // 重投命中刷新 update_ms，不会插第二行。
@@ -401,7 +399,7 @@ function toOverview(v: WireOverview): Overview {
     })),
     top_failures: (v.topFailures ?? []).map((f) => ({
       code: f.code,
-      task_code: f.taskCode,
+      task_name: f.taskName,
       count: num(f.count),
     })),
   };
@@ -607,7 +605,7 @@ export const liveSources = {
 };
 
 export interface DeliveryQuery {
-  task_code?: string;
+  task_name?: string;
   verdict?: Verdict;
   keyword?: string;
   pageNum?: number;
@@ -620,7 +618,7 @@ export const liveDeliveries = {
       // QueryDto 是 camelCase，前端实体是 snake_case，只有这里需要改名
       query: {
         keyword: query.keyword,
-        taskCode: query.task_code,
+        taskName: query.task_name,
         verdict: query.verdict,
         pageNum: query.pageNum,
         pageSize: query.pageSize,

@@ -1,6 +1,6 @@
 //! # 记录转发
 //!
-//! 一个 topic 下可能有多个任务。按 `priority` 升序找匹配的任务：
+//! 一个 topic 下可能有多个任务。按 `sort_order` 升序找匹配的任务：
 //! 默认命中第一个就停；前面的任务标了 `exclusive: false` 就继续往下找，
 //! 一条记录可以同时同步到多个下游。
 //!
@@ -24,11 +24,10 @@ use syn_api::{SyncVerdict, TaskSpec, Verdict};
 use syn_core::{Execution, Stage};
 use wheel_rs::time_utils::now_ms;
 
-use crate::dao::{SynIdemDao, SynTaskDao};
+use crate::dao::SynIdemDao;
 use crate::db_sink::DbSinks;
 use crate::mo::syn_idem::{ActiveModel as IdemActive, Column as IdemColumn};
 use crate::mo::syn_idem::Model as IdemModel;
-use crate::mo::syn_task::{Column as TaskColumn, Model as TaskModel};
 use crate::store;
 use crate::transport::HttpTransport;
 
@@ -101,7 +100,7 @@ pub async fn handle(topic: &str, record: &Value, idem_key: Option<&str>) -> Sync
         return SyncOutcome::skip("no_task_for_topic", format!("topic {topic} 下没有任务"));
     }
     // 快照加载时已排序，这里再排一次是为了不依赖加载顺序
-    ordered.sort_by_key(|t| t.priority);
+    ordered.sort_by_key(|t| (t.sort_order, t.id));
 
     let mut chosen: Vec<&TaskSpec> = Vec::new();
     for task in ordered {
@@ -150,14 +149,12 @@ pub async fn handle(topic: &str, record: &Value, idem_key: Option<&str>) -> Sync
 
 /// # 查幂等台账
 ///
-/// 台账按 `task_id` 存，配置里用的是 `code`，所以要先反查一次任务 ID。
-/// 查不到任务（配置刚删）时返回 `None`，让本轮照常执行而不是静默吞掉。
+/// 台账按 `task_id` 存，快照里的 `TaskSpec.id` 就是主键，直接查，不再反查。
 async fn cached_execution(task: &TaskSpec, key: &str) -> Option<Execution> {
     let db = robotech::db::get_db_conn().ok()?;
-    let task_id = task_id(&task.id, db.as_ref()).await?;
     let row = SynIdemDao::get_by_condition::<_, IdemModel>(
         Condition::all()
-            .add(IdemColumn::TaskId.eq(task_id))
+            .add(IdemColumn::TaskId.eq(task.id))
             .add(IdemColumn::IdemKey.eq(key)),
         db.as_ref(),
     )
@@ -183,12 +180,9 @@ async fn remember(task: &TaskSpec, key: &str, execution: &Execution) {
     let Ok(db) = robotech::db::get_db_conn() else {
         return;
     };
-    let Some(task_id) = task_id(&task.id, db.as_ref()).await else {
-        return;
-    };
     let now = now_ms() as i64;
     let mut am = IdemActive::default();
-    am.task_id = sea_orm::ActiveValue::Set(task_id);
+    am.task_id = sea_orm::ActiveValue::Set(task.id);
     am.idem_key = sea_orm::ActiveValue::Set(key.to_string());
     am.verdict = sea_orm::ActiveValue::Set(i16::from(SyncVerdict::from(execution.verdict)));
     am.code = sea_orm::ActiveValue::Set(execution.code.clone());
@@ -199,17 +193,6 @@ async fn remember(task: &TaskSpec, key: &str, execution: &Execution) {
     if let Err(e) = SynIdemDao::insert(am, db.as_ref()).await {
         tracing::debug!("幂等台账写入跳过（多半是并发重复）: {e}");
     }
-}
-
-async fn task_id<C: sea_orm::ConnectionTrait>(code: &str, db: &C) -> Option<i64> {
-    SynTaskDao::get_by_condition::<_, TaskModel>(
-        Condition::all().add(TaskColumn::Code.eq(code)),
-        db,
-    )
-    .await
-    .ok()??
-    .id
-    .into()
 }
 
 /// # 汇总多个任务
