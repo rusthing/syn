@@ -228,6 +228,68 @@ assert_eq "删除后清单为空" 0 "$(curl -fsS "$API/syn/datasource/list" | jq
 assert_eq "服务名候选降级为空数组" "200" \
   "$(curl -sS -o /dev/null -w '%{http_code}' "$API/syn/registry/services")"
 
+# ---- 启停真的落库 -----------------------------------------------------------
+# 曾经 `set_enabled` 走「先改 model 字段、再 into_active_model()」：SeaORM 2.0 的
+# into_active_model 带的是 Unchanged，UPDATE 的变更集里根本没有 enabled —— 接口 200、
+# updateMs 变了，开关却纹丝不动。前端看起来就是「停用失效」，而且不报任何错。
+# 这里逐层锁死：响应里的值、再查一次的值、列表筛选的结果，三处都必须是新的。
+say "启停：任务与取数来源都要真的写进列"
+task_id=$(curl -fsS "$API/syn/task/list" | jq -r '.extra[0].id')
+src_id=$(curl -fsS "$API/syn/source/list" | jq -r '.extra[0].id')
+assert_eq "任务停用响应" "false" \
+  "$(curl -fsS -X PUT "$API/syn/task/$task_id/enabled" -H 'Content-Type: application/json' \
+     -H 'X-User-Id: 1' --data '{"enabled":false}' | jq -r '.extra.enabled')"
+assert_eq "任务停用后重新查询" "false" \
+  "$(curl -fsS "$API/syn/task/$task_id" | jq -r '.extra.enabled')"
+# spec 与列是同一份事实的两处投影：只写一处会让 store 每次加载都记一条不一致 warn
+assert_eq "任务停用后 spec.enabled 同步" "false" \
+  "$(curl -fsS "$API/syn/task/$task_id" | jq -r '.extra.spec.enabled')"
+assert_eq "停用的任务不再出现在 enabled=true 里" 0 \
+  "$(curl -fsS "$API/syn/task/page?enabled=true" | jq -r '.extra.total')"
+assert_eq "任务重新启用" "true" \
+  "$(curl -fsS -X PUT "$API/syn/task/$task_id/enabled" -H 'Content-Type: application/json' \
+     -H 'X-User-Id: 1' --data '{"enabled":true}' | jq -r '.extra.enabled')"
+assert_eq "重新启用后 page 又能查到" 1 \
+  "$(curl -fsS "$API/syn/task/page?enabled=true" | jq -r '.extra.total')"
+
+curl -fsS -X PUT "$API/syn/source/$src_id/enabled" -H 'Content-Type: application/json' \
+  -H 'X-User-Id: 1' --data '{"enabled":false}' >/dev/null
+assert_eq "来源停用后重新查询" "false" \
+  "$(curl -fsS "$API/syn/source/$src_id" | jq -r '.extra.enabled')"
+assert_eq "来源重新启用" "true" \
+  "$(curl -fsS -X PUT "$API/syn/source/$src_id/enabled" -H 'Content-Type: application/json' \
+     -H 'X-User-Id: 1' --data '{"enabled":true}' | jq -r '.extra.enabled')"
+
+# ---- 数据源连接测试 ---------------------------------------------------------
+# 测试失败不是接口错误：200 + `ok:false` + 一句人话，界面才能把它写进状态栏。
+# 两条安全契约：响应里不许出现连接串 / 密码；`Configuration` 类的 sqlx 报错
+# 自带连接串，所以失败原因必须是我们自己拼的措辞。
+say "数据源连接测试：连得上 / 连不上都走 200"
+ds_test() { # body
+  curl -sS -o "${TMPDIR:-/tmp}/syn-it-ds-test.json" -w '%{http_code}' \
+    -X POST "$API/syn/datasource/test" -H 'Content-Type: application/json' \
+    -H 'X-User-Id: 1' --data "$1"
+}
+assert_eq "连得上 HTTP" 200 "$(ds_test '{"url":"postgresql://postgres:postgres@localhost:5432/syn_it_src"}')"
+assert_eq "连得上 ok" "true" "$(jq -r '.extra.ok' "${TMPDIR:-/tmp}/syn-it-ds-test.json")"
+assert_eq "连得上带回服务端版本" "true" \
+  "$(jq -r '(.extra.server | type) == "string"' "${TMPDIR:-/tmp}/syn-it-ds-test.json")"
+assert_eq "测试响应不含密码" "true" \
+  "$(jq -r 'if (tostring | test("postgres:postgres")) then "false" else "true" end' \
+     "${TMPDIR:-/tmp}/syn-it-ds-test.json")"
+assert_eq "连不上 HTTP（仍是 200）" 200 "$(ds_test '{"url":"postgresql://postgres:postgres@127.0.0.1:1/nope"}')"
+assert_eq "连不上 ok=false" "false" "$(jq -r '.extra.ok' "${TMPDIR:-/tmp}/syn-it-ds-test.json")"
+assert_eq "连不上的原因不含连接串" "true" \
+  "$(jq -r 'if (.extra.message | test("postgres:postgres")) then "false" else "true" end' \
+     "${TMPDIR:-/tmp}/syn-it-ds-test.json")"
+# 按 id 测：库里那条已存的连接串（编辑时不必为重测再输一遍密码）
+ds2=$(curl -fsS -X POST "$API/syn/datasource" -H 'Content-Type: application/json' -H 'X-User-Id: 1' \
+  --data '{"code":"it_ds_test","name":"联调测试用","url":"postgresql://postgres:postgres@localhost:5432/syn_it_src","maxConnections":2,"enabled":true}')
+ds2_id=$(printf '%s' "$ds2" | jq -r '.extra.id')
+assert_eq "按 id 测：HTTP" 200 "$(ds_test "{\"id\":\"$ds2_id\"}")"
+assert_eq "按 id 测已存的连接串" "true" "$(jq -r '.extra.ok' "${TMPDIR:-/tmp}/syn-it-ds-test.json")"
+curl -fsS -X DELETE "$API/syn/datasource/$ds2_id" -H 'X-User-Id: 1' >/dev/null
+
 # ---- 画布布局 ---------------------------------------------------------------
 # 拓扑页的坐标独存于 syn_canvas_layout：节点来自三张业务表，这里只存 x/y。
 # 契约有三条：读全量；保存是按 (node_type, node_key) 的 upsert（两个人摆位不互抹）；

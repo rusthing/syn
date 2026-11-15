@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Maximize2, Minus, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { CanvasNodePos } from "@/lib/api/types";
+import type { CanvasNodePos, DatasourceTestResult } from "@/lib/api/types";
 import { nodeId, type GraphNode, type TaskStage, type TopologyGraph } from "./graph";
 import {
   EntityCard,
@@ -63,12 +63,21 @@ interface Props {
   onSelect: (id: string | null) => void;
   /** 拖动结束（松手）才回调，避免每帧都写库 */
   onMove: (id: string, pos: { x: number; y: number }) => void;
+  /** 任务卡某一段：只切右侧属性栏，不开窗体 */
   onOpenStage: (node: GraphNode, stage: TaskStage) => void;
+  /** 操作行最左的「编辑」：开窗体 */
   onOpenEntity: (node: GraphNode) => void;
-  /** 任务卡右上角的启用开关：走 tasks.toggle 接口 */
+  onDeleteEntity: (node: GraphNode) => void;
+  onTryTask: (node: GraphNode) => void;
+  /** 卡片右上角的启用开关：任务走 tasks.toggle，来源/数据源走各自的 set_enabled */
   onToggleTask: (node: GraphNode, next: boolean) => void;
   /** 连线落点处的独占开关：改 spec.exclusive 保存 */
   onToggleExclusive: (node: GraphNode) => void;
+  onToggleEntity: (node: GraphNode, next: boolean) => void;
+  /** 数据源卡片的「测试连接」：测库里已存的那条 */
+  onTestDatasource: (node: GraphNode) => void;
+  /** 各数据源最近一次的测试结果，卡片状态栏显示 */
+  testResults?: Record<string, DatasourceTestResult>;
   /**
    * 正在进行的开关请求，键是 `${node.id}:${action}`。启用与独占各占一键，
    * 一个在途时不会把另一个也点不了；只给视觉提示，不禁用任何按钮。
@@ -84,8 +93,13 @@ export function TopologyCanvas({
   onMove,
   onOpenStage,
   onOpenEntity,
+  onDeleteEntity,
+  onTryTask,
   onToggleTask,
   onToggleExclusive,
+  onToggleEntity,
+  onTestDatasource,
+  testResults,
   pendingKeys,
 }: Props) {
   const boxRef = useRef<HTMLDivElement>(null);
@@ -459,6 +473,12 @@ export function TopologyCanvas({
                       onSelect(node.id);
                       onOpenStage(node, stage);
                     }}
+                    onEdit={() => {
+                      onSelect(node.id);
+                      onOpenEntity(node);
+                    }}
+                    onTry={() => onTryTask(node)}
+                    onDelete={() => onDeleteEntity(node)}
                     // 开关点下去也把卡片选中：右侧属性栏跟着切到这张卡
                     onToggleEnabled={(next) => {
                       onSelect(node.id);
@@ -477,7 +497,32 @@ export function TopologyCanvas({
             }
             return (
               <div {...common}>
-                <EntityCard node={node} selected={node.id === selectedId} />
+                <EntityCard
+                  node={node}
+                  selected={node.id === selectedId}
+                  onEdit={() => {
+                    onSelect(node.id);
+                    onOpenEntity(node);
+                  }}
+                  onDelete={() => onDeleteEntity(node)}
+                  onToggleEnabled={(next) => {
+                    onSelect(node.id);
+                    onToggleEntity(node, next);
+                  }}
+                  // 只有数据源能测：来源连的是 Kafka/业务源，测它没有统一动作
+                  onTest={
+                    node.kind === "datasource"
+                      ? () => {
+                          onSelect(node.id);
+                          onTestDatasource(node);
+                        }
+                      : undefined
+                  }
+                  test={testResults?.[node.id]}
+                  testBusy={pendingKeys?.has(`${node.id}:test`)}
+                  enabledBusy={pendingKeys?.has(`${node.id}:enabled`)}
+                  onHint={showHint}
+                />
               </div>
             );
           })}

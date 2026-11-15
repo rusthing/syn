@@ -12,7 +12,6 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { ConfirmDialog, Modal } from "@/components/ui/Drawer";
 import { Field, Input, Select, Textarea } from "@/components/ui/Field";
-import { Switch } from "@/components/ui/Switch";
 import { useToast } from "@/components/ui/Toast";
 import type { SourceSaveInput, SourceSpec, SyncSource } from "@/lib/api/types";
 import { sourceIssue, validateSource } from "@/lib/spec/validate-source";
@@ -196,13 +195,6 @@ export function SourceEditorDrawer({
           <Field label="备注" error={err("remark")}>
             <Input value={draft.remark ?? ""} placeholder="选填" onChange={(e) => patch({ remark: e.target.value })} />
           </Field>
-          <div className="flex items-center justify-between rounded-lg border border-line/70 px-3 py-2">
-            <div>
-              <p className="text-[12.5px] font-medium text-ink">启用</p>
-              <p className="text-[11px] text-muted">停用不删游标，重新启用从原水位继续</p>
-            </div>
-            <Switch checked={draft.enabled} label="启用来源" onChange={(enabled) => patch({ enabled })} />
-          </div>
         </section>
 
         <section className="space-y-3 border-t border-line/70 pt-4">

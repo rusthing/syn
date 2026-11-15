@@ -5,6 +5,7 @@
 //!
 //! `url` 是唯一「表里有、DTO 里可选」的字段：新增必填，修改留空/None 表示保持原连接串。
 
+use robotech::api::U64;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use validator::Validate;
@@ -41,6 +42,22 @@ pub struct SynDatasourceSaveDto {
 pub struct SynDatasourceEnabledDto {
     /// 是否启用
     pub enabled: bool,
+}
+
+/// # 测试数据源连接
+///
+/// 两种用法，按「有没有给新连接串」区分：
+/// - 带 `url`：测这条还没保存的草稿（新增时先验证一下能不能连）；
+/// - 只带 `id`：测库里已经存着的那条（编辑时不想为了测试重输密码）。
+///
+/// 连接串**只进不出**：响应里没有它，失败原因也只回服务端的原话或分类描述。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SynDatasourceTestDto {
+    /// 已保存的数据源 ID；不带 `url` 时用它取连接串
+    pub id: Option<U64>,
+    /// 草稿连接串；非空时优先用它
+    pub url: Option<String>,
 }
 
 /// # 数据源列表查询

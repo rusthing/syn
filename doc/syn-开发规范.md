@@ -458,6 +458,38 @@ pub async fn sync(Path(topic): Path<String>, headers: HeaderMap, body: Bytes) ->
 
 注意 `sync` 返回的是 `Response`（见 §7.2 的例外），它用 HTTP 状态码表达结论，不能套 `Ro`。
 
+### 6.3 局部更新：逐列 `ActiveValue::Set`，不靠改 model
+
+`Model::into_active_model()` 给每一列生成的是 **`ActiveValue::Unchanged`**，而 SeaORM 的
+UPDATE 只把变更集里的列写进 `SET`。所以下面这种「先改 model 字段、再转 active」的写法
+**一列都不会更新**：
+
+```rust
+// 错：接口 200、update_ms 变了、enabled 纹丝不动
+let mut model = SynTaskDao::get_by_id::<_, Model>(id, db.as_ref()).await?;
+model.enabled = dto.enabled;
+let am = model.into_active_model();
+SynTaskDao::update(am, db.as_ref()).await?;
+```
+
+正确写法是把要写的列逐列标 `Set`，其余列保持 `Unchanged`（这样并发写不会互相覆盖）：
+
+```rust
+let mut am = model.into_active_model();
+am.enabled = sea_orm::ActiveValue::Set(dto.enabled);
+am.spec = sea_orm::ActiveValue::Set(spec);
+am.updater_id = sea_orm::ActiveValue::Set(user.value() as i64);
+am.update_ms = sea_orm::ActiveValue::Set(now_ms() as i64);
+SynTaskDao::update(am, db.as_ref()).await?;
+```
+
+这个坑**从日志和响应都看不出来**（200 + `updateMs` 前进），只有把行读回来才发现值没变。
+所以凡是「只改一两列」的接口（`set_enabled` 这类），e2e 必须补三条断言：
+响应里的值 → 再查一次的值 → 依赖它的筛选/视图是否跟着变。
+
+另外，**投影列要和源头一起写**：`syn_task.spec.enabled` 与 `syn_task.enabled` 是同一份
+事实的两处投影，只写一处会让 `store::reload` 每次加载都记一条不一致 warn。
+
 ---
 
 ## 7. 接口规约
@@ -483,6 +515,7 @@ pub async fn sync(Path(topic): Path<String>, headers: HeaderMap, body: Bytes) ->
 - VO 一律 `camelCase`（`create_ms` → `createMs`），`U64` 一律字符串，`#[dic]` 字典枚举一律整数。唯一的例外是 `spec` 这类 JSONB 列：原样透传，键名以配置文件为准，不要替它改名。
 - 错误统一 `CtrlError`：`Runtime` → 500、`Validation(s)` → 400、`Io` → 500、`Svc` → 按 `SvcError` 分类。
 - **例外**：需要让调用方按状态码决策的接口（`POST /syn/sync/{topic}`，2xx 提交 offset / 4xx 进 DLQ / 503 交还重试），直接返回 `(StatusCode, Json<..>)`，不要套 `Ro` 把语义压成 200。`POST /syn/task/reload` 不属于这一类：它是控制台动作，走 `Ro<u64>`，`extra` 是生效任务数。
+- **反过来的例外**：`POST /syn/datasource/test` 连不上也返回 `200` + `Ro{ extra: { ok:false, message } }`。测试结果是「配置对不对」的业务结论，不是「这次请求成不成立」；用 4xx/5xx 会让界面分不清「连接串写错」和「服务挂了」。
 
 ### 7.3 请求头
 
@@ -670,7 +703,7 @@ feat(syn): 五段规则与记录转发
 | `AppConfig` + `bootstrap!` + `db_migrate!` + **`build.rs`** | ✅ | 运行期资源（配置 / `log.toml` / `migrations`）由 `build.rs` 拷到二进制旁，见 §1.1 |
 | `syn-api/src/mo`（七个实体） | ✅ | 与 PDM 逐列对齐，`store.rs` 已改走 `dao` |
 | `dto` / `vo` / `dic`（`SyncVerdict`、`SourceKind`） | ✅ | 全部手写，理由见 §6.2；字典列是 `INT2` + `@enum` |
-| `dao` / `svc` / `ctrl` / `router` / `api_doc` 五件套 | ✅ | 五个资源共 7+8+1+1+1 个手写接口，`api_doc` 逐个列全 |
+| `dao` / `svc` / `ctrl` / `router` / `api_doc` 五件套 | ✅ | 五个资源共 7+8+1+1+1+1 个手写接口（数据源多一个 `POST /syn/datasource/test`），`api_doc` 逐个列全 |
 | `POST /syn/source/{id}/pull`（poll 入口，`kind=sql`） | ✅ | 复合游标 + 5 秒重叠窗口 + 批量 + `wrap`；jobx 与运维按钮共用一条实现，进程内无调度器，见 §11.7 |
 | poll 的 `kind=http` 全量分页取数 | ✅ | 一轮推一页，空页/无 next 即收尾，翻到底写 `{"http":{"done":true}}`、此后调度跳过；`pull?reset=true` 重跑。页模式与 token 模式都验过，见 §15.8 |
 | `syn_idem` 记账 / `target.kind: db` 直写 | ✅ | `X-Idempotency-Key` 只记终态；DB sink 有 `information_schema` 列白名单，见 §11.9 / §11.10 |
@@ -678,10 +711,10 @@ feat(syn): 五段规则与记录转发
 | `syn-web` 的 `lib/spec`（五段本地预演） | ✅ | `syn-core` 的 TS 同构实现，含 JSONPath / 变换 / WKB→WKT / 判定 |
 | `syn-web` 的实时模式适配层 | ✅ | `live.ts` 统一处理 `Ro.extra` / `PageRx` / camelCase VO / `U64` 字符串 / 字典整数；`live.test.ts` 16 个 wire 契约用例 + `validate-source.test.ts` 7 个校验用例 |
 | 来源的新增 / 编辑 / 删除入口 | ✅ | 后端五件套齐全（`code` 不可改）；前端 `SourceEditorDrawer` + `lib/spec/validate-source.ts` 本地预校验，错误定位到字段 |
-| 数据源管理（`syn_datasource` 表 + 七个接口） | ✅ | 控制台可增删改（连接串 / 池上限 / 启停 / 备注）；明文只写不回显，读接口一律脱敏；改完发 `refresh.syn.datasource` 让各副本重建连接池；`[syn.datasources.*]` 降级为兜底，见 §11 第 13 条 |
+| 数据源管理（`syn_datasource` 表 + 八个接口） | ✅ | 控制台可增删改（连接串 / 池上限 / 启停 / 备注）；明文只写不回显，读接口一律脱敏；改完发 `refresh.syn.datasource` 让各副本重建连接池；`[syn.datasources.*]` 降级为兜底，见 §11 第 13 条。第八个接口是 `POST /syn/datasource/test`（传 `url` 或 `id`），失败也走 200，见 §14.7 第 7 条 |
 | `GET /syn/registry/services`（http 目标服务名候选） | ✅ | 走 `robotech::micro_svc::list_services`（Consul 取 `/v1/catalog/services`，etcd/nacos 默认返回空）；**失败降级为空数组不报错**，表单手输照常能存，见 §14.2 |
-| 控制面板（原「同步拓扑」，`GET/PUT /syn/canvas/layout` + `syn_canvas_layout`） | ✅ | 图不落库：节点来自三张业务表、连线来自引用，坐标独存一张表；保存是按 `(node_type, node_key)` 的 upsert（多人摆位不互抹）；投递是任务卡第六段画在卡内，不单独建节点；右侧属性栏单击即显，新增/编辑用居中窗体，见 §14.7 |
-| 真库端到端联调（migration → 源库查数 → db sink → 幂等命中 → 判定语句树 → pull 返回） | ✅ | `tests/e2e/run.sh` 一键跑 75 条断言，覆盖三库、控制台五接口、前端 wire 契约与 `switch` 内嵌 `if` 的两层判定（老 `outcomes` 与新 `rules` 各跑一遍）；见 §15.1–§15.4。联调中还修掉了总览小时桶的 off-by-one（§11 第 12 条） |
+| 控制面板（原「同步拓扑」，`GET/PUT /syn/canvas/layout` + `syn_canvas_layout`） | ✅ | 图不落库：节点来自三张业务表、连线来自引用，坐标独存一张表；保存是按 `(node_type, node_key)` 的 upsert（多人摆位不互抹）；卡片骨架照 dbz 控制面板（右上角启停、下面状态栏、最下操作行），属性栏与窗体里不放操作；投递是任务卡第六段画在卡内，不单独建节点，点段只在属性栏看详情，见 §14.7 |
+| 真库端到端联调（migration → 源库查数 → db sink → 幂等命中 → 判定语句树 → pull 返回） | ✅ | `tests/e2e/run.sh` 一键跑 92 条断言，覆盖三库、控制台五接口、前端 wire 契约、`switch` 内嵌 `if` 的两层判定（老 `outcomes` 与新 `rules` 各跑一遍）、启停落库与数据源连接测试；见 §15.1–§15.4。联调中还修掉了总览小时桶的 off-by-one（§11 第 12 条） |
 | 部署形态联调（consul 配置中心 + 业务库隔离表） | ✅ | `tests/env/run.sh` 一次跑 50 条断言，验的是「不加 `-c`、走默认 `syn-svr.toml` + consul KV 覆盖」这条路；见 §15.5 |
 | jobx 计划任务自动注册（取数心跳） | ✅ | 首次启动注册 `executor-code=syn.pull`，撞唯一键只确认分组；实测 6 个批次共 297 拍、0 失败，见 §15.7 |
 | 多副本游标乐观锁（CAS） | ✅ | `tests/env/concurrent-pull.sh` 起两副本抢同一批 300 行：水位只涨一轮、败方 `position` 为空且有 warn、重复投递由下游 upsert 吸收；见 §15.6 |
@@ -755,9 +788,13 @@ syn-web/
    `spec.rules` 本身缺兜底属于配置错误，界面不替用户补。
 
 「投递」是第 6 步而不是基本页的一部分：它是判定之后唯一的出口，与前五段是「同一批记录
-的不同出口」，与基本页的元信息（名称、topic、排序值、启停）不是一类东西。
+的不同出口」，与基本页的元信息（名称、topic、排序值）不是一类东西。
 两个下拉都必须是**可手输的候选**（原生 `<input list>`）：注册中心 / 数据源表拿不到清单时
 自动退化成纯输入框，配置要能先于下游上线写好的。
+
+**窗体里没有启用开关**（数据源窗体也一样）。启停只住在卡片的右上角 —— 同一件事给两个
+入口，用户在窗体里关掉、在卡片上又打开，谁也不知道最后哪次生效。窗体的底部状态栏与
+右侧按钮留给这一页真正需要的东西（校验问题、以及数据源窗体的「测试」）。
 
 来源的编辑窗体（`SourceEditorDrawer`）是同一套做法的小号版本：`kind`、`code` / `name` /
 `interval` / `batch` 加上 `spec` 的公共字段，保存前跑 `lib/spec/validate-source.ts`。
@@ -767,6 +804,12 @@ syn-web/
 编辑态下 `code` 只读（后端也拒绝改），别做成可编辑再靠报错兜。
 `datasource` 用 `GET /syn/datasource/list` 的下拉（候选取自 `syn_datasource` 表），
 **不填连接串**（§11 第 13 条）。
+
+数据源窗体（`DatasourceEditorDrawer`）多一个「测试」：把当前输入框里的连接串直接发给
+`POST /syn/datasource/test`（没改过就只发 `id`，用库里已存的那条，免得让人重输密码）。
+结论写进窗体自己的底部状态栏，**优先级是「测试结果 > 校验问题 > 提示」** —— 用户在
+填连接串时最想知道的就是「这个库到底连不连得上」。改连接串会清空上一次结论（旧结论
+对应的是旧字符串，留着就是撒谎），测试中只给 `busy` 视觉、不禁用按钮。
 
 ### 14.3 试跑
 
@@ -832,19 +875,20 @@ cd syn-web && pnpm typecheck && pnpm test && pnpm build
 页面名 / 侧栏名统一叫「控制面板」，**路由 path 仍是 `/topology`**（书签与 `Topbar`
 从 `NAV` 取标题都依赖它，改名不改路径）。布局是「左侧组件栏 88px → 画布 → 右侧属性栏
 292px」，一张图看清「数据从哪来、投到哪去」：数据源 → 取数来源 → 主题 → 任务四列，
-方向即数据流。五条设计决策，改这块之前先读一遍：
+方向即数据流。七条设计决策，改这块之前先读一遍：
 
 1. **图不落库**。节点来自三张业务表、连线来自它们之间的引用（`spec.datasource` /
    `source.topic` / `task.topic`），库里只存节点坐标（`syn_canvas_layout`）。
    所以图永远和配置一致 —— 反过来，**画布上不能改引用关系**：改「来源用哪个数据源」
-   要回表单。单击卡片在右侧属性栏看属性，双击打开居中窗体改配置。
+   要回表单。单击卡片在右侧属性栏看属性，改配置点卡片操作行的「编辑」。
 2. **属性栏只读图节点**（`graph.nodes.find(n => n.id === selectedId)`），不另发请求、
    不另存一份选中实体。点卡片**始终选中**（不是 toggle），点空白才取消 —— 否则连点
-   同一张卡会把属性栏抵消掉。任务节点额外给一个原尺寸启用开关（画布缩到 45% 时
-   卡上那个只有 8px 出头）和六段直达入口；主题是虚拟节点，不给编辑按钮。
+   同一张卡会把属性栏抵消掉。**属性栏里没有任何操作**：没有启用开关、没有「编辑配置」。
+   任务卡点某一段（匹配 / 映射 / 判定 / 动作 / 投递 …）只把属性栏换成那一段的只读详情，
+   **不弹窗体**；要改配置走卡片操作行的「编辑」。
 3. **投递是任务卡的第六段，不单独建节点**。画到卡外会连出「一个任务分支到一个服务」
    的假关系；多个任务投同一个服务时还会交叉连线，还把投递目标误当成共享实体。
-   任务卡只有一种形态 600×140 恒展开：六段并排（段名 + 概要），点某段直达窗体对应页签。
+   任务卡六段并排（段名 + 概要），点某段是「看」（属性栏），不是「改」（窗体）。
 4. **开关请求期间不禁用按钮**。原生 `disabled` 的 button 连 `click` 都不派发，
    请求稍慢就会被当成「点了没用」；`busy` 只加 `aria-busy` 与描边。在途状态按
    `${node.id}:${action}` 分键（`enabled` / `exclusive`），两个开关互不置灰。
@@ -856,8 +900,28 @@ cd syn-web && pnpm typecheck && pnpm test && pnpm build
    卡片拖拽不粘），松手才写库；按下不动抬手才算点击，移动过就是拖拽。
    滚轮缩放必须用原生非被动监听（React 的 `onWheel` 是 passive 的，`preventDefault()`
    不生效，整页会跟着滚）；`services: []`（注册中心没拿到）不判「未登记」。
+6. **卡片骨架照 dbz 控制面板定死，四类卡同序**：
 
-后端只有两个接口：`GET /syn/canvas/layout`（全量）、`PUT /syn/canvas/layout`
+   ```
+   类型标识                              [Switch]   ← 启用/停用钉右上角
+   名称  ⚠（点开看问题）
+   副标题（mono）
+   ── 状态栏：状态标签 · 计数 · 测试结果 ──         ← 第二行
+   ── 操作行：编辑 …… 测试 │ 删除 ──                ← 最下面
+   ```
+
+   **操作只住在卡片上**：启用/停用在右上角，编辑在操作行最左，测试与其它动作靠右，
+   删除隔一道分隔线放最右。添加/编辑窗体与属性栏里**一律不放操作**（尤其不放启用开关）
+   —— 同一件事两个入口，用户在 A 处关掉、在 B 处又打开，谁也不知道最后哪次生效。
+   数据源多一个「测试连接」，结果写字数最紧的状态栏（`连通 12ms` / `测试失败`），
+   悬停或选中后在属性栏看完整结论（服务端版本、耗时、失败原因）。
+7. **连接测试不是接口错误**。`POST /syn/datasource/test` 连不上也返回 `200` +
+   `ok: false` + `message`，让状态栏自己描述结论；用 4xx/5xx 会把「配置错」和
+   「服务坏了」混成一种。测试走一次性连接（`max_connections(1)` + `acquire_timeout`），
+   **不碰进程级池缓存**；`sqlx` 的 `Error::Configuration` 的 `Display` 会把连接串
+   （含密码）原样带出，所以失败文案按错误分支给固定措辞，不透传 `e.to_string()`。
+
+后端只有两个画布接口：`GET /syn/canvas/layout`（全量）、`PUT /syn/canvas/layout`
 （按 `(node_type, node_key)` upsert，校验契约在列注释：`@len 128`、`@range 0..20000`）。
 不做删除接口：节点删了残行由画布忽略，`mergePositions` 会丢掉孤儿坐标。
 
@@ -921,6 +985,13 @@ warn。端口 19007（单进程联调，显式写死好让脚本连），jobx �
    下游。另有一条负向断言：块尾给不出必然结论的 `rules` 必须当场 400，理由指向
    「必然给出结论」，且不落库 —— 强制兜底是契约，不能存进库等运行时变成
    `UNCLASSIFIED`。
+9. **启停真的落库**（§6.3 那个坑的回归网）：`PUT .../enabled` 的响应值 → 再查一次的
+   值 → `spec.enabled` 是否同步 → `page?enabled=true` 是否筛掉 → 改回来又出现。
+   任务与取数来源各一遍。只断言响应是**不够的**，那一步原本就是绿的。
+10. **数据源连接测试**：连得上 `200` + `ok:true` + `server` 是字符串；连不上**仍是**
+    `200` + `ok:false`，且两份响应的 JSON 全文都不含 `postgres:postgres`
+   （连 `Configuration` 类错误的连接串泄露都锁住）；再按 `id` 测库里已存的连接串
+   （编辑时不必为重测重新输密码）。
 
 ### 15.3 联调暴露过的坑
 
@@ -940,6 +1011,12 @@ warn。端口 19007（单进程联调，显式写死好让脚本连），jobx �
 - **来源的 `code` 是地址，不是标签**：虚拟 topic `source:{code}` 与游标都按它指代，
   改名会让水位与投递记录找不到主人。所以 `update` 里 `code` 变了直接 400，改
   `name` / `interval` / `batch` 不动水位 —— 这两条 §15 的脚本都断言了。
+- **启停「不生效」是后端没写那一列，不是前端乐观更新出错（已修）**：`into_active_model()`
+  给的是 `Unchanged`，改 model 字段不进 UPDATE 变更集。见 §6.3。这个 bug 上线后被反复
+  报「点了没用」，因为接口 200、`updateMs` 也变了，从响应和日志都看不出来。
+- **`last_run_ms` 是字符串毫秒**，`new Date("1763003520000")` 在 JS 里是 `Invalid Date`
+  （数字串会被当日期文本解析）。前端一律走 `lib/time.ts` 的 `toMs` / `formatTime`，
+  别直接喂 `Date` —— 症状是卡片上出现「最近 Invalid Date」。
 
 ### 15.4 仍未覆盖
 

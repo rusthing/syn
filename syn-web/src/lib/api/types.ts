@@ -357,6 +357,31 @@ export interface DatasourceQuery {
   pageSize?: number;
 }
 
+/**
+ * 连接测试的入参（后端 `SynDatasourceTestDto`）。
+ *
+ * 两种用法：给 `url` 就测这条草稿（新增时还没保存）；不给 `url` 就给 `id`，
+ * 测库里已存的那条（编辑时不想为了测试重输密码）。
+ */
+export interface DatasourceTestInput {
+  id?: string;
+  url?: string;
+}
+
+/**
+ * 一次连接测试的结果（后端 `SynDatasourceTestVo`）。
+ *
+ * 连不上也是**正常响应**：`ok: false` + `message` 交给状态栏显示，
+ * 不走错误通道 —— 否则界面只能弹一个 toast，看不到「连到哪个库、多久」。
+ */
+export interface DatasourceTestResult {
+  ok: boolean;
+  elapsedMs: number;
+  /** 服务端版本，例如 `PostgreSQL 16.4`；连不上时没有 */
+  server?: string;
+  message: string;
+}
+
 /** `GET /syn/registry/services` 的服务名候选项 */
 export interface ServiceOption {
   name: string;

@@ -2,33 +2,44 @@
  * # 控制面板
  *
  * 一张图看清「数据从哪来、经过哪些任务、投到哪去」：
- * 数据源 → 取数来源 → 主题 → 任务，投递是任务第五段（判定看投递响应），画在卡里。
+ * 数据源 → 取数来源 → 主题 → 任务，投递是任务第六段之前的最后一步（判定看投递响应），
+ * 画在卡里。
  *
  * 图不落库：节点来自三张业务表，连线来自它们之间的引用，库里只存节点坐标
  * （`syn_canvas_layout`）。所以这张图不可能和真实配置不一致 —— 这也意味着
  * **不能在这里直接改引用关系**：改「来源用哪个数据源」要回表单，图只负责呈现与跳转。
  *
- * 这里只做写操作：拖动后保存坐标、单击在右侧属性栏看属性、双击打开居中窗体、
- * 点任务卡的某一段直达页签、组件栏点选直接新建（新建窗体与维护页共用同一个组件，
- * 实体传 null 即创建模式）。
+ * 操作都在卡片上，属性栏只读：
+ * - 卡片右上角：启用/停用；连线落点：独占；
+ * - 卡片状态栏下面：编辑（最左）、测试连接 / 试跑、删除（最右隔开）；
+ * - 卡里点某一段：右侧属性栏换成那一段的详情，**不弹窗体**；
+ * - 双击卡片仍然直接进窗体，是给老用户的近路。
  */
 
 import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Link2, RefreshCw, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/page";
 import { useToast } from "@/components/ui/Toast";
+import { ConfirmDialog } from "@/components/ui/Drawer";
 import { cn } from "@/lib/utils";
-import type { CanvasNodePos, DatasourceInfo, SyncSource, SyncTask } from "@/lib/api/types";
+import type {
+  CanvasNodePos,
+  DatasourceInfo,
+  DatasourceTestResult,
+  SyncSource,
+  SyncTask,
+} from "@/lib/api/types";
 import { useAllTasks } from "@/hooks/use-tasks";
-import { useDatasources, useServices, useSources } from "@/hooks/use-sources";
+import { useDatasources, useServices, useSources, useSourceMutations, useDatasourceMutations } from "@/hooks/use-sources";
 import { useCanvasLayout, useCanvasMutations } from "@/hooks/use-canvas";
 import { useTaskMutations } from "@/hooks/use-tasks";
 import { cloneSpec } from "@/lib/spec/defaults";
 import { SourceEditorDrawer } from "@/features/sources/SourceEditorDrawer";
 import { DatasourceEditorDrawer } from "@/features/datasources/DatasourceEditorDrawer";
 import { TaskEditorDrawer, type TaskTab } from "@/features/tasks/TaskEditorDrawer";
-import { buildGraph, mergePositions, type GraphNode, type TaskStage } from "./graph";
+import { buildGraph, mergePositions, nodeId, type GraphNode, type TaskStage } from "./graph";
 import { TopologyCanvas } from "./TopologyCanvas";
 import { TopologyInspector } from "./TopologyInspector";
 import { TopologyPalette } from "./TopologyPalette";
@@ -56,25 +67,44 @@ const KIND_LEGEND = [
   { label: "任务", dot: "bg-accent" },
 ] as const;
 
+/** 待删除的节点：确认框里要说清「删的是哪一条」 */
+type Removing =
+  | { kind: "task"; task: SyncTask }
+  | { kind: "source"; source: SyncSource }
+  | { kind: "datasource"; datasource: DatasourceInfo }
+  | null;
+
 export function TopologyPage() {
   const toast = useToast();
+  const navigate = useNavigate();
   const { data: datasources = [], isLoading: loadingDs } = useDatasources();
   const { data: sources = [] } = useSources();
   const { data: tasks = [], isLoading: loadingTasks } = useAllTasks();
   const { data: services = [] } = useServices();
   const { data: stored = [], refetch } = useCanvasLayout();
-  const { save: saveTask, toggle: toggleTaskMutation } = useTaskMutations();
+  const { save: saveTask, toggle: toggleTaskMutation, remove: removeTask } = useTaskMutations();
   const { save } = useCanvasMutations();
+  const { toggle: toggleSource, remove: removeSource } = useSourceMutations();
+  const { setEnabled: setDatasourceEnabled, remove: removeDatasource, test: testDatasource } =
+    useDatasourceMutations();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** 选中的任务段：非空时属性栏显示该段详情（点卡片里的第 N 段进来） */
+  const [stage, setStage] = useState<TaskStage | null>(null);
   /** 拖动中的临时坐标：不等接口回来就先把卡放到新位置 */
   const [dragging, setDragging] = useState<Record<string, CanvasNodePos>>({});
   const [editing, setEditing] = useState<Editing>(null);
+  const [removing, setRemoving] = useState<Removing>(null);
   /**
-   * 在途的开关请求，键是 `${node.id}:${action}`。启用和独占各占一键，互不干扰；
+   * 在途的开关/测试请求，键是 `${node.id}:${action}`。各动作各占一键，互不干扰；
    * 且**只做视觉提示**，不给按钮加原生 disabled —— 那会把后续 click 整个吞掉。
    */
   const [pendingKeys, setPendingKeys] = useState<ReadonlySet<string>>(() => new Set());
+  /**
+   * 数据源最近一次连接测试的结果，键是节点 id。
+   * 放在页面这一层而不是卡片里：属性栏要显示同一份结果，卡片滚出视野也不该丢。
+   */
+  const [testResults, setTestResults] = useState<Record<string, DatasourceTestResult>>({});
 
   const runPending = (key: string, run: (settled: () => void) => void) => {
     setPendingKeys((prev) => new Set(prev).add(key));
@@ -87,16 +117,70 @@ export function TopologyPage() {
     );
   };
 
-  /** 卡右上角 / 属性栏的启用开关：直接走 toggle 接口，不必进窗体 */
+  /** 卡右上角的启用开关（任务）：直接走 toggle 接口，不必进窗体 */
   const toggleTask = (node: GraphNode, next: boolean) => {
     if (!node.task) return;
     runPending(`${node.id}:enabled`, (settled) =>
       toggleTaskMutation.mutate(
         { id: node.task!.id, enabled: next },
         {
-          onSuccess: () =>
-            toast.success(next ? "已启用" : "已停用", "已通知各副本刷新执行器快照"),
+          onSuccess: () => toast.success(next ? "已启用" : "已停用", "已通知各副本刷新执行器快照"),
           onError: (err) => toast.error("操作失败", err instanceof Error ? err.message : "接口不可达"),
+          onSettled: settled,
+        },
+      ),
+    );
+  };
+
+  /** 卡右上角的启用开关（来源 / 数据源）：各自一条 set_enabled */
+  const toggleEntity = (node: GraphNode, next: boolean) => {
+    const label = next ? "已启用" : "已停用";
+    if (node.source) {
+      runPending(`${node.id}:enabled`, (settled) =>
+        toggleSource.mutate(
+          { id: node.source!.id, enabled: next },
+          {
+            onSuccess: () => toast.success(label, "调度器下一拍按新状态跑"),
+            onError: (err) => toast.error("操作失败", err instanceof Error ? err.message : "接口不可达"),
+            onSettled: settled,
+          },
+        ),
+      );
+      return;
+    }
+    if (node.datasource) {
+      runPending(`${node.id}:enabled`, (settled) =>
+        setDatasourceEnabled.mutate(
+          { id: node.datasource!.id, enabled: next },
+          {
+            onSuccess: () => toast.success(label, "已建好的连接池会按新状态下线 / 重建"),
+            onError: (err) => toast.error("操作失败", err instanceof Error ? err.message : "接口不可达"),
+            onSettled: settled,
+          },
+        ),
+      );
+    }
+  };
+
+  /** 数据源卡片的「测试连接」：只测，不写库；结果进卡片状态栏与属性栏 */
+  const testDatasourceNode = (node: GraphNode) => {
+    if (!node.datasource) return;
+    runPending(`${node.id}:test`, (settled) =>
+      testDatasource.mutate(
+        { id: node.datasource!.id },
+        {
+          onSuccess: (result) => {
+            setTestResults((prev) => ({ ...prev, [node.id]: result }));
+            if (result.ok) {
+              toast.success(
+                `连上了 · ${result.elapsedMs}ms`,
+                result.server ? `${result.server} · ${node.title}` : node.title,
+              );
+            } else {
+              toast.error("连不上", result.message);
+            }
+          },
+          onError: (err) => toast.error("测试失败", err instanceof Error ? err.message : "接口不可达"),
           onSettled: settled,
         },
       ),
@@ -172,16 +256,61 @@ export function TopologyPage() {
     });
   };
 
+  /** 选中节点时把段详情收回去：换了卡片还挂着上一张卡的段会莫名其妙 */
+  const selectNode = (id: string | null) => {
+    setSelectedId(id);
+    setStage(null);
+  };
+
+  /** 卡片最左的「编辑」/ 双击：打开窗体 */
   const openEntity = (node: GraphNode) => {
     if (node.task) return setEditing({ kind: "task", task: node.task, tab: "match" });
     if (node.source) return setEditing({ kind: "source", source: node.source });
     if (node.datasource) return setEditing({ kind: "datasource", datasource: node.datasource });
-    toast.info("主题是虚拟节点", "它由来源写入、被任务消费；双击两端的卡片改具体配置。");
+    toast.info("主题是虚拟节点", "它由来源写入、被任务消费；改两端的卡片即可。");
   };
 
-  const openStage = (node: GraphNode, stage: TaskStage) => {
+  /** 卡里点某一段：只切属性栏，不弹窗体 */
+  const openStage = (node: GraphNode, next: TaskStage) => {
     if (!node.task) return;
-    setEditing({ kind: "task", task: node.task, tab: stage as TaskTab });
+    setSelectedId(node.id);
+    setStage(next);
+  };
+
+  const removeNode = (node: GraphNode) => {
+    if (node.task) return setRemoving({ kind: "task", task: node.task });
+    if (node.source) return setRemoving({ kind: "source", source: node.source });
+    if (node.datasource) return setRemoving({ kind: "datasource", datasource: node.datasource });
+    toast.info("主题是虚拟节点", "它不由本页维护。");
+  };
+
+  const confirmRemove = () => {
+    if (!removing) return;
+    const done = (text: string) => {
+      toast.success(text, "已通知各副本刷新");
+      setRemoving(null);
+      setSelectedId(null);
+      setStage(null);
+    };
+    const fail = (err: Error) => toast.error("删除失败", err.message);
+    if (removing.kind === "task") {
+      removeTask.mutate(removing.task.id, {
+        onSuccess: () => done("任务已删除"),
+        onError: fail,
+      });
+      return;
+    }
+    if (removing.kind === "source") {
+      removeSource.mutate(removing.source.id, {
+        onSuccess: () => done("来源已删除"),
+        onError: fail,
+      });
+      return;
+    }
+    removeDatasource.mutate(removing.datasource.id, {
+      onSuccess: () => done("数据源已删除"),
+      onError: fail,
+    });
   };
 
   const loading = (loadingDs || loadingTasks) && graph.nodes.length === 0;
@@ -192,9 +321,8 @@ export function TopologyPage() {
         title="控制面板"
         subtitle={
           <>
-            数据源 → 取数来源 → 主题 → 任务，投递在判定之前。左侧组件栏点选直接新建；
-            单击卡片在右侧看属性，双击打开窗体改配置，拖动节点即保存摆位；卡右上角切换启用，
-            连线落点切换独占。
+            数据源 → 取数来源 → 主题 → 任务。左侧组件栏点选新建；单击卡片看属性，
+            卡右上角切换启用，卡里点某一段在右侧看那一段的详情；改配置用卡片下方的「编辑」。
           </>
         }
         actions={
@@ -229,7 +357,7 @@ export function TopologyPage() {
             <button
               key={node.id}
               type="button"
-              onClick={() => setSelectedId(node.id)}
+              onClick={() => selectNode(node.id)}
               title={node.issues.join("\n")}
               className="flex items-center gap-1 rounded-md bg-danger-soft px-1.5 py-0.5 text-[11px] text-danger hover:brightness-95"
             >
@@ -241,7 +369,7 @@ export function TopologyPage() {
             <button
               key={node.id}
               type="button"
-              onClick={() => setSelectedId(node.id)}
+              onClick={() => selectNode(node.id)}
               title={node.hints.join("\n")}
               className="flex items-center gap-1 rounded-md bg-warn-soft px-1.5 py-0.5 text-[11px] text-warn hover:brightness-95"
             >
@@ -267,22 +395,34 @@ export function TopologyPage() {
               graph={graph}
               positions={positions}
               selectedId={selectedId}
-              onSelect={setSelectedId}
+              onSelect={selectNode}
               onMove={onMove}
               onOpenStage={openStage}
               onOpenEntity={openEntity}
+              onDeleteEntity={removeNode}
+              onTryTask={(node) =>
+                node.task &&
+                navigate(
+                  `/playground?topic=${encodeURIComponent(node.task.topic)}&task=${node.task.id}`,
+                )
+              }
               onToggleTask={toggleTask}
               onToggleExclusive={toggleExclusive}
+              onToggleEntity={toggleEntity}
+              onTestDatasource={testDatasourceNode}
+              testResults={testResults}
               pendingKeys={pendingKeys}
             />
           </div>
           <TopologyInspector
             node={selectedNode}
-            onClose={() => setSelectedId(null)}
-            onOpenEntity={openEntity}
-            onOpenStage={openStage}
-            onToggleEnabled={(n, next) => toggleTask(n, next)}
-            enabledBusy={selectedNode ? pendingKeys.has(`${selectedNode.id}:enabled`) : false}
+            stage={stage}
+            onSelectStage={setStage}
+            onClose={() => {
+              setSelectedId(null);
+              setStage(null);
+            }}
+            test={selectedNode ? testResults[selectedNode.id] : undefined}
           />
         </div>
       )}
@@ -298,6 +438,7 @@ export function TopologyPage() {
         task={editing?.kind === "task" ? editing.task : null}
         initialTab={editing?.kind === "task" ? editing.tab : undefined}
         onClose={() => setEditing(null)}
+        onSaved={() => setSelectedId(null)}
       />
       <SourceEditorDrawer
         open={editing?.kind === "source" || editing?.kind === "source-new"}
@@ -308,7 +449,56 @@ export function TopologyPage() {
         open={editing?.kind === "datasource" || editing?.kind === "datasource-new"}
         datasource={editing?.kind === "datasource" ? editing.datasource : null}
         onClose={() => setEditing(null)}
+        // 只认「正在编辑的这条」：从组件栏新建时没有节点，别把结果挂到别的卡上
+        onTested={(result) => {
+          if (editing?.kind !== "datasource") return;
+          const id = nodeId("datasource", editing.datasource.code);
+          setTestResults((prev) => ({ ...prev, [id]: result }));
+        }}
+        // 连接串可能改了：旧结论不能留在状态栏上（那是上一条串的结果）
+        onSaved={() => {
+          if (editing?.kind !== "datasource") return;
+          const id = nodeId("datasource", editing.datasource.code);
+          setTestResults((prev) => {
+            const rest = { ...prev };
+            delete rest[id];
+            return rest;
+          });
+        }}
       />
+
+      <ConfirmDialog
+        open={removing !== null}
+        title={`删除${removingTitle(removing)}？`}
+        description={removingDescription(removing)}
+        confirmText="删除"
+        loading={removeSource.isPending || removeDatasource.isPending || removeTask.isPending}
+        onCancel={() => setRemoving(null)}
+        onConfirm={confirmRemove}
+      />
+    </>
+  );
+}
+
+function removingTitle(removing: Removing): string {
+  if (!removing) return "";
+  if (removing.kind === "task") return `任务「${removing.task.name}」`;
+  if (removing.kind === "source") return `取数来源「${removing.source.name}」`;
+  return `数据源「${removing.datasource.name}」`;
+}
+
+function removingDescription(removing: Removing) {
+  if (!removing) return null;
+  if (removing.kind === "task") {
+    return <>任务配置会连同版本历史一起删除。已经发出去的数据不会回滚；只是想暂停就把右上角的开关关掉。</>;
+  }
+  if (removing.kind === "source") {
+    return <>来源会被删除，游标一并清掉；已经拉到下游的数据不会回滚。只是想暂停就把右上角的开关关掉。</>;
+  }
+  return (
+    <>
+      数据源记录会被删除，<b className="text-ink-soft">连接串不会回显也无法恢复</b>；
+      仍有来源引用它时，取数会直接报错。
     </>
   );
 }

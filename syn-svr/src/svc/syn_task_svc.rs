@@ -140,21 +140,29 @@ impl SynTaskSvc {
     ///
     /// 不产生新版本（开关不是规则），但 `spec.enabled` 与列要一起改：
     /// 只改列会让 [`crate::store`] 每次加载都记一条「spec 与列不一致」的 warn。
+    ///
+    /// **必须 `ActiveValue::Set` 逐列写**：SeaORM 2.0 的 `into_active_model()` 带的是
+    /// `Unchanged`，不进 UPDATE 的变更集。以前这里是「先改 model 字段、再
+    /// `into_active_model()`」，结果 UPDATE 只写了 `updater_id` / `update_ms` ——
+    /// 接口 200、`updateMs` 变了，开关却纹丝不动，前端看起来就是「停用失效」。
     pub async fn set_enabled(
         id: U64,
         dto: SynTaskEnabledDto,
         user: U64,
     ) -> Result<SynTaskVo, SvcError> {
         let db = get_db_conn()?;
-        let mut model = SynTaskDao::get_by_id::<_, Model>(id, db.as_ref())
+        let model = SynTaskDao::get_by_id::<_, Model>(id, db.as_ref())
             .await?
             .ok_or_else(|| SvcError::NotFound(format!("任务 {id} 不存在")))?;
 
-        model.enabled = dto.enabled;
-        if let Some(obj) = model.spec.as_object_mut() {
+        // 列与 spec 是同一份事实的两处投影，必须一起写
+        let mut spec = model.spec.clone();
+        if let Some(obj) = spec.as_object_mut() {
             obj.insert("enabled".to_string(), serde_json::json!(dto.enabled));
         }
         let mut am = model.into_active_model();
+        am.enabled = sea_orm::ActiveValue::Set(dto.enabled);
+        am.spec = sea_orm::ActiveValue::Set(spec);
         am.updater_id = sea_orm::ActiveValue::Set(user.value() as i64);
         am.update_ms = sea_orm::ActiveValue::Set(now_ms() as i64);
         let model = SynTaskDao::update(am, db.as_ref()).await?;

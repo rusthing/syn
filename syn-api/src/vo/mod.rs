@@ -24,7 +24,7 @@ mod syn_source_vo;
 mod syn_task_vo;
 
 pub use syn_canvas_layout_vo::SynCanvasLayoutVo;
-pub use syn_datasource_vo::SynDatasourceVo;
+pub use syn_datasource_vo::{SynDatasourceTestVo, SynDatasourceVo};
 pub use syn_delivery_vo::SynDeliveryVo;
 pub use syn_idem_vo::SynIdemVo;
 pub use syn_overview_vo::{SynOverviewFailureVo, SynOverviewHourVo, SynOverviewVo};

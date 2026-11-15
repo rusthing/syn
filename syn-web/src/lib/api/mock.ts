@@ -25,6 +25,8 @@ import type {
   TaskSpec,
   TaskToggleResult,
   Verdict,
+  DatasourceTestInput,
+  DatasourceTestResult,
 } from "./types";
 
 /* ------------------------------ 确定性随机 ------------------------------ */
@@ -848,6 +850,31 @@ export const mockDatasources = {
     DATASOURCES = DATASOURCES.filter((d) => d.id !== id);
     return null;
   },
+
+  /**
+   * 演示模式的「连接测试」：没有真库可连，只能按连接串的形状给结论。
+   *
+   * 判据刻意跟真服务一致：`postgres://` 开头的才可能成功，其余一律报格式不合法；
+   * 带了 `@unreachable` 的演示「连不上」，方便在演示里看到失败时的状态栏长什么样。
+   * 不要在这里随机成败 —— 同一个输入两次点出不同结果比假成功更让人困惑。
+   */
+  async test(input: DatasourceTestInput): Promise<DatasourceTestResult> {
+    const draft = input.url?.trim();
+    const saved = input.id
+      ? DATASOURCES.find((d) => d.id === input.id || d.code === input.id)
+      : undefined;
+    if (!draft && !saved) return { ok: false, elapsedMs: 0, message: "连接失败：没有可测的连接串" };
+    await new Promise((r) => setTimeout(r, 240));
+    if (draft) {
+      if (!/^postgres(ql)?:\/\//.test(draft)) {
+        return { ok: false, elapsedMs: 3, message: "连接失败：连接串格式不合法" };
+      }
+      if (draft.includes("@unreachable")) {
+        return { ok: false, elapsedMs: 5000, message: "连接失败：超时（5s 内没连上）" };
+      }
+    }
+    return { ok: true, elapsedMs: 12, server: "PostgreSQL 16.4", message: "连接成功" };
+  }
 };
 
 /** 演示模式的注册中心候选；实时模式这个接口可能还没实现，失败由 hook 兜成空数组 */

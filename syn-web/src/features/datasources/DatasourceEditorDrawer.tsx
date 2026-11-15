@@ -3,17 +3,23 @@
  *
  * 连接串（含账号密码）是唯一「只写不读」的字段：新建必填；编辑态输入框永远留空，
  * 只显示服务端返回的脱敏 target，绝不回显明文 url，留空保存即表示不修改连接串。
+ *
+ * **窗体里没有启用开关**：启停是卡片右上角的事。同一件事两个入口，用户在一处关掉、
+ * 在另一处又打开，最后没人说得清是哪次生效（照 dbz 控制面板的规矩）。
+ *
+ * 「测试连接」是唯一允许留在窗体里的动作，它不写库、不改任何状态，只回答
+ * 「现在这条能不能连上」。结果写在底部状态栏 —— 和卡片状态栏是同一句话。
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { CircleCheck, KeyRound, ShieldCheck, TriangleAlert } from "lucide-react";
+import { CircleCheck, KeyRound, Plug, ShieldCheck, TriangleAlert, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Drawer";
 import { Field, Input, Textarea } from "@/components/ui/Field";
-import { Switch } from "@/components/ui/Switch";
 import { useToast } from "@/components/ui/Toast";
-import type { DatasourceInfo, DatasourceSaveInput } from "@/lib/api/types";
+import type { DatasourceInfo, DatasourceSaveInput, DatasourceTestResult } from "@/lib/api/types";
 import { useDatasourceMutations } from "@/hooks/use-sources";
 
 interface Issue {
@@ -64,26 +70,60 @@ export function DatasourceEditorDrawer({
   datasource,
   onClose,
   onSaved,
+  onTested,
 }: {
   open: boolean;
   datasource: DatasourceInfo | null;
   onClose: () => void;
   onSaved?: () => void;
+  /** 窗体里测出的结果同步给页面：关掉窗体后卡片状态栏还留着这句话 */
+  onTested?: (result: DatasourceTestResult) => void;
 }) {
   const toast = useToast();
-  const { create, update } = useDatasourceMutations();
+  const { create, update, test } = useDatasourceMutations();
   const [draft, setDraft] = useState<DatasourceSaveInput>(() => newDatasource());
+  /** 最近一次连接测试的结果；改了连接串就清掉，免得「测过了」的结论落在旧串上 */
+  const [tested, setTested] = useState<DatasourceTestResult | null>(null);
   const isEdit = datasource !== null;
 
   useEffect(() => {
     if (!open) return;
     setDraft(datasource ? fromDatasource(datasource) : newDatasource());
+    setTested(null);
   }, [open, datasource]);
 
   const issues = useMemo(() => validateDraft(draft, isEdit), [draft, isEdit]);
   const err = (path: string) => issues.find((i) => i.path === path)?.message ?? null;
   const patch = (p: Partial<DatasourceSaveInput>) => setDraft((d) => ({ ...d, ...p }));
   const saving = create.isPending || update.isPending;
+
+  /** 测试：填了新连接串就测草稿，否则测库里那条（编辑态不必为重测再输一遍密码） */
+  const runTest = () => {
+    const id = datasource?.id;
+    const url = draft.url?.trim();
+    if (!url && !id) {
+      toast.error("没有可测的连接串", "先填上连接串，或保存后再测");
+      return;
+    }
+    test.mutate(
+      { id, url: url || undefined },
+      {
+        onSuccess: (result) => {
+          setTested(result);
+          onTested?.(result);
+          if (result.ok) {
+            toast.success(
+              "连上了",
+              `${result.elapsedMs}ms${result.server ? ` · ${result.server}` : ""}`,
+            );
+          } else {
+            toast.error("连不上", result.message);
+          }
+        },
+        onError: (err) => toast.error("测试失败", err.message),
+      },
+    );
+  };
 
   const submit = () => {
     if (issues.length > 0) {
@@ -120,9 +160,24 @@ export function DatasourceEditorDrawer({
         </Badge>
       }
       footer={
+        // 状态栏：测试结果优先（那是刚发生的事实），其次才是结构校验的结论
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0 text-[11px] text-muted">
-            {issues.length > 0 ? (
+            {tested ? (
+              <span
+                className={cn(
+                  "flex items-center gap-1",
+                  tested.ok ? "text-success" : "text-danger",
+                )}
+              >
+                {tested.ok ? <CircleCheck className="size-3.5" /> : <XCircle className="size-3.5" />}
+                <span className="truncate">
+                  {tested.ok
+                    ? `连通 · ${tested.elapsedMs}ms${tested.server ? ` · ${tested.server}` : ""}`
+                    : tested.message}
+                </span>
+              </span>
+            ) : issues.length > 0 ? (
               <span className="flex items-center gap-1 text-danger">
                 <TriangleAlert className="size-3.5" />
                 {issues[0].path}：{issues[0].message}
@@ -130,11 +185,20 @@ export function DatasourceEditorDrawer({
             ) : (
               <span className="flex items-center gap-1 text-success">
                 <CircleCheck className="size-3.5" />
-                结构校验通过；连接能不能用要保存后由执行器验证
+                结构校验通过，可以先点「测试」确认连得上
               </span>
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={<Plug className="size-3.5" />}
+              loading={test.isPending}
+              onClick={runTest}
+            >
+              测试
+            </Button>
             <Button variant="secondary" size="sm" onClick={onClose}>
               取消
             </Button>
@@ -182,13 +246,6 @@ export function DatasourceEditorDrawer({
               onChange={(e) => patch({ remark: e.target.value })}
             />
           </Field>
-          <div className="flex items-center justify-between rounded-lg border border-line/70 px-3 py-2">
-            <div>
-              <p className="text-[12.5px] font-medium text-ink">启用</p>
-              <p className="text-[11px] text-muted">停用后仍保留配置，但不会被新的取数 / 投递引用</p>
-            </div>
-            <Switch checked={draft.enabled} label="启用数据源" onChange={(enabled) => patch({ enabled })} />
-          </div>
         </section>
 
         <section className="space-y-3 border-t border-line/70 pt-4">
@@ -222,7 +279,10 @@ export function DatasourceEditorDrawer({
               spellCheck={false}
               autoComplete="off"
               className="font-mono text-[12.5px]"
-              onChange={(e) => patch({ url: e.target.value })}
+              onChange={(e) => {
+                patch({ url: e.target.value });
+                setTested(null);
+              }}
             />
           </Field>
         </section>

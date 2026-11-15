@@ -5,6 +5,8 @@ import {
   sources,
   type DatasourceInfo,
   type DatasourceSaveInput,
+  type DatasourceTestInput,
+  type DatasourceTestResult,
   type ServiceOption,
   type SyncSource,
 } from "@/lib/api";
@@ -92,7 +94,15 @@ export function useDatasourceMutations() {
     onSuccess: () => void invalidate(),
   });
 
-  return { create, update, setEnabled, remove };
+  /**
+   * 连接测试。**不 invalidate 任何查询**：测试不写库，也不该让列表闪一下。
+   * 结果由调用方放进自己的状态（卡片状态栏 / 窗体底部状态栏）。
+   */
+  const test = useMutation<DatasourceTestResult, Error, DatasourceTestInput>({
+    mutationFn: (input) => datasources.test(input),
+  });
+
+  return { create, update, setEnabled, remove, test };
 }
 
 /**

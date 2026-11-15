@@ -351,8 +351,8 @@ export function buildGraph({
 /** 列序即数据流方向 */
 const KIND_ORDER: CanvasNodeKind[] = ["datasource", "source", "topic", "task"];
 
-/** 同列纵向间距：要容下最高的一种卡（任务卡 140）与呼吸 */
-const ROW_GAP = 156;
+/** 同列纵向间距：要容下最高的一种卡（任务卡 178：类型行 + 名称 + 六段 + 状态栏 + 操作行）与呼吸 */
+const ROW_GAP = 198;
 
 /**
  * 每列最多放几张。
@@ -365,10 +365,10 @@ const PER_COLUMN = 12;
 
 /** 每种卡的最大宽度（与 `TopologyCards.CARD_SIZE` 对齐），用来算列宽 */
 const COLUMN_W: Record<CanvasNodeKind, number> = {
-  datasource: 260,
-  source: 280,
+  datasource: 268,
+  source: 292,
   topic: 220,
-  task: 600,
+  task: 620,
 };
 
 const GAP_X = 70;

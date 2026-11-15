@@ -35,6 +35,8 @@ import type {
   DatasourceInfo,
   DatasourceQuery,
   DatasourceSaveInput,
+  DatasourceTestInput,
+  DatasourceTestResult,
   Delivery,
   IdemRecord,
   Overview,
@@ -149,6 +151,9 @@ export const datasources = {
     isMock() ? mockDatasources.setEnabled(id, enabled) : liveDatasources.setEnabled(id, enabled),
   remove: (id: string): Promise<null> =>
     isMock() ? mockDatasources.remove(id) : liveDatasources.remove(id),
+  /** 连接测试：成败都在返回值里（`ok`），不走错误通道 */
+  test: (input: DatasourceTestInput): Promise<DatasourceTestResult> =>
+    isMock() ? mockDatasources.test(input) : liveDatasources.test(input),
 };
 
 /**

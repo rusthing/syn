@@ -25,7 +25,7 @@ mod syn_task_dto;
 
 pub use syn_canvas_layout_dto::{SynCanvasLayoutSaveDto, SynCanvasNodePosDto};
 pub use syn_datasource_dto::{
-    SynDatasourceEnabledDto, SynDatasourceQueryDto, SynDatasourceSaveDto,
+    SynDatasourceEnabledDto, SynDatasourceQueryDto, SynDatasourceSaveDto, SynDatasourceTestDto,
 };
 pub use syn_delivery_dto::SynDeliveryQueryDto;
 pub use syn_idem_dto::SynIdemQueryDto;

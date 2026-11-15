@@ -1,35 +1,46 @@
 /**
  * # 拓扑卡片
  *
- * 四类卡片同一骨架：类型标识（图标 + 文字）→ 名称 → 关键字段 → 状态 → 操作行。
- * 颜色只区分「哪一类节点」，状态只用标签和左侧色条表达 —— 一屏几十张卡时，
- * 颜色一多就分不清哪个是错误色、哪个是类型色。
+ * 四类卡片同一骨架，顺序照 dbz 控制面板那张图定死：
  *
- * 任务卡只有一种形态（600×140）：六段并排、每段可点，点哪段进窗体的哪个页签。
- * 收起/展开切换存在过，但六段摘要收成一行小格子后基本读不出内容，两态还带来
- * 选中让位、邻居下移这些复杂度，不如恒展开。
+ * ```
+ * ┌──────────────────────────────── 启用(右上角) ┐
+ * │ 类型标识                     [Switch]        │
+ * │ 名称  ⚠                                    │
+ * │ 副标题（mono）                              │
+ * │ ── 状态栏：状态标签 · 计数 · 测试结果 ──      │
+ * │ ── 操作行：编辑  ……  其它  │  删除 ──        │
+ * └─────────────────────────────────────────────┘
+ * ```
  *
- * 两个开关不在编辑窗体里，就在卡上：
- * - **启用**：右上角的标准 Switch，点了直接调 toggle 接口；
- * - **独占**：主题连线落到卡片的位置（顶边中点）做成一个圆形图标按钮 ——
- *   独占时数据到此为止（箭头落地），非独占时数据会继续流给下一个任务（分叉）。
+ * **操作只住在卡片上，不住在窗体与属性栏里**：启用/停用在右上角，编辑在操作行
+ * 最左，删除隔一道分隔线放最右。添加/编辑页面里出现「启用」会把同一件事拆成
+ * 两个入口 —— 用户在某处关掉、在另一处又打开，谁也不知道最后是哪次生效。
  *
- * 两者的悬停说明由画布层统一渲染：卡片整个处在 `scale()` 容器里，气泡画在卡内会
- * 跟着缩到看不清；原生 title 又要等一秒才弹，缩到 45% 时图标只有十来像素，
- * 用户很难确认自己指着什么。见 `TopologyCanvas` 的 `hint`。
+ * 任务卡另有两个额外约定：
+ * - 六段可点，但**点了不弹窗**，只把右侧属性栏切到那一段的详情（`onOpenStage`）；
+ * - 独占开关钉在主题连线落进卡片的位置（顶边中点），语义就是「命中即止 / 分叉继续」。
+ *
+ * 颜色只区分「哪一类节点」，状态只用标签表达 —— 一屏几十张卡时，颜色一多就
+ * 分不清哪个是错误色、哪个是类型色。
  */
 
 import {
   ArrowDownToLine,
   Database,
   Layers,
+  Pencil,
+  Plug,
+  FlaskConical,
   Radio,
   Split,
+  Trash2,
   TriangleAlert,
   Workflow,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { CanvasNodeKind } from "@/lib/api/types";
+import { formatTime } from "@/lib/time";
+import type { CanvasNodeKind, DatasourceTestResult } from "@/lib/api/types";
 import type { GraphNode, NodeTone, TaskSegment, TaskStage } from "./graph";
 import { Switch } from "@/components/ui/Switch";
 
@@ -45,12 +56,15 @@ export type HintHandler = (
 /** 画布上的交互控件标记：pointerdown 落在这里就不启动卡片拖拽/画布平移 */
 export const NO_DRAG_ATTR = "data-no-drag";
 
-/** 卡片尺寸：同类同高，操作行才能对齐 */
+/**
+ * 卡片尺寸：同类同高，操作行才能对齐。
+ * 状态栏与操作行各占一行，所以比只有「类型 / 名称 / 副标题」的老卡片高一些。
+ */
 export const CARD_SIZE: Record<CanvasNodeKind, { w: number; h: number }> = {
-  datasource: { w: 260, h: 84 },
-  source: { w: 280, h: 84 },
+  datasource: { w: 268, h: 140 },
+  source: { w: 292, h: 140 },
   topic: { w: 220, h: 56 },
-  task: { w: 600, h: 140 },
+  task: { w: 620, h: 178 },
 };
 
 export function cardSize(kind: CanvasNodeKind): { w: number; h: number } {
@@ -78,31 +92,25 @@ const TONE_BAR: Record<NodeTone, string> = {
   muted: "bg-line-strong",
 };
 
-function KindLine({ kind, status, tone }: { kind: CanvasNodeKind; status: string; tone: NodeTone }) {
-  const meta = KIND_META[kind];
+/** 状态栏上的小标签，三类卡片共用 */
+function TonePill({ tone, text }: { tone: NodeTone; text: string }) {
   return (
-    <div className="flex items-center justify-between gap-2">
-      <span className={cn("flex items-center gap-1 text-[11px] font-medium", meta.accent)}>
-        <meta.icon className="size-3" />
-        {meta.label}
-      </span>
-      <span className={cn("rounded px-1.5 py-0.5 text-[10.5px] font-medium", TONE_PILL[tone])}>
-        {status}
-      </span>
-    </div>
+    <span className={cn("rounded px-1.5 py-0.5 text-[10.5px] font-medium", TONE_PILL[tone])}>{text}</span>
   );
 }
 
-function Flags({ node }: { node: GraphNode }) {
+/** 问题 / 提示角标：数字放状态栏，说明交给画布层的气泡 */
+function Flags({ node, onHint }: { node: GraphNode; onHint?: HintHandler }) {
   const title = [...node.issues, ...node.hints].join("\n");
   if (!node.issues.length && !node.hints.length) return null;
   return (
     <span
+      onMouseEnter={(e) => onHint?.(e, title)}
+      onMouseLeave={() => onHint?.(null, "")}
       className={cn(
-        "flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px]",
+        "flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[10px]",
         node.issues.length ? "bg-danger-soft text-danger" : "bg-warn-soft text-warn",
       )}
-      title={title}
     >
       <TriangleAlert className="size-2.5" />
       {node.issues.length || node.hints.length}
@@ -139,114 +147,124 @@ export function CardShell({
   );
 }
 
-/* ------------------------------ 数据源 / 来源 ------------------------------ */
+/* ------------------------------ 头部与操作 ------------------------------ */
 
-export function EntityCard({
+/** 卡片头部：类型标识在前，启用开关统一贴右上角；开关不参与卡片拖动 */
+function CardHead({
   node,
-  selected,
-  onPointerDown,
+  enabled,
+  busy,
+  onToggleEnabled,
+  onHint,
+  hint,
 }: {
   node: GraphNode;
-  selected: boolean;
-  onPointerDown?: (e: React.PointerEvent) => void;
+  enabled: boolean;
+  busy?: boolean;
+  onToggleEnabled: (next: boolean) => void;
+  onHint?: HintHandler;
+  hint: string;
 }) {
+  const meta = KIND_META[node.kind];
   return (
-    <CardShell node={node} selected={selected} onPointerDown={onPointerDown}>
-      <KindLine kind={node.kind} status={node.status} tone={node.tone} />
-      <div className="mt-1 flex items-center gap-1.5">
-        <span className="truncate text-[13px] font-medium text-ink">{node.title}</span>
-        <Flags node={node} />
-      </div>
-      <div className="mt-auto truncate font-mono text-[11px] text-muted" title={node.subtitle}>
-        {node.subtitle}
-      </div>
-    </CardShell>
-  );
-}
-
-/* --------------------------------- 主题 --------------------------------- */
-
-export function TopicCard({
-  node,
-  selected,
-  onPointerDown,
-}: {
-  node: GraphNode;
-  selected: boolean;
-  onPointerDown?: (e: React.PointerEvent) => void;
-}) {
-  return (
-    <div
-      onPointerDown={onPointerDown}
-      className={cn(
-        "flex h-full w-full cursor-pointer flex-col justify-center rounded-full border bg-sunken px-4",
-        selected ? "border-accent ring-2 ring-accent/25" : "border-line hover:border-line-strong",
-        node.tone === "warn" && "bg-warn-soft",
-      )}
-      title={node.hints.join("\n")}
-    >
-      <div className="flex items-center gap-1.5">
-        <Layers className="size-3 shrink-0 text-muted" />
-        <span className="truncate font-mono text-[12px] text-ink">{node.title}</span>
-        <Flags node={node} />
-      </div>
-      <span className="mt-0.5 truncate pl-4 text-[10.5px] text-muted">{node.subtitle}</span>
+    <div className="flex items-center justify-between gap-2">
+      <span className={cn("flex items-center gap-1 text-[11px] font-medium", meta.accent)}>
+        <meta.icon className="size-3" />
+        {meta.label}
+      </span>
+      <span
+        data-no-drag
+        onPointerDown={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+        onMouseEnter={(e) => onHint?.(e, hint)}
+        onMouseLeave={() => onHint?.(null, "")}
+        onFocus={(e) => onHint?.(e, hint)}
+        onBlur={() => onHint?.(null, "")}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Switch
+          checked={enabled}
+          size="sm"
+          label={enabled ? `停用 ${node.title}` : `启用 ${node.title}`}
+          busy={busy}
+          onChange={onToggleEnabled}
+        />
+      </span>
     </div>
   );
 }
 
-/* --------------------------------- 任务 --------------------------------- */
+interface CardActionProps {
+  label: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+  onHint?: HintHandler;
+  tone?: "danger";
+  busy?: boolean;
+}
 
-function SegmentChip({
-  segment,
-  onClick,
-}: {
-  segment: TaskSegment;
-  onClick: (stage: TaskStage) => void;
-}) {
-  const isTarget = segment.stage === "target";
+/** 操作行上的一个图标按钮：说明走画布气泡，不用会跟着缩放的原生 title */
+function CardAction({ label, icon, onClick, onHint, tone, busy }: CardActionProps) {
   return (
     <button
       type="button"
+      data-no-drag
+      aria-label={label}
+      aria-busy={busy || undefined}
       onPointerDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onMouseEnter={(e) => onHint?.(e, label)}
+      onMouseLeave={() => onHint?.(null, "")}
+      onFocus={(e) => onHint?.(e, label)}
+      onBlur={() => onHint?.(null, "")}
       onClick={(e) => {
         e.stopPropagation();
-        onClick(segment.stage);
+        onClick();
       }}
-      title={`${segment.label} · ${segment.detail}${segment.issues ? ` · ${segment.issues} 处待修正` : ""}`}
+      // 请求中不禁用：原生 disabled 连 click 都不派发，看起来就是「点不动」
       className={cn(
-        "group relative flex h-11 min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-md border px-1 transition-colors",
-        isTarget
-          ? "border-accent/40 bg-accent-soft/60 hover:bg-accent-soft"
-          : "border-line bg-sunken/70 hover:bg-accent-soft/50",
-        segment.issues > 0 && "border-danger/50 bg-danger-soft/60",
+        "flex size-6 items-center justify-center rounded-md border border-transparent text-muted transition-colors",
+        "hover:bg-sunken hover:text-ink",
+        tone === "danger" && "hover:bg-danger-soft hover:text-danger",
+        busy && "cursor-wait opacity-70",
       )}
     >
-      <span
-        className={cn(
-          "text-[10px] font-medium",
-          isTarget ? "text-accent-strong" : "text-ink-soft",
-          segment.issues > 0 && "text-danger",
-        )}
-      >
-        {segment.label}
-      </span>
-      <span
-        className={cn(
-          "w-full truncate px-0.5 text-center font-mono text-[10.5px]",
-          isTarget ? "text-accent-strong" : "text-muted",
-        )}
-      >
-        {segment.detail}
-      </span>
-      {segment.issues > 0 && (
-        <span className="absolute -right-1 -top-1 flex size-3 items-center justify-center rounded-full bg-danger text-[8px] font-medium text-white">
-          {segment.issues}
-        </span>
-      )}
+      {icon}
     </button>
   );
 }
+
+/** 操作行：编辑靠最左，其它靠右，删除隔一道分隔线放最后 */
+function CardActions({
+  left,
+  right,
+  danger,
+}: {
+  left: React.ReactNode;
+  right?: React.ReactNode;
+  danger?: React.ReactNode;
+}) {
+  return (
+    <div
+      className="mt-1 flex items-center gap-0.5 border-t border-line/70 pt-1"
+      data-no-drag
+      onPointerDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
+      {left}
+      <span className="flex-1" />
+      {right}
+      {danger && (
+        <>
+          <span className="mx-0.5 h-3.5 w-px bg-line" aria-hidden />
+          {danger}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------ 任务 / 数据源 ------------------------------ */
 
 const EXCLUSIVE_HINT = {
   on: "独占 · 命中即止：数据匹配到这个任务后就不再往下匹配，后面的任务拿不到这条数据。点击可改为「非独占」。",
@@ -306,11 +324,189 @@ function ExclusiveToggle({
   );
 }
 
+/**
+ * 数据源 / 取数来源卡片。
+ *
+ * 两者的差别只有两处：数据源多一个「测试连接」动作（结果写在状态栏），
+ * 取数来源的状态栏显示「最近一轮」而不是引用数。
+ */
+export function EntityCard({
+  node,
+  selected,
+  onPointerDown,
+  onEdit,
+  onDelete,
+  onToggleEnabled,
+  onTest,
+  test,
+  testBusy,
+  enabledBusy,
+  onHint,
+}: {
+  node: GraphNode;
+  selected: boolean;
+  onPointerDown?: (e: React.PointerEvent) => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  /** 启用开关直接走 toggle 接口；窗体里不再有这一项 */
+  onToggleEnabled: (next: boolean) => void;
+  /** 只有数据源有：测一次连接，结果进状态栏 */
+  onTest?: () => void;
+  test?: DatasourceTestResult | null;
+  testBusy?: boolean;
+  enabledBusy?: boolean;
+  onHint?: HintHandler;
+}) {
+  const enabled = node.datasource?.enabled ?? node.source?.enabled ?? true;
+  const enabledHint = enabled
+    ? `当前启用：点击停用「${node.title}」。停用后保留配置，但不再参与取数 / 投递。`
+    : `当前停用：点击启用「${node.title}」。`;
+
+  return (
+    <CardShell node={node} selected={selected} onPointerDown={onPointerDown}>
+      <CardHead
+        node={node}
+        enabled={enabled}
+        busy={enabledBusy}
+        onToggleEnabled={onToggleEnabled}
+        onHint={onHint}
+        hint={enabledHint}
+      />
+
+      <div className="mt-1 flex items-center gap-1.5">
+        <span className="truncate text-[13px] font-medium text-ink">{node.title}</span>
+        <span className="ml-auto shrink-0 font-mono text-[10px] text-muted">{node.key}</span>
+      </div>
+
+      <div className="mt-0.5 truncate font-mono text-[11px] text-muted">{node.subtitle}</div>
+
+      {/* 状态栏：状态标签 · 关键计数 · 测试结果（数据源）· 问题角标 */}
+      <div className="mt-auto flex min-w-0 items-center gap-1.5 pt-1" data-no-drag>
+        <TonePill tone={node.tone} text={node.status} />
+        {node.kind === "datasource" ? (
+          <span className="truncate text-[10.5px] text-muted">
+            v{node.datasource?.version ?? 1} · 连接池 {node.datasource?.maxConnections ?? 0}
+          </span>
+        ) : (
+          <span className="truncate text-[10.5px] text-muted">
+            {/* last_run_ms 是字符串毫秒（U64 走字符串），不能直接喂 Date —— 「1763003520000」
+                会被当成日期串解析成 Invalid Date，所以统一走 time.ts 的 toMs */}
+            {node.source?.last_run_ms
+              ? `最近 ${formatTime(node.source.last_run_ms, false)}`
+              : "还没跑过"}
+          </span>
+        )}
+        <span className="ml-auto flex shrink-0 items-center gap-1">
+          {test && (
+            <span
+              className={cn(
+                "truncate rounded px-1 py-0.5 text-[10px] font-medium",
+                test.ok ? "bg-success-soft text-success" : "bg-danger-soft text-danger",
+              )}
+            >
+              {test.ok ? `连通 ${test.elapsedMs}ms` : "测试失败"}
+            </span>
+          )}
+          <Flags node={node} onHint={onHint} />
+        </span>
+      </div>
+
+      <CardActions
+        left={
+          <CardAction
+            label="编辑配置"
+            icon={<Pencil className="size-3.5" />}
+            onClick={onEdit}
+            onHint={onHint}
+          />
+        }
+        right={
+          onTest && (
+            <CardAction
+              label={testBusy ? "正在测试连接…" : "测试连接"}
+              icon={<Plug className="size-3.5" />}
+              onClick={onTest}
+              onHint={onHint}
+              busy={testBusy}
+            />
+          )
+        }
+        danger={
+          <CardAction
+            label="删除"
+            icon={<Trash2 className="size-3.5" />}
+            tone="danger"
+            onClick={onDelete}
+            onHint={onHint}
+          />
+        }
+      />
+    </CardShell>
+  );
+}
+
+/** 任务卡里可点的六段之一 */
+function SegmentChip({
+  segment,
+  onClick,
+}: {
+  segment: TaskSegment;
+  onClick: (stage: TaskStage) => void;
+}) {
+  const isTarget = segment.stage === "target";
+  return (
+    <button
+      type="button"
+      data-no-drag
+      onPointerDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick(segment.stage);
+      }}
+      title={`${segment.label} · ${segment.detail}${segment.issues ? ` · ${segment.issues} 处待修正` : ""}`}
+      className={cn(
+        "group relative flex h-11 min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-md border px-1 transition-colors",
+        isTarget
+          ? "border-accent/40 bg-accent-soft/60 hover:bg-accent-soft"
+          : "border-line bg-sunken/70 hover:bg-accent-soft/50",
+        segment.issues > 0 && "border-danger/50 bg-danger-soft/60",
+      )}
+    >
+      <span
+        className={cn(
+          "text-[10px] font-medium",
+          isTarget ? "text-accent-strong" : "text-ink-soft",
+          segment.issues > 0 && "text-danger",
+        )}
+      >
+        {segment.label}
+      </span>
+      <span
+        className={cn(
+          "w-full truncate px-0.5 text-center font-mono text-[10.5px]",
+          isTarget ? "text-accent-strong" : "text-muted",
+        )}
+      >
+        {segment.detail}
+      </span>
+      {segment.issues > 0 && (
+        <span className="absolute -right-1 -top-1 flex size-3 items-center justify-center rounded-full bg-danger text-[8px] font-medium text-white">
+          {segment.issues}
+        </span>
+      )}
+    </button>
+  );
+}
+
 export function TaskCard({
   node,
   selected,
   onPointerDown,
   onOpenStage,
+  onEdit,
+  onTry,
+  onDelete,
   onToggleEnabled,
   onToggleExclusive,
   onHint,
@@ -320,8 +516,11 @@ export function TaskCard({
   node: GraphNode;
   selected: boolean;
   onPointerDown?: (e: React.PointerEvent) => void;
+  /** 点某一段：只切换右侧属性栏，不弹窗体 */
   onOpenStage: (stage: TaskStage) => void;
-  /** 启用开关直接走 toggle 接口；窗体里不再有这一项 */
+  onEdit: () => void;
+  onTry: () => void;
+  onDelete: () => void;
   onToggleEnabled: (next: boolean) => void;
   onToggleExclusive: () => void;
   onHint?: HintHandler;
@@ -333,9 +532,12 @@ export function TaskCard({
   const segments = node.segments ?? [];
   const stats = task?.stats;
   const exclusive = task?.spec.exclusive !== false;
-  const enabledHint = task?.enabled
+  const enabled = !!task?.enabled;
+  const enabledHint = enabled
     ? "当前启用：点击停用这个任务。停用后事件会落到下一个任务或直接进死信；写库时会通知各副本刷新执行器快照。"
     : "当前停用：点击启用这个任务。启用后写库同样会通知各副本刷新执行器快照。";
+  const bad = stats ? stats.fatal + stats.retriable : 0;
+  const badRate = stats && stats.total > 0 ? (bad / stats.total) * 100 : 0;
 
   return (
     <CardShell node={node} selected={selected} onPointerDown={onPointerDown}>
@@ -346,40 +548,17 @@ export function TaskCard({
         onHint={onHint}
       />
 
-      <div className="flex items-center justify-between gap-2">
-        <span className="flex items-center gap-1 text-[11px] font-medium text-accent">
-          <Workflow className="size-3" />
-          任务
-        </span>
-        <div
-          className="flex items-center gap-1.5"
-          data-no-drag
-          onPointerDown={(e) => e.stopPropagation()}
-          onDoubleClick={(e) => e.stopPropagation()}
-          onMouseEnter={(e) => onHint?.(e, enabledHint)}
-          onMouseLeave={() => onHint?.(null, "")}
-          onFocus={(e) => onHint?.(e, enabledHint)}
-          onBlur={() => onHint?.(null, "")}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {node.issues.length > 0 && (
-            <span className="rounded bg-danger-soft px-1.5 py-0.5 text-[10.5px] font-medium text-danger">
-              待修正
-            </span>
-          )}
-          <Switch
-            checked={!!task?.enabled}
-            size="sm"
-            label={task?.enabled ? `停用 ${node.title}` : `启用 ${node.title}`}
-            busy={enabledBusy}
-            onChange={onToggleEnabled}
-          />
-        </div>
-      </div>
+      <CardHead
+        node={node}
+        enabled={enabled}
+        busy={enabledBusy}
+        onToggleEnabled={onToggleEnabled}
+        onHint={onHint}
+        hint={enabledHint}
+      />
 
       <div className="mt-0.5 flex items-center gap-1.5">
         <span className="truncate text-[13px] font-medium text-ink">{node.title}</span>
-        <Flags node={node} />
         <span className="ml-auto shrink-0 font-mono text-[10.5px] text-muted">{node.key}</span>
       </div>
 
@@ -392,14 +571,87 @@ export function TaskCard({
         ))}
       </div>
 
-      <div className="mt-auto flex items-center gap-2 text-[10.5px] text-muted">
-        <span className="truncate">
-          {task?.spec.target.kind === "db" ? "直写库表" : "HTTP"} · {node.subtitle.split(" · ")[1] ?? ""}
+      {/* 状态栏：结论 + 今日量 + 失败率 + 问题角标 */}
+      <div className="mt-auto flex min-w-0 items-center gap-1.5 pt-1" data-no-drag>
+        <TonePill tone={node.tone} text={node.status} />
+        <span className="truncate text-[10.5px] text-muted">
+          {task?.spec.target.kind === "db" ? "直写库表" : "HTTP"} ·{" "}
+          {node.subtitle.split(" · ")[0] ?? ""}
         </span>
-        <span className="ml-auto shrink-0 font-mono">
+        <span className="ml-auto shrink-0 font-mono text-[10px] text-muted">
           {stats && stats.total > 0 ? `今日 ${stats.total.toLocaleString()} 条` : "今日无记录"}
         </span>
+        {stats && stats.total > 0 && (
+          <span
+            className={cn(
+              "shrink-0 font-mono text-[10px]",
+              badRate >= 1 ? "text-danger" : badRate > 0 ? "text-warn" : "text-muted",
+            )}
+          >
+            {badRate.toFixed(badRate < 1 ? 1 : 0)}%
+          </span>
+        )}
+        <Flags node={node} onHint={onHint} />
       </div>
+
+      <CardActions
+        left={
+          <CardAction
+            label="编辑配置"
+            icon={<Pencil className="size-3.5" />}
+            onClick={onEdit}
+            onHint={onHint}
+          />
+        }
+        right={
+          <CardAction
+            label="用样例试跑这个任务"
+            icon={<FlaskConical className="size-3.5" />}
+            onClick={onTry}
+            onHint={onHint}
+          />
+        }
+        danger={
+          <CardAction
+            label="删除"
+            icon={<Trash2 className="size-3.5" />}
+            tone="danger"
+            onClick={onDelete}
+            onHint={onHint}
+          />
+        }
+      />
     </CardShell>
+  );
+}
+
+/* --------------------------------- 主题 --------------------------------- */
+
+export function TopicCard({
+  node,
+  selected,
+  onPointerDown,
+}: {
+  node: GraphNode;
+  selected: boolean;
+  onPointerDown?: (e: React.PointerEvent) => void;
+}) {
+  return (
+    <div
+      onPointerDown={onPointerDown}
+      className={cn(
+        "flex h-full w-full cursor-pointer flex-col justify-center rounded-full border bg-sunken px-4",
+        selected ? "border-accent ring-2 ring-accent/25" : "border-line hover:border-line-strong",
+        node.tone === "warn" && "bg-warn-soft",
+      )}
+      title={node.hints.join("\n")}
+    >
+      <div className="flex items-center gap-1.5">
+        <Layers className="size-3 shrink-0 text-muted" />
+        <span className="truncate font-mono text-[12px] text-ink">{node.title}</span>
+        <Flags node={node} />
+      </div>
+      <span className="mt-0.5 truncate pl-4 text-[10.5px] text-muted">{node.subtitle}</span>
+    </div>
   );
 }

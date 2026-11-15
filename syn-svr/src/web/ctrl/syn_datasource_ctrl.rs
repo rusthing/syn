@@ -1,6 +1,6 @@
 //! # 数据源连接清单控制器
 //!
-//! 七个接口：列表 / 分页 / 详情 / 新建 / 修改 / 启停 / 删除。
+//! 八个接口：列表 / 分页 / 详情 / 新建 / 修改 / 启停 / 连接测试 / 删除。
 //! 连接串明文只在写入口（`add` / `modify`）收，所有响应一律是脱敏后的
 //! `SynDatasourceVo`（不含 `url`）。写操作都取 `X-User-Id` 作操作人。
 
@@ -12,7 +12,8 @@ use robotech::api::{PageRx, Ro, U64};
 use robotech::macros::log_call;
 use robotech::web::CtrlError;
 use syn_api::{
-    SynDatasourceEnabledDto, SynDatasourceQueryDto, SynDatasourceSaveDto, SynDatasourceVo,
+    SynDatasourceEnabledDto, SynDatasourceQueryDto, SynDatasourceSaveDto, SynDatasourceTestDto,
+    SynDatasourceTestVo, SynDatasourceVo,
 };
 
 use super::common::*;
@@ -87,6 +88,16 @@ pub async fn enabled(
         "数据源状态已更新",
         SynDatasourceSvc::set_enabled(id, dto, user).await?,
     ))
+}
+
+#[utoipa::path(post, path = "/syn/datasource/test", request_body = SynDatasourceTestDto,
+    responses((status = OK, body = Ro<SynDatasourceTestVo>)))]
+#[debug_handler]
+#[log_call]
+pub async fn test(
+    Json(dto): Json<SynDatasourceTestDto>,
+) -> Result<Json<Ro<SynDatasourceTestVo>>, CtrlError> {
+    Ok(ok("连接测试完成", SynDatasourceSvc::test(dto).await?))
 }
 
 #[utoipa::path(delete, path = "/syn/datasource/{id}", responses((status = OK, description = "已删除")))]

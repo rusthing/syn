@@ -12,9 +12,13 @@ use robotech::api::U64;
 use robotech::db::get_db_conn;
 use robotech::svc::SvcError;
 use sea_orm::{ActiveValue, ColumnTrait, Condition, IntoActiveModel};
+use sqlx::postgres::PgPoolOptions;
+use std::time::{Duration, Instant};
 use syn_api::{
-    SynDatasourceEnabledDto, SynDatasourceQueryDto, SynDatasourceSaveDto, SynDatasourceVo,
+    SynDatasourceEnabledDto, SynDatasourceQueryDto, SynDatasourceSaveDto, SynDatasourceTestDto,
+    SynDatasourceTestVo, SynDatasourceVo,
 };
+use tokio::time::timeout;
 use validator::Validate;
 use wheel_rs::time_utils::now_ms;
 
@@ -160,6 +164,64 @@ impl SynDatasourceSvc {
         Ok(to_vo(model))
     }
 
+    /// # 测试连接
+    ///
+    /// 只建一条临时连接、跑一声探活查询，**不碰进程级的池缓存**：测试失败不该
+    /// 影响正在跑的直写库；测试成功也不该让运维的「测一下」变成正式建池。
+    ///
+    /// 连不上不算接口错误：返回 `ok: false` 让状态栏自己描述。失败原因只回
+    /// 服务端原话或分类描述 —— `sqlx` 的某些错误（尤其 `Configuration`）会把
+    /// 连接串原样带进 `Display`，那里面有密码。
+    pub async fn test(dto: SynDatasourceTestDto) -> Result<SynDatasourceTestVo, SvcError> {
+        let url = match normalized_url(&dto.url) {
+            Some(url) => url,
+            None => {
+                let id = dto.id.ok_or_else(|| {
+                    invalid("url", "没有可测的连接串：填一个，或指定已保存的数据源")
+                })?;
+                let db = get_db_conn()?;
+                SynDatasourceDao::get_by_id::<_, Model>(id, db.as_ref())
+                    .await?
+                    .ok_or_else(|| SvcError::NotFound(format!("数据源 {id} 不存在")))?
+                    .url
+            }
+        };
+
+        let started = Instant::now();
+        let attempt = timeout(TEST_TIMEOUT, async {
+            let pool = PgPoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(TEST_TIMEOUT)
+                .connect(&url)
+                .await?;
+            // 只 connect 不查询的话，中间件把连接转给后端失败也能"成功"
+            let server: String =
+                sqlx::query_scalar("select current_setting('server_version')")
+                    .fetch_one(&pool)
+                    .await?;
+            pool.close().await;
+            Ok::<String, sqlx::Error>(server)
+        })
+        .await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+
+        let (ok, server, message) = match attempt {
+            Ok(Ok(server)) => (true, Some(format!("PostgreSQL {server}")), "连接成功".to_string()),
+            Ok(Err(e)) => (false, None, describe_connect_error(&e)),
+            Err(_) => (
+                false,
+                None,
+                format!("连接失败：超时（{}s 内没连上）", TEST_TIMEOUT.as_secs()),
+            ),
+        };
+        Ok(SynDatasourceTestVo {
+            ok,
+            elapsed_ms: U64(elapsed_ms),
+            server,
+            message,
+        })
+    }
+
     /// # 删除
     ///
     /// 直接删，引用检查不在本次范围。
@@ -241,6 +303,31 @@ fn to_vo(m: Model) -> SynDatasourceVo {
         create_ms: U64::from(m.create_ms),
         updater_id: U64::from(m.updater_id),
         update_ms: U64::from(m.update_ms),
+    }
+}
+
+/// # 连接测试的超时
+///
+/// 不设的话内核默认几十秒才放弃，用户盯着一个转圈的按钮不知道还要等多久。
+/// 5s 够跨机房建连了；真连不上，早失败比晚失败有用。
+const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// # 把 `sqlx` 的建连错误翻成一句能贴到状态栏的话
+///
+/// 这里**绝不能直接 `e.to_string()`**：`Error::Configuration` 的 `Display` 会把
+/// 连接串（含密码）原样带出来，而状态栏是要被截图、被贴进工单的。
+/// 所以按分支给固定措辞，只有数据库服务端自己的报错原话才透传（那里面只有
+/// 库名/用户名一类的信息，且没有密码）。
+fn describe_connect_error(err: &sqlx::Error) -> String {
+    match err {
+        sqlx::Error::Database(e) => format!("连接失败：{}", e.message()),
+        sqlx::Error::Configuration(_) => "连接失败：连接串格式不合法".to_string(),
+        sqlx::Error::Io(e) => format!("连接失败：网络不可达（{}）", e.kind()),
+        sqlx::Error::PoolTimedOut => "连接失败：获取连接超时".to_string(),
+        sqlx::Error::PoolClosed => "连接失败：连接池已关闭".to_string(),
+        sqlx::Error::Tls(e) => format!("连接失败：TLS 握手失败（{e}）"),
+        sqlx::Error::Protocol(e) => format!("连接失败：协议错误（{e}）"),
+        _ => "连接失败：详见服务端日志".to_string(),
     }
 }
 

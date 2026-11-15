@@ -164,17 +164,20 @@ impl SynSourceSvc {
     /// # 启停
     ///
     /// 不碰 `syn_cursor`：停用期间水位原样留着，重新启用从断点继续。
+    ///
+    /// `enabled` 必须显式 `ActiveValue::Set`：`into_active_model()` 带的是 `Unchanged`，
+    /// 只改 model 字段的话 UPDATE 里根本不会出现这一列（接口 200 但开关不生效）。
     pub async fn set_enabled(
         id: U64,
         dto: SynSourceEnabledDto,
         user: U64,
     ) -> Result<SynSourceVo, SvcError> {
         let db = get_db_conn()?;
-        let mut model = SynSourceDao::get_by_id::<_, Model>(id, db.as_ref())
+        let model = SynSourceDao::get_by_id::<_, Model>(id, db.as_ref())
             .await?
             .ok_or_else(|| SvcError::NotFound(format!("数据源 {id} 不存在")))?;
-        model.enabled = dto.enabled;
         let mut am = model.into_active_model();
+        am.enabled = sea_orm::ActiveValue::Set(dto.enabled);
         am.updater_id = sea_orm::ActiveValue::Set(user.value() as i64);
         am.update_ms = sea_orm::ActiveValue::Set(now_ms() as i64);
         let model = SynSourceDao::update(am, db.as_ref()).await?;

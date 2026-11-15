@@ -27,6 +27,8 @@ import type {
   DatasourceInfo,
   DatasourceQuery,
   DatasourceSaveInput,
+  DatasourceTestInput,
+  DatasourceTestResult,
   Delivery,
   IdemRecord,
   Op,
@@ -119,6 +121,14 @@ interface WireDatasource {
   createMs?: string | null;
   updaterId?: string | null;
   updateMs?: string | null;
+}
+
+/** `SynDatasourceTestVo`：连不上也是 200，成败看 `ok` */
+interface WireDatasourceTest {
+  ok: boolean;
+  elapsedMs: number | string;
+  server?: string | null;
+  message: string;
 }
 
 /** `GET /syn/registry/services` 的候选项，已是 camelCase 的简单结构 */
@@ -496,6 +506,24 @@ export const liveDatasources = {
 
   remove: (id: string): Promise<null> =>
     request<void>(`/syn/datasource/${encodeURIComponent(id)}`, { method: "DELETE" }).then(() => null),
+
+  /**
+   * 连接测试。**失败不是接口错误**：`ok: false` 也走正常返回，让状态栏显示
+   * 「连不上 + 原因」，而不是弹一个转瞬即逝的 toast。
+   *
+   * `url` 只在有草稿时才发（新增 / 改了连接串）；否则只发 `id` 让服务端用库里的那条，
+   * 免得为了让用户点一下「测试」再把明文连接串从浏览器里带一遍。
+   */
+  test: (input: DatasourceTestInput): Promise<DatasourceTestResult> =>
+    request<WireDatasourceTest>("/syn/datasource/test", {
+      method: "POST",
+      body: { id: input.id, url: input.url || undefined },
+    }).then((extra) => ({
+      ok: !!extra?.ok,
+      elapsedMs: num(extra?.elapsedMs),
+      server: extra?.server ?? undefined,
+      message: extra?.message ?? (extra?.ok ? "连接成功" : "连接失败"),
+    })),
 };
 
 /** 整数 → 前端节点类型；认不出就当没有（旧版本多出来的类型不该画出来） */
