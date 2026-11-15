@@ -7,7 +7,7 @@
 //! 数字比较按数值走（`1` 等于 `1.0`）：JSON 里这两种写法在不同生产者手里
 //! 都常见，按字面量比会莫名其妙地判不等。
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Number, Value};
 use syn_api::{Assert, Condition, Operator, Scope};
 
 use crate::value::{get_path, get_path_in_map};
@@ -145,10 +145,10 @@ fn eval_value(assert: &Assert, lhs: Option<&Value>) -> bool {
             };
             text_of(value).is_some_and(|s| re.is_match(&s))
         }
-        Operator::Gt => num_pair(value, expected).is_some_and(|(a, b)| a > b),
-        Operator::Gte => num_pair(value, expected).is_some_and(|(a, b)| a >= b),
-        Operator::Lt => num_pair(value, expected).is_some_and(|(a, b)| a < b),
-        Operator::Lte => num_pair(value, expected).is_some_and(|(a, b)| a <= b),
+        Operator::Gt => num_cmp(value, expected).is_some_and(|o| o.is_gt()),
+        Operator::Gte => num_cmp(value, expected).is_some_and(|o| o.is_ge()),
+        Operator::Lt => num_cmp(value, expected).is_some_and(|o| o.is_lt()),
+        Operator::Lte => num_cmp(value, expected).is_some_and(|o| o.is_le()),
     }
 }
 
@@ -158,9 +158,35 @@ fn eval_value(assert: &Assert, lhs: Option<&Value>) -> bool {
 /// 「`1` 等于 `1.0`」这条只写一处，不然 `case` 与 `assert` 会给出不同答案。
 pub fn json_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),
+        (Value::Number(x), Value::Number(y)) => number_eq(x, y),
         _ => a == b,
     }
+}
+
+/// 数字相等：整数按整数比，带小数才退回 f64。
+///
+/// 直接 `as_f64()` 会把超过 2^53 的整数压成同一个浮点数 —— 雪花 ID / 19 位主键
+/// 那种规模下，相邻两个 ID 会被误判相等（错误命中任务、错误分流）。`1` 与 `1.0`
+/// 仍然相等：`1.0` 走 f64 分支，数值比较结果不变。
+fn number_eq(x: &Number, y: &Number) -> bool {
+    if let (Some(i), Some(j)) = (x.as_i64(), y.as_i64()) {
+        return i == j;
+    }
+    if let (Some(u), Some(v)) = (x.as_u64(), y.as_u64()) {
+        return u == v;
+    }
+    x.as_f64() == y.as_f64()
+}
+
+/// 数字排序，同样优先整数比较，避免大整数的精度丢失
+fn number_cmp(x: &Number, y: &Number) -> Option<std::cmp::Ordering> {
+    if let (Some(i), Some(j)) = (x.as_i64(), y.as_i64()) {
+        return Some(i.cmp(&j));
+    }
+    if let (Some(u), Some(v)) = (x.as_u64(), y.as_u64()) {
+        return Some(u.cmp(&v));
+    }
+    x.as_f64()?.partial_cmp(&y.as_f64()?)
 }
 
 /// 按作用域取一个字段的值
@@ -175,8 +201,11 @@ pub fn value_at<'a>(ctx: &Context<'a>, scope: Scope, field: &str) -> Option<&'a 
     }
 }
 
-fn num_pair(a: &Value, b: Option<&Value>) -> Option<(f64, f64)> {
-    Some((a.as_f64()?, b?.as_f64()?))
+fn num_cmp(a: &Value, b: Option<&Value>) -> Option<std::cmp::Ordering> {
+    let (Value::Number(x), Some(Value::Number(y))) = (a, b) else {
+        return None;
+    };
+    number_cmp(x, y)
 }
 
 fn text_of(v: &Value) -> Option<String> {
@@ -212,6 +241,31 @@ mod tests {
         assert!(check("$.after.id", Operator::Eq, Some(json!(8821))));
         assert!(check("$.after.id", Operator::Eq, Some(json!(8821.0))));
         assert!(!check("$.after.id", Operator::Eq, Some(json!(8822))));
+    }
+
+    #[test]
+    fn big_integers_do_not_collapse_to_same_float() {
+        // 2^53 与 2^53+1 在 f64 里是同一个数：按整数比必须不等，
+        // 否则雪花 ID 级别的匹配/分流会误命中相邻 ID
+        let big = 9_007_199_254_740_993_i64;
+        assert!(!json_eq(&json!(big), &json!(big - 1)));
+        assert!(json_eq(&json!(big), &json!(big)));
+
+        let rec = json!({"after": {"id": big}});
+        let gt = Assert {
+            field: Some("$.after.id".into()),
+            op: Operator::Gt,
+            value: Some(json!(big - 1)),
+            scope: None,
+        };
+        assert!(eval(&gt, &Context::of(&rec), Scope::Record));
+        let eq = Assert {
+            field: Some("$.after.id".into()),
+            op: Operator::Eq,
+            value: Some(json!(big - 1)),
+            scope: None,
+        };
+        assert!(!eval(&eq, &Context::of(&rec), Scope::Record));
     }
 
     #[test]

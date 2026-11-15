@@ -142,13 +142,15 @@ async fn pull_sql(
         }
     };
 
-    let (rows, position) = fetched;
+    let rows = fetched;
     deliver(&source.topic, &rows, &mut out).await;
 
-    // 只有连续成功的行能推进水位：最后一行失败时停在上一个成功行的位置，
-    // 下一轮重跑失败行及其后所有行（重复由下游 upsert 吸收）
+    // 只有连续成功的行能推进水位：水位取**本批最后一条已投递行自己的位置**。
+    // 不能用「整批最后一行的位置」——deliver 遇到第一条 fatal/retriable 就停，
+    // 那之后的行还没投递，水位跳过去就再也不会重跑了（静默丢数据）。
+    // 停在上一个成功行，下一轮重跑失败行及其后所有行（重复由下游 upsert 吸收）。
     let advanced = out.rows;
-    let new_position = (advanced > 0).then_some(position).flatten();
+    let new_position = last_delivered_position(&rows, advanced);
     let error = out.stalled.clone();
     if advanced > 0 {
         let ok = advance_cursor(
@@ -320,6 +322,21 @@ fn with_stalled(mut out: SynSourcePullVo, reason: String) -> SynSourcePullVo {
 struct FetchedRow {
     /// 包成虚拟 topic 的记录
     record: Value,
+    /// 这一行自己的水位（仅 sql 源有；http 全量的水位是整页游标，不逐行记）
+    position: Option<String>,
+}
+
+/// 本批已投递前缀里最后一行的水位。
+///
+/// `delivered` 是 `deliver` 累计的成功/跳过行数，它只会是一个连续前缀：
+/// 遇到第一条 fatal/retriable 就停，后面的行还没投递。水位必须停在**这一行**，
+/// 否则下一轮会跳过未投递的行。
+fn last_delivered_position(rows: &[FetchedRow], delivered: u64) -> Option<String> {
+    let delivered = usize::try_from(delivered).ok()?;
+    if delivered == 0 {
+        return None;
+    }
+    rows.get(delivered - 1)?.position.clone()
 }
 
 /// # 按水位查源库
@@ -330,7 +347,7 @@ async fn fetch_sql(
     source: &SourceModel,
     spec: &SourceSpec,
     position: Option<&str>,
-) -> Result<(Vec<FetchedRow>, Option<String>), String> {
+) -> Result<Vec<FetchedRow>, String> {
     let Some(datasource) = spec.datasource.as_deref() else {
         return Err("spec.datasource 缺失".to_string());
     };
@@ -409,7 +426,6 @@ async fn fetch_sql(
 
     let wrap = spec.wrap;
     let mut out = Vec::with_capacity(rows.len());
-    let mut last_position: Option<String> = None;
     for r in &rows {
         let row: Value = r
             .try_get("row")
@@ -430,12 +446,14 @@ async fn fetch_sql(
                 row
             }
         };
-        last_position = Some(
-            serde_json::to_string(&keys).map_err(|e| format!("水位序列化失败: {e}"))?,
-        );
-        out.push(FetchedRow { record });
+        // 每行带自己的水位：投递中途被卡住时，水位只能停到最后一个成功行
+        let position = serde_json::to_string(&keys).map_err(|e| format!("水位序列化失败: {e}"))?;
+        out.push(FetchedRow {
+            record,
+            position: Some(position),
+        });
     }
-    Ok((out, last_position))
+    Ok(out)
 }
 
 /// # http 全量的进度状态
@@ -585,7 +603,11 @@ async fn fetch_http_page(
             WrapMode::Row => json!({ "op": "r", "after": item }),
             WrapMode::Cdc => item.clone(),
         };
-        rows.push(FetchedRow { record });
+        rows.push(FetchedRow {
+            record,
+            // 全量的进度是整页游标，不按行推进
+            position: None,
+        });
     }
 
     // 下一页：token 模式看 next_path；页码模式「空页即结束」。
@@ -868,5 +890,39 @@ mod tests {
         assert_eq!(value_as_cursor(&json!(2)), Some("2".to_string()));
         assert_eq!(value_as_cursor(&json!("")), None);
         assert_eq!(value_as_cursor(&Value::Null), None);
+    }
+
+    /// 投递中途被 fatal 卡住时，水位必须停在最后一条已投递行，而不是整批最后一行 ——
+    /// 后者会让未投递的行永远不再被拉取（静默丢数据）。
+    #[test]
+    fn cursor_stops_at_last_delivered_row() {
+        let rows = vec![
+            FetchedRow {
+                record: json!({}),
+                position: Some(r#"["2026-11-13 00:00:01+00","1"]"#.to_string()),
+            },
+            FetchedRow {
+                record: json!({}),
+                position: Some(r#"["2026-11-13 00:00:02+00","2"]"#.to_string()),
+            },
+            FetchedRow {
+                record: json!({}),
+                position: Some(r#"["2026-11-13 00:00:03+00","3"]"#.to_string()),
+            },
+        ];
+        // 前两行投递成功、第三行被卡住：水位停在第二行
+        assert_eq!(
+            last_delivered_position(&rows, 2).as_deref(),
+            Some(r#"["2026-11-13 00:00:02+00","2"]"#)
+        );
+        // 一行都没成功：不推进
+        assert_eq!(last_delivered_position(&rows, 0), None);
+        // 整批都投递了：停在最后一行
+        assert_eq!(
+            last_delivered_position(&rows, 3).as_deref(),
+            Some(r#"["2026-11-13 00:00:03+00","3"]"#)
+        );
+        // 防御：投递数超出批大小时不 panic
+        assert_eq!(last_delivered_position(&rows, 99), None);
     }
 }

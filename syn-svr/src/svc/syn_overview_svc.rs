@@ -183,11 +183,14 @@ impl SynOverviewSvc {
 ///
 /// 判据：启用的数据源，跑过至少一轮，但「距上次开跑」超过 3 个调度周期。
 /// 没跑过的不算（还没轮到它）；停用是人为决定，也不算。
+/// **http 全量已经翻到底的也不算**：调度器本来就会永久跳过它（见
+/// `poll::pull_due_sources`），`last_run_ms` 不再前进是预期行为，不是卡住。
 async fn stalled_sources<C: ConnectionTrait>(db: &C, now: i64) -> Result<u64, SvcError> {
     let rows = db
         .query_all_raw(Statement::from_string(
             DbBackend::Postgres,
-            "select s.interval_duration as itv, c.last_run_ms as last_ms \
+            "select s.interval_duration as itv, c.last_run_ms as last_ms, \
+                    c.cursor_value as cv \
              from syn_source s left join syn_cursor c on c.source_id = s.id \
              where s.enabled = true"
                 .to_string(),
@@ -198,6 +201,10 @@ async fn stalled_sources<C: ConnectionTrait>(db: &C, now: i64) -> Result<u64, Sv
         let Some(last_ms) = r.try_get::<Option<i64>>("", "last_ms").ok().flatten() else {
             continue;
         };
+        let cursor_value = r.try_get::<Option<String>>("", "cv").ok().flatten();
+        if crate::poll::is_http_done(cursor_value.as_deref()) {
+            continue;
+        }
         let itv = r.try_get::<String>("", "itv").unwrap_or_default();
         let period = humantime::parse_duration(&itv)
             .unwrap_or(std::time::Duration::from_secs(60))

@@ -242,11 +242,14 @@ impl DbWriter for DbSinks {
 
         // 映射的每一列都必须真实存在：拼错一个列名，PG 报的是 42703，
         // 但那已经是「一行数据发出去之后」了，不如在这里就说清楚
-        for (i, key) in row.keys().enumerate() {
+        for key in row.keys() {
             if !columns.contains(key) {
                 return Err(DbError::fatal(
                     "DB_UNKNOWN_COLUMN",
-                    format!("表 {} 没有列 {key}（第 {} 个映射行）", target.table, i + 1),
+                    format!(
+                        "表 {} 没有列 {key}：映射的 to 必须是目标表的真实列名",
+                        target.table
+                    ),
                 ));
             }
         }
