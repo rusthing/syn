@@ -920,6 +920,15 @@ cd syn-web && pnpm typecheck && pnpm test && pnpm build
    「服务坏了」混成一种。测试走一次性连接（`max_connections(1)` + `acquire_timeout`），
    **不碰进程级池缓存**；`sqlx` 的 `Error::Configuration` 的 `Display` 会把连接串
    （含密码）原样带出，所以失败文案按错误分支给固定措辞，不透传 `e.to_string()`。
+8. **首屏是可读的局部视图，不是缩到看不清的全图**。默认 90%、以任务列为锚
+   （窄窗口优先保证整张任务卡不被裁），右下角「全图」才回到适应比例；点百分比
+   回 100%，警示条上的节点 /「定位到选中卡片」把镜头推到 1:1 居中。从概览比例
+   单击卡片也会自动回到 90%。卡片可 Tab 聚焦（`:focus-visible` 时把镜头带过去）
+   + 回车选中，满足 WCAG 2.2「拖拽不能是唯一操作方式」；`window` 级 pointermove/up
+   监听常驻、拖拽状态放 ref，避免快速单击丢 pointerup、拖动时每帧增删监听。
+   属性栏空态承担图例、操作说明与统计（全是只读文字），页面头部与底部不再重复。
+   卡片字号收敛到 11 / 11.5 / 12.5 / 13.5，`muted` / `warn` / `stage` 三个文字色按
+   各自底色 ≥ 4.5:1 校准（`styles.css` 注释里写了实测值，改色前重算）。
 
 后端只有两个画布接口：`GET /syn/canvas/layout`（全量）、`PUT /syn/canvas/layout`
 （按 `(node_type, node_key)` upsert，校验契约在列注释：`@len 128`、`@range 0..20000`）。

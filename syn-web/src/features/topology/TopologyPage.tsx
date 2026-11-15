@@ -18,12 +18,11 @@
 
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Link2, RefreshCw, TriangleAlert } from "lucide-react";
+import { RefreshCw, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/page";
 import { useToast } from "@/components/ui/Toast";
 import { ConfirmDialog } from "@/components/ui/Drawer";
-import { cn } from "@/lib/utils";
 import type {
   CanvasNodePos,
   DatasourceInfo,
@@ -59,13 +58,6 @@ const CREATE_KIND: Record<"datasource" | "source" | "task", Exclude<Editing, nul
   source: { kind: "source-new" },
   task: { kind: "task-new" },
 };
-
-const KIND_LEGEND = [
-  { label: "数据源", dot: "bg-info" },
-  { label: "取数来源", dot: "bg-violet" },
-  { label: "主题", dot: "bg-line-strong" },
-  { label: "任务", dot: "bg-accent" },
-] as const;
 
 /** 待删除的节点：确认框里要说清「删的是哪一条」 */
 type Removing =
@@ -105,6 +97,8 @@ export function TopologyPage() {
    * 放在页面这一层而不是卡片里：属性栏要显示同一份结果，卡片滚出视野也不该丢。
    */
   const [testResults, setTestResults] = useState<Record<string, DatasourceTestResult>>({});
+  /** 外部要求画布把某张卡移到正中；token 保证连点同一条也能再次定位 */
+  const [focus, setFocus] = useState<{ id: string; token: number } | null>(null);
 
   const runPending = (key: string, run: (settled: () => void) => void) => {
     setPendingKeys((prev) => new Set(prev).add(key));
@@ -262,6 +256,12 @@ export function TopologyPage() {
     setStage(null);
   };
 
+  /** 警示条上的节点名：选中之外还要把镜头推过去，否则点了也不知道指的是哪张卡 */
+  const focusNode = (id: string) => {
+    selectNode(id);
+    setFocus((prev) => ({ id, token: (prev?.token ?? 0) + 1 }));
+  };
+
   /** 卡片最左的「编辑」/ 双击：打开窗体 */
   const openEntity = (node: GraphNode) => {
     if (node.task) return setEditing({ kind: "task", task: node.task, tab: "match" });
@@ -319,22 +319,9 @@ export function TopologyPage() {
     <>
       <PageHeader
         title="控制面板"
-        subtitle={
-          <>
-            数据源 → 取数来源 → 主题 → 任务。左侧组件栏点选新建；单击卡片看属性，
-            卡右上角切换启用，卡里点某一段在右侧看那一段的详情；改配置用卡片下方的「编辑」。
-          </>
-        }
+        subtitle="数据源 → 取数来源 → 主题 → 任务。单击卡片看属性，卡上开关与操作行直接改配置；点右下角「全图」看完整拓扑。"
         actions={
           <>
-            <div className="hidden items-center gap-3 rounded-lg border border-line bg-surface px-2.5 py-1.5 lg:flex">
-              {KIND_LEGEND.map((item) => (
-                <span key={item.label} className="flex items-center gap-1.5 text-[11px] text-muted">
-                  <span className={cn("size-1.5 rounded-full", item.dot)} />
-                  {item.label}
-                </span>
-              ))}
-            </div>
             <Button
               variant="ghost"
               size="sm"
@@ -351,34 +338,36 @@ export function TopologyPage() {
       />
 
       {(issueNodes.length > 0 || warnNodes.length > 0) && (
-        <div className="mb-3 flex flex-wrap items-center gap-1.5 rounded-[10px] border border-line bg-surface px-2.5 py-2">
-          <span className="mr-1 text-[11.5px] font-medium text-ink-soft">需要看一眼</span>
+        <div className="mb-3 flex flex-wrap items-center gap-1.5 rounded-[10px] border border-line bg-surface px-2.5 py-1.5">
+          {/* 只报节点名 + 总数，完整原因在 title / 属性栏里；整行长句子会把画布顶下去 */}
+          <span className="mr-0.5 flex items-center gap-1 text-[11.5px] font-medium text-ink-soft">
+            <TriangleAlert className="size-3 text-warn" />
+            需要看一眼 · {issueNodes.length + warnNodes.length} 处
+          </span>
           {stripIssues.map((node) => (
             <button
               key={node.id}
               type="button"
-              onClick={() => selectNode(node.id)}
-              title={node.issues.join("\n")}
-              className="flex items-center gap-1 rounded-md bg-danger-soft px-1.5 py-0.5 text-[11px] text-danger hover:brightness-95"
+              onClick={() => focusNode(node.id)}
+              title={`${node.title}：${node.issues.join("\n")}（点击定位到这张卡）`}
+              className="max-w-[170px] truncate rounded-md bg-danger-soft px-1.5 py-0.5 text-[11.5px] text-danger hover:brightness-95"
             >
-              <TriangleAlert className="size-3" />
-              {node.title}：{node.issues[0]}
+              {shortNodeName(node.title)}
             </button>
           ))}
           {stripWarns.map((node) => (
             <button
               key={node.id}
               type="button"
-              onClick={() => selectNode(node.id)}
-              title={node.hints.join("\n")}
-              className="flex items-center gap-1 rounded-md bg-warn-soft px-1.5 py-0.5 text-[11px] text-warn hover:brightness-95"
+              onClick={() => focusNode(node.id)}
+              title={`${node.title}：${node.hints.join("\n")}（点击定位到这张卡）`}
+              className="max-w-[170px] truncate rounded-md bg-warn-soft px-1.5 py-0.5 text-[11.5px] text-warn hover:brightness-95"
             >
-              <Link2 className="size-3" />
-              {node.title}：{node.hints[0]}
+              {shortNodeName(node.title)}
             </button>
           ))}
           {stripMore > 0 && (
-            <span className="text-[11px] text-muted">还有 {stripMore} 条，画布上带角标的都是</span>
+            <span className="text-[11.5px] text-muted">还有 {stripMore} 处，画布上带角标</span>
           )}
         </div>
       )}
@@ -412,6 +401,7 @@ export function TopologyPage() {
               onTestDatasource={testDatasourceNode}
               testResults={testResults}
               pendingKeys={pendingKeys}
+              focus={focus}
             />
           </div>
           <TopologyInspector
@@ -423,15 +413,16 @@ export function TopologyPage() {
               setStage(null);
             }}
             test={selectedNode ? testResults[selectedNode.id] : undefined}
+            summary={{
+              nodes: graph.nodes.length,
+              edges: graph.edges.length,
+              tasks: tasks.length,
+              sources: sources.length,
+              datasources: datasources.length,
+            }}
           />
         </div>
       )}
-
-      <p className="mt-2 text-[11px] leading-relaxed text-muted">
-        共 {graph.nodes.length} 个节点、{graph.edges.length} 条连线；其中 {tasks.length} 个任务、
-        {sources.length} 个取数来源、{datasources.length} 个数据源。虚线表示下游已停用，
-        这条链此刻不会真的走。
-      </p>
 
       <TaskEditorDrawer
         open={editing?.kind === "task" || editing?.kind === "task-new"}
@@ -478,6 +469,11 @@ export function TopologyPage() {
       />
     </>
   );
+}
+
+/** 警示条只放节点名：主题节点的 `source:` 前缀在四列图里是冗余信息 */
+function shortNodeName(title: string): string {
+  return title.replace(/^source:/, "");
 }
 
 function removingTitle(removing: Removing): string {

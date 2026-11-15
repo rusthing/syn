@@ -53,7 +53,7 @@ export function TopologyPalette({
         className,
       )}
     >
-      <p className="flex items-center gap-1 px-1 text-[10.5px] font-medium text-muted">
+      <p className="flex items-center gap-1 px-1 text-[11.5px] font-medium text-muted">
         <MousePointerClick className="size-3" />
         组件栏
       </p>
@@ -63,23 +63,24 @@ export function TopologyPalette({
           type="button"
           onClick={() => onAdd(item.kind)}
           title={item.hint}
-          className="flex flex-col items-center gap-1 rounded-lg border border-line bg-canvas px-1 py-2.5 text-[11px] text-ink-soft transition hover:border-accent hover:bg-accent-soft hover:text-ink"
+          aria-label={`新建${item.label}`}
+          className="flex flex-col items-center gap-1 rounded-lg border border-line bg-canvas px-1 py-2.5 text-[11.5px] text-ink-soft transition hover:border-accent hover:bg-accent-soft hover:text-ink"
         >
           <item.icon className={cn("size-4", item.accent)} />
           {item.label}
         </button>
       ))}
-      <button
-        type="button"
-        disabled
+      {/* 主题不是「被禁用的按钮」：它压根没有新建动作，用虚线说明块表达，
+          键盘不必 Tab 到一个永远点不动的 disabled button 上 */}
+      <div
         title="主题是虚拟节点：由取数来源写入、被任务消费，图上自动生成，不需要手动添加"
-        className="flex cursor-not-allowed flex-col items-center gap-1 rounded-lg border border-dashed border-line px-1 py-2.5 text-[11px] text-muted opacity-60"
+        className="flex flex-col items-center gap-1 rounded-lg border border-dashed border-line px-1 py-2.5 text-[11.5px] text-muted"
       >
         <Layers className="size-4" />
         主题
-      </button>
-      <p className="mt-auto px-1 pt-1 text-[10px] leading-relaxed text-muted">
-        点选新建，保存即上图
+      </div>
+      <p className="mt-auto px-1 pt-1 text-[11px] leading-relaxed text-muted">
+        点选新建 · 保存即上图
       </p>
     </aside>
   );

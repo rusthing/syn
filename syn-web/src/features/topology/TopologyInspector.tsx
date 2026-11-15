@@ -55,8 +55,8 @@ function Row({ label, children, mono }: { label: string; children: ReactNode; mo
       <span className="shrink-0 pt-px text-[11.5px] text-muted">{label}</span>
       <span
         className={cn(
-          "min-w-0 break-all text-right text-[12px] text-ink",
-          mono && "font-mono text-[11px] leading-[18px]",
+          "min-w-0 break-all text-right text-[12.5px] text-ink",
+          mono && "font-mono text-[11.5px] leading-[18px]",
         )}
       >
         {children}
@@ -68,8 +68,8 @@ function Row({ label, children, mono }: { label: string; children: ReactNode; mo
 function Section({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
   return (
     <section className="mt-4">
-      <h3 className="text-[11px] font-medium tracking-wide text-muted">{title}</h3>
-      {hint && <p className="mb-1 mt-0.5 text-[10.5px] leading-snug text-muted/80">{hint}</p>}
+      <h3 className="text-[11.5px] font-medium tracking-wide text-muted">{title}</h3>
+      {hint && <p className="mb-1 mt-0.5 text-[11.5px] leading-snug text-muted">{hint}</p>}
       <div className="mt-1 rounded-lg border border-line bg-canvas/60 px-2.5 py-0.5">{children}</div>
     </section>
   );
@@ -83,7 +83,7 @@ function Line({ label, value, mono }: { label: string; value: ReactNode; mono?: 
       <span
         className={cn(
           "ml-auto min-w-0 break-all text-right text-[11.5px] leading-[18px] text-ink",
-          mono && "font-mono text-[10.5px]",
+          mono && "font-mono text-[11.5px]",
         )}
       >
         {value}
@@ -113,10 +113,10 @@ function ConditionList({
     <div className="py-0.5">
       {conds.map((c, i) => (
         <div key={i} className="flex items-start gap-2 py-1">
-          <span className="mt-0.5 shrink-0 rounded bg-sunken px-1 font-mono text-[10px] text-muted">
+          <span className="mt-0.5 shrink-0 rounded bg-sunken px-1 font-mono text-[11px] text-muted">
             {i + 1}
           </span>
-          <span className="min-w-0 break-words font-mono text-[11px] leading-[18px] text-ink">
+          <span className="min-w-0 break-words font-mono text-[11.5px] leading-[18px] text-ink">
             {conditionText([c], fallback)}
           </span>
         </div>
@@ -164,8 +164,8 @@ function StageDetail({ spec, stage }: { spec: TaskSpec; stage: TaskStage }) {
               <div className="py-0.5">
                 {spec.mapping.rows.map((row, i) => (
                   <div key={i} className="flex items-start gap-2 border-b border-line/50 py-1.5 last:border-0">
-                    <span className="shrink-0 font-mono text-[11px] text-ink">{row.to}</span>
-                    <span className="ml-auto min-w-0 break-all text-right font-mono text-[10.5px] text-muted">
+                    <span className="shrink-0 font-mono text-[11.5px] text-ink">{row.to}</span>
+                    <span className="ml-auto min-w-0 break-all text-right font-mono text-[11.5px] text-muted">
                       {mappingSource(row)}
                     </span>
                   </div>
@@ -301,10 +301,10 @@ function StageDetail({ spec, stage }: { spec: TaskSpec; stage: TaskStage }) {
               <div className="py-0.5">
                 {rules.map((rule, i) => (
                   <div key={i} className="flex items-start gap-2 border-b border-line/50 py-1.5 last:border-0">
-                    <span className="mt-0.5 shrink-0 rounded bg-sunken px-1 font-mono text-[10px] text-muted">
+                    <span className="mt-0.5 shrink-0 rounded bg-sunken px-1 font-mono text-[11px] text-muted">
                       {i + 1}
                     </span>
-                    <span className="min-w-0 break-words font-mono text-[11px] leading-[18px] text-ink">
+                    <span className="min-w-0 break-words font-mono text-[11.5px] leading-[18px] text-ink">
                       {ruleSummary(rule)}
                     </span>
                   </div>
@@ -324,7 +324,7 @@ function StageDetail({ spec, stage }: { spec: TaskSpec; stage: TaskStage }) {
                   <p
                     key={i}
                     className={cn(
-                      "flex items-start gap-1.5 px-0.5 py-1 text-[11px] leading-relaxed",
+                      "flex items-start gap-1.5 px-0.5 py-1 text-[11.5px] leading-relaxed",
                       f.severity === "error" ? "text-danger" : "text-warn",
                     )}
                   >
@@ -333,7 +333,7 @@ function StageDetail({ spec, stage }: { spec: TaskSpec; stage: TaskStage }) {
                   </p>
                 ))}
                 {analysis.findings.length > 8 && (
-                  <p className="px-0.5 py-1 text-[10.5px] text-muted">
+                  <p className="px-0.5 py-1 text-[11.5px] text-muted">
                     还有 {analysis.findings.length - 8} 条，打开编辑器的「全貌」看全部
                   </p>
                 )}
@@ -356,9 +356,17 @@ interface Props {
   onClose: () => void;
   /** 该数据源最近一次的连接测试结果（由页面持有，卡片与属性栏共用） */
   test?: DatasourceTestResult | null;
+  /** 空态里显示图的规模：直接用页面已有的统计，不另发请求 */
+  summary?: {
+    nodes: number;
+    edges: number;
+    tasks: number;
+    sources: number;
+    datasources: number;
+  };
 }
 
-export function TopologyInspector({ node, stage, onSelectStage, onClose, test }: Props) {
+export function TopologyInspector({ node, stage, onSelectStage, onClose, test, summary }: Props) {
   const detail = node?.task && stage ? stage : null;
 
   return (
@@ -369,7 +377,7 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test }:
             <button
               type="button"
               onClick={() => onSelectStage(null)}
-              className="flex items-center gap-1 rounded-md px-1 py-0.5 text-[12px] font-medium text-ink-soft hover:bg-sunken hover:text-ink"
+              className="flex items-center gap-1 rounded-md px-1 py-0.5 text-[12.5px] font-medium text-ink-soft hover:bg-sunken hover:text-ink"
             >
               <ArrowLeft className="size-3.5" />
               返回
@@ -380,7 +388,7 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test }:
           <span className="truncate text-[12.5px] font-semibold text-ink">
             {detail ? `${STAGE_TITLE[detail]} · 详情` : "属性"}
           </span>
-          {node && !detail && <span className="text-[11px] text-muted">· {KIND_LABEL[node.kind]}</span>}
+          {node && !detail && <span className="text-[11.5px] text-muted">· {KIND_LABEL[node.kind]}</span>}
         </div>
         {node && (
           <IconButton label="关闭属性栏" onClick={onClose}>
@@ -390,19 +398,73 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test }:
       </header>
 
       {!node ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-          <MousePointerClick className="size-6 text-line-strong" />
-          <p className="text-[12.5px] font-medium text-ink-soft">还没有选中节点</p>
-          <p className="text-[11.5px] leading-relaxed text-muted">
-            单击画布上的卡片查看属性；点任务卡里的某一段，这里换成那一段的详情。
-          </p>
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+          {/* 空态不是留白，而是把「怎么用 / 图上有什么」一次讲清；这里只读，不放任何操作 */}
+          <div className="flex flex-col items-center gap-2 px-3 py-5 text-center">
+            <span className="flex size-9 items-center justify-center rounded-full bg-accent-soft text-accent">
+              <MousePointerClick className="size-4" />
+            </span>
+            <p className="text-[13.5px] font-semibold text-ink">还没有选中节点</p>
+            <p className="text-[11.5px] leading-relaxed text-muted">
+              单击画布上的卡片看属性；拖动卡片可摆位，滚轮缩放、拖空白平移。
+            </p>
+          </div>
+
+          <Section title="怎么用">
+            <ul className="space-y-2 py-2 text-[11.5px] leading-relaxed text-ink-soft">
+              {[
+                "卡片右上角的开关：启用 / 停用，改完下一拍生效。",
+                "卡片最下面的操作行：编辑、测试连接 / 试跑、删除。",
+                "任务卡的六段：点一段，这里换成那一段的只读详情。",
+                "右下角「全图」看整张拓扑；点百分比回到 100% 原始尺寸。",
+              ].map((text, i) => (
+                <li key={text} className="flex items-start gap-2">
+                  <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-accent-soft font-mono text-[11px] text-accent-strong">
+                    {i + 1}
+                  </span>
+                  <span>{text}</span>
+                </li>
+              ))}
+            </ul>
+          </Section>
+
+          <Section title="四类节点">
+            <div className="py-2">
+              {[
+                { label: "数据源", dot: "bg-info", text: "连接配置" },
+                { label: "取数来源", dot: "bg-violet", text: "周期取数" },
+                { label: "主题", dot: "bg-line-strong", text: "虚拟节点，自动生成" },
+                { label: "任务", dot: "bg-accent", text: "六段流水线" },
+              ].map((item) => (
+                <div key={item.label} className="flex items-center gap-2 py-1 text-[11.5px]">
+                  <span className={cn("size-2 shrink-0 rounded-full", item.dot)} />
+                  <span className="shrink-0 font-medium text-ink">{item.label}</span>
+                  <span className="truncate text-muted">{item.text}</span>
+                </div>
+              ))}
+            </div>
+          </Section>
+
+          {summary && (
+            <Section title="当前这张图">
+              <Row label="节点 / 连线">
+                {summary.nodes} / {summary.edges}
+              </Row>
+              <Row label="任务 / 来源 / 数据源">
+                {summary.tasks} / {summary.sources} / {summary.datasources}
+              </Row>
+              <p className="py-2 text-[11.5px] leading-relaxed text-muted">
+                虚线表示下游已停用，这条链此刻不会真的走。
+              </p>
+            </Section>
+          )}
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
           {detail ? (
             <div className="pt-3">
               <h2 className="text-[13.5px] font-semibold leading-snug text-ink">{node.title}</h2>
-              <p className="mt-0.5 text-[10.5px] text-muted">
+              <p className="mt-0.5 text-[11.5px] text-muted">
                 第 {["match", "mapping", "guards", "actions", "target", "outcomes"].indexOf(detail) + 1} 段 ·{" "}
                 {STAGE_TITLE[detail]}
               </p>
@@ -419,7 +481,7 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test }:
                     {node.status}
                   </Badge>
                 </div>
-                <p className="mt-1 break-all font-mono text-[11px] leading-relaxed text-muted">
+                <p className="mt-1 break-all font-mono text-[11.5px] leading-relaxed text-muted">
                   {node.subtitle}
                 </p>
               </div>
@@ -490,11 +552,11 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test }:
                           className="flex w-full items-center justify-between gap-2 rounded-md px-1.5 py-1.5 text-left hover:bg-accent-soft"
                         >
                           <span className="shrink-0 text-[11.5px] text-ink-soft">{segment.label}</span>
-                          <span className="min-w-0 truncate font-mono text-[10.5px] text-muted">
+                          <span className="min-w-0 truncate font-mono text-[11.5px] text-muted">
                             {segment.detail}
                           </span>
                           {segment.issues > 0 && (
-                            <span className="shrink-0 rounded bg-danger-soft px-1 text-[10px] text-danger">
+                            <span className="shrink-0 rounded bg-danger-soft px-1 text-[11px] text-danger">
                               {segment.issues} 处
                             </span>
                           )}
@@ -571,14 +633,14 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test }:
                 <Section title="主题">
                   <Row label="写入来源">{node.producers}</Row>
                   <Row label="消费任务">{node.consumers}</Row>
-                  <p className="py-2 text-[11px] leading-relaxed text-muted">
+                  <p className="py-2 text-[11.5px] leading-relaxed text-muted">
                     主题不是库表实体，由来源写入、被任务消费。要改它请编辑两端的取数来源或任务。
                   </p>
                 </Section>
               )}
 
               {node.source && (
-                <p className="mt-3 rounded-md bg-sunken/70 px-2 py-1.5 text-[10.5px] leading-relaxed text-muted">
+                <p className="mt-3 rounded-md bg-sunken/70 px-2 py-1.5 text-[11.5px] leading-relaxed text-muted">
                   最近运行 {node.source.last_run_ms ? formatRelative(node.source.last_run_ms) : "—"}
                 </p>
               )}

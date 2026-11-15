@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Maximize2, Minus, Plus } from "lucide-react";
+import { Crosshair, Maximize2, Minus, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CanvasNodePos, DatasourceTestResult } from "@/lib/api/types";
 import { nodeId, type GraphNode, type TaskStage, type TopologyGraph } from "./graph";
@@ -33,14 +33,35 @@ import {
 
 const MIN_SCALE = 0.3;
 const MAX_SCALE = 2;
+/** 概览比例下单击卡片，镜头推到这个比例：11px 的字才真正读得了 */
+const READABLE_SCALE = 0.9;
 /** 世界坐标系的逻辑尺寸：节点拖到边缘也不会被裁掉 */
 const WORLD_W = 2600;
 const WORLD_H = 1800;
+
+const NODE_KIND_LABEL: Record<GraphNode["kind"], string> = {
+  datasource: "数据源",
+  source: "取数来源",
+  topic: "主题",
+  task: "任务",
+};
 
 interface View {
   x: number;
   y: number;
   scale: number;
+}
+
+interface DragState {
+  id: string;
+  dx: number;
+  dy: number;
+  x: number;
+  y: number;
+  /** 起点 + 是否已移动：抬手时据此判断「这是点击还是拖拽」 */
+  cx: number;
+  cy: number;
+  moved: boolean;
 }
 
 /** 悬停说明：坐标是相对画布的 CSS 像素，气泡画在缩放容器之外，字号不会被 scale 缩掉 */
@@ -79,6 +100,11 @@ interface Props {
   /** 各数据源最近一次的测试结果，卡片状态栏显示 */
   testResults?: Record<string, DatasourceTestResult>;
   /**
+   * 外部请求把某张卡移到视野正中（警示条点节点）。token 每次点击都变，
+   * 连点同一条也能再次定位；不传则画布完全自己管视角。
+   */
+  focus?: { id: string; token: number } | null;
+  /**
    * 正在进行的开关请求，键是 `${node.id}:${action}`。启用与独占各占一键，
    * 一个在途时不会把另一个也点不了；只给视觉提示，不禁用任何按钮。
    */
@@ -101,20 +127,17 @@ export function TopologyCanvas({
   onTestDatasource,
   testResults,
   pendingKeys,
+  focus,
 }: Props) {
   const boxRef = useRef<HTMLDivElement>(null);
-  const [view, setView] = useState<View>({ x: 0, y: 0, scale: 0.8 });
-  const [drag, setDrag] = useState<{
-    id: string;
-    dx: number;
-    dy: number;
-    x: number;
-    y: number;
-    /** 起点 + 是否已移动：抬手时据此判断「这是点击还是拖拽」 */
-    cx: number;
-    cy: number;
-    moved: boolean;
-  } | null>(null);
+  const [view, setView] = useState<View>({ x: 0, y: 0, scale: READABLE_SCALE });
+  /**
+   * 拖拽状态同时放在 ref 与 state：ref 供常驻的 window 监听器同步读取
+   * （pointerdown 后立刻 pointerup 也不会漏），state 只负责把卡画到新位置。
+   * 以前监听器挂在依赖 drag 的 effect 里，每帧都在增删监听，快速点击还会丢 pointerup。
+   */
+  const dragRef = useRef<DragState | null>(null);
+  const [drag, setDrag] = useState<DragState | null>(null);
   const panRef = useRef<{ px: number; py: number; vx: number; vy: number } | null>(null);
   const fittedRef = useRef(false);
   const [hint, setHint] = useState<Hint | null>(null);
@@ -165,7 +188,7 @@ export function TopologyCanvas({
   const fit = useCallback((floor = MIN_SCALE) => {
     const box = boxRef.current;
     if (!box || graph.nodes.length === 0) return;
-    const pad = 48;
+    const pad = 32;
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -189,13 +212,67 @@ export function TopologyCanvas({
     });
   }, [graph.nodes, rectOf]);
 
-  // 第一次拿到节点时自动适应；之后不再自动调，避免用户摆好的视角被抢走
+  /** 把某张卡移到视口正中：警示条、键盘选中、定位按钮共用这一条路径 */
+  const focusOn = useCallback(
+    (id: string, scale: number) => {
+      const box = boxRef.current;
+      const node = graph.nodes.find((n) => n.id === id);
+      if (!box || !node) return;
+      const r = rectOf(node);
+      const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
+      setView({
+        x: box.clientWidth / 2 - (r.x + r.w / 2) * next,
+        y: box.clientHeight / 2 - (r.y + r.h / 2) * next,
+        scale: next,
+      });
+    },
+    [graph.nodes, rectOf],
+  );
+
+  /** 外部（警示条）要求定位：token 变了才动，节点数据刷新不会把镜头抢走 */
+  const lastFocusToken = useRef(0);
+  useEffect(() => {
+    if (!focus || focus.token === lastFocusToken.current) return;
+    lastFocusToken.current = focus.token;
+    focusOn(focus.id, 1);
+  }, [focus, focusOn]);
+
+  /**
+   * 首屏不追求「一屏装下十几张卡」：45% 时 11.5px 的字只剩 5px，开关也点不准。
+   * 从数据流起点以 90% 进入，卡片可读、操作可点；全貌交给右下角的「全图」按钮。
+   */
+  const readableStart = useCallback(() => {
+    const box = boxRef.current;
+    if (!box || graph.nodes.length === 0) return;
+    let minX = Infinity;
+    let minY = Infinity;
+    let taskX = Infinity;
+    for (const node of graph.nodes) {
+      const r = rectOf(node);
+      minX = Math.min(minX, r.x);
+      minY = Math.min(minY, r.y);
+      if (node.kind === "task") taskX = Math.min(taskX, r.x);
+    }
+    // 以任务列为锚：任务卡信息最密、也最常被操作，让它在首屏完整可见；
+    // 左边还留出主题列 / 取数来源列的一角，其余列交给「全图」和平移。
+    const anchorX = Number.isFinite(taskX) ? taskX : minX;
+    // 窄窗口下优先保证整张任务卡装得下，宁可少露一点左侧主题列
+    const left = Math.min(
+      box.clientWidth * 0.28,
+      Math.max(24, box.clientWidth - 620 * READABLE_SCALE - 16),
+    );
+    setView({
+      x: left - anchorX * READABLE_SCALE,
+      y: 28 - minY * READABLE_SCALE,
+      scale: READABLE_SCALE,
+    });
+  }, [graph.nodes, rectOf]);
+
   useEffect(() => {
     if (fittedRef.current || graph.nodes.length === 0) return;
     fittedRef.current = true;
-    // 初始只保证「大致装得下」，再小就只剩色块；真要一览无余点右下角的适应按钮
-    fit(0.45);
-  }, [graph.nodes.length, fit]);
+    readableStart();
+  }, [graph.nodes.length, readableStart]);
 
   /* -------------------------------- 缩放 -------------------------------- */
 
@@ -235,6 +312,17 @@ export function TopologyCanvas({
     setView({ x: cx - wx * next, y: cy - wy * next, scale: next });
   };
 
+  /** 百分比按钮：以视口中心为锚点回到 1:1，卡片上的字按原始字号渲染 */
+  const resetScale = () => {
+    const box = boxRef.current;
+    if (!box) return;
+    const cx = box.clientWidth / 2;
+    const cy = box.clientHeight / 2;
+    const wx = (cx - view.x) / view.scale;
+    const wy = (cy - view.y) / view.scale;
+    setView({ x: cx - wx, y: cy - wy, scale: 1 });
+  };
+
   /* ------------------------------ 拖拽 / 平移 ------------------------------ */
 
   const startNodeDrag = (node: GraphNode) => (e: React.PointerEvent) => {
@@ -251,7 +339,7 @@ export function TopologyCanvas({
     if (!rect) return;
     const wx = (e.clientX - rect.left - view.x) / view.scale;
     const wy = (e.clientY - rect.top - view.y) / view.scale;
-    setDrag({
+    const next: DragState = {
       id: node.id,
       dx: wx - pos.x,
       dy: wy - pos.y,
@@ -260,37 +348,45 @@ export function TopologyCanvas({
       cx: e.clientX,
       cy: e.clientY,
       moved: false,
-    });
+    };
+    dragRef.current = next;
+    setDrag(next);
   };
 
+  /**
+   * window 级监听常驻，不挂在 `drag` 上：pointerdown 写完 ref 后哪怕立刻抬手
+   * 也能收到 pointerup（快速单击不会「点了没反应」），拖动时也不必每帧增删监听。
+   */
   useEffect(() => {
-    if (!drag) return;
     const onMoveEvent = (e: PointerEvent) => {
+      const d = dragRef.current;
       const rect = boxRef.current?.getBoundingClientRect();
-      if (!rect) return;
+      if (!d || !rect) return;
       const wx = (e.clientX - rect.left - view.x) / view.scale;
       const wy = (e.clientY - rect.top - view.y) / view.scale;
-      setDrag((d) =>
-        d
-          ? {
-              ...d,
-              moved:
-                d.moved || Math.abs(e.clientX - d.cx) > 3 || Math.abs(e.clientY - d.cy) > 3,
-              x: Math.max(0, Math.min(WORLD_W, wx - d.dx)),
-              y: Math.max(0, Math.min(WORLD_H, wy - d.dy)),
-            }
-          : d,
-      );
+      const next: DragState = {
+        ...d,
+        moved: d.moved || Math.abs(e.clientX - d.cx) > 3 || Math.abs(e.clientY - d.cy) > 3,
+        x: Math.max(0, Math.min(WORLD_W, wx - d.dx)),
+        y: Math.max(0, Math.min(WORLD_H, wy - d.dy)),
+      };
+      dragRef.current = next;
+      setDrag(next);
     };
     const onUp = () => {
-      setDrag((d) => {
-        if (!d) return null;
-        if (d.moved) onMove(d.id, { x: Math.round(d.x), y: Math.round(d.y) });
-        // 单击始终选中（右侧属性栏常驻）：点空白才取消。以前做成 toggle，
-        // 连点同一张卡会把选中态抵消掉，属性栏/OA 面板会莫名消失。
-        else onSelect(d.id);
-        return null;
-      });
+      const d = dragRef.current;
+      if (!d) return;
+      dragRef.current = null;
+      setDrag(null);
+      if (d.moved) {
+        onMove(d.id, { x: Math.round(d.x), y: Math.round(d.y) });
+        return;
+      }
+      // 单击始终选中（右侧属性栏常驻）：点空白才取消。以前做成 toggle，
+      // 连点同一张卡会把选中态抵消掉，属性栏会莫名消失。
+      onSelect(d.id);
+      // 缩到概览比例时字只有 4~5px，选中了也读不出内容：顺手把镜头推回可读尺寸。
+      if (view.scale < READABLE_SCALE) focusOn(d.id, READABLE_SCALE);
     };
     window.addEventListener("pointermove", onMoveEvent);
     window.addEventListener("pointerup", onUp);
@@ -298,7 +394,7 @@ export function TopologyCanvas({
       window.removeEventListener("pointermove", onMoveEvent);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [drag, view.x, view.y, view.scale, onMove, onSelect]);
+  }, [view.x, view.y, view.scale, onMove, onSelect, focusOn]);
 
   const startPan = (e: React.PointerEvent) => {
     if (e.button !== 0 || isControl(e.target)) return;
@@ -441,10 +537,34 @@ export function TopologyCanvas({
             const pos = effectivePos(node);
             const size = cardSize(node.kind);
             const dragging = drag?.id === node.id;
+            const selected = node.id === selectedId;
             const common = {
-              key: node.id,
               style: { left: pos.x, top: pos.y, width: size.w, height: size.h },
               className: cn("absolute", dragging ? "z-20 cursor-grabbing" : "z-10 cursor-grab"),
+              /**
+               * 卡片自己可聚焦：拖拽之外给键盘一条「选中 / 看属性」的路
+               * （WCAG 2.2 要求拖拽不能是唯一操作方式）。key 不放在 props 里 spread，
+               * React 19 会警告「key prop is being spread into JSX」。
+               */
+              tabIndex: 0,
+              role: "button" as const,
+              "aria-label": `${NODE_KIND_LABEL[node.kind]} ${node.title}，回车查看属性`,
+              "aria-pressed": selected,
+              onKeyDown: (e: React.KeyboardEvent) => {
+                // 卡里的开关 / 段 / 操作按钮也响应回车，不要冒泡成「选中卡片」
+                if (e.target !== e.currentTarget) return;
+                if (e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                onSelect(node.id);
+                focusOn(node.id, Math.max(view.scale, READABLE_SCALE));
+              },
+              onFocus: (e: React.FocusEvent) => {
+                // Tab 到画布外的卡片时把镜头带过去，否则焦点圈在裁剪区外根本看不见。
+                // 鼠标点击不会命中 :focus-visible，浏览时视角不会被抢走。
+                if (e.target !== e.currentTarget) return;
+                if (!e.currentTarget.matches(":focus-visible")) return;
+                focusOn(node.id, view.scale);
+              },
               onPointerDown: startNodeDrag(node),
               onDoubleClick: (e: React.MouseEvent) => {
                 // 双击开关不该顺手把窗体打开（会盖住刚点的那张卡）
@@ -458,14 +578,14 @@ export function TopologyCanvas({
 
             if (node.kind === "topic") {
               return (
-                <div {...common}>
+                <div key={node.id} {...common}>
                   <TopicCard node={node} selected={node.id === selectedId} />
                 </div>
               );
             }
             if (node.kind === "task") {
               return (
-                <div {...common}>
+                <div key={node.id} {...common}>
                   <TaskCard
                     node={node}
                     selected={node.id === selectedId}
@@ -496,7 +616,7 @@ export function TopologyCanvas({
               );
             }
             return (
-              <div {...common}>
+              <div key={node.id} {...common}>
                 <EntityCard
                   node={node}
                   selected={node.id === selectedId}
@@ -552,38 +672,65 @@ export function TopologyCanvas({
           </div>
         )}
 
-        <div className="absolute bottom-3 right-3 flex items-center gap-1 rounded-lg border border-line bg-surface/95 p-1 shadow-panel">
+        <div
+          role="group"
+          aria-label="画布视图"
+          className="absolute bottom-3 right-3 flex items-center gap-1 rounded-lg border border-line bg-surface/95 p-1 shadow-panel"
+        >
           <button
             type="button"
             aria-label="缩小"
+            title="缩小"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={() => zoomBy(1 / 1.2)}
-            className="flex size-7 items-center justify-center rounded-md text-muted hover:bg-sunken hover:text-ink"
+            className="flex size-8 items-center justify-center rounded-md text-muted hover:bg-sunken hover:text-ink"
           >
             <Minus className="size-3.5" />
           </button>
-          <span className="w-10 text-center font-mono text-[11px] text-muted">
+          <button
+            type="button"
+            aria-label="回到 100% 原始尺寸"
+            title="回到 100% 原始尺寸（卡片按真实字号显示）"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={resetScale}
+            className="w-11 rounded-md py-1 text-center font-mono text-[11.5px] text-muted hover:bg-sunken hover:text-ink"
+          >
             {Math.round(view.scale * 100)}%
-          </span>
+          </button>
           <button
             type="button"
             aria-label="放大"
+            title="放大"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={() => zoomBy(1.2)}
-            className="flex size-7 items-center justify-center rounded-md text-muted hover:bg-sunken hover:text-ink"
+            className="flex size-8 items-center justify-center rounded-md text-muted hover:bg-sunken hover:text-ink"
           >
             <Plus className="size-3.5" />
           </button>
-          <span className="mx-0.5 h-4 w-px bg-line" />
+          <span className="mx-0.5 h-4 w-px bg-line" aria-hidden />
+          {selectedId && (
+            <button
+              type="button"
+              aria-label="定位到选中卡片"
+              title="把选中的卡片移到画布正中"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => focusOn(selectedId, 1)}
+              className="flex size-8 items-center justify-center rounded-md text-accent hover:bg-accent-soft"
+            >
+              <Crosshair className="size-3.5" />
+            </button>
+          )}
+          {/* 首屏是可读的局部视图，这条回全图的路要做成能看见文字的主按钮 */}
           <button
             type="button"
-            aria-label="适应窗口"
-            title="适应窗口"
+            aria-label="适应窗口：看全整张图"
+            title="适应窗口：回到能看全整张图的比例"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={() => fit()}
-            className="flex size-7 items-center justify-center rounded-md text-muted hover:bg-sunken hover:text-ink"
+            className="flex h-8 items-center gap-1 rounded-md border border-accent/30 bg-accent-soft px-2 text-[11.5px] font-medium text-accent-strong hover:bg-[#d9ebe3]"
           >
             <Maximize2 className="size-3.5" />
+            全图
           </button>
         </div>
       </div>

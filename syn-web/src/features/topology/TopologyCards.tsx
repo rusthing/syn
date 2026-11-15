@@ -95,7 +95,7 @@ const TONE_BAR: Record<NodeTone, string> = {
 /** 状态栏上的小标签，三类卡片共用 */
 function TonePill({ tone, text }: { tone: NodeTone; text: string }) {
   return (
-    <span className={cn("rounded px-1.5 py-0.5 text-[10.5px] font-medium", TONE_PILL[tone])}>{text}</span>
+    <span className={cn("rounded px-1.5 py-0.5 text-[11.5px] font-medium", TONE_PILL[tone])}>{text}</span>
   );
 }
 
@@ -108,7 +108,7 @@ function Flags({ node, onHint }: { node: GraphNode; onHint?: HintHandler }) {
       onMouseEnter={(e) => onHint?.(e, title)}
       onMouseLeave={() => onHint?.(null, "")}
       className={cn(
-        "flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[10px]",
+        "flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[11px]",
         node.issues.length ? "bg-danger-soft text-danger" : "bg-warn-soft text-warn",
       )}
     >
@@ -137,7 +137,9 @@ export function CardShell({
       onPointerDown={onPointerDown}
       className={cn(
         "relative flex h-full w-full cursor-pointer flex-col rounded-[10px] border bg-surface px-2.5 py-2 shadow-panel transition-shadow",
-        selected ? "border-accent ring-2 ring-accent/25" : "border-line hover:border-line-strong",
+        selected
+          ? "border-accent shadow-float ring-2 ring-accent/30"
+          : "border-line hover:border-line-strong hover:shadow-float",
         className,
       )}
     >
@@ -168,8 +170,9 @@ function CardHead({
   const meta = KIND_META[node.kind];
   return (
     <div className="flex items-center justify-between gap-2">
-      <span className={cn("flex items-center gap-1 text-[11px] font-medium", meta.accent)}>
-        <meta.icon className="size-3" />
+      {/* 类型文字统一墨灰，颜色只留在图标与左侧状态条上：四类色 + 状态色会糊成一团 */}
+      <span className="flex items-center gap-1 text-[11.5px] font-medium text-ink-soft">
+        <meta.icon className={cn("size-3", meta.accent)} />
         {meta.label}
       </span>
       <span
@@ -223,7 +226,9 @@ function CardAction({ label, icon, onClick, onHint, tone, busy }: CardActionProp
       }}
       // 请求中不禁用：原生 disabled 连 click 都不派发，看起来就是「点不动」
       className={cn(
-        "flex size-6 items-center justify-center rounded-md border border-transparent text-muted transition-colors",
+        // 视觉仍是 24px（卡片高度固定），透明伪元素把点击热区扩到 ~32px
+        "relative flex size-6 items-center justify-center rounded-md border border-transparent text-muted transition-colors",
+        "after:absolute after:-inset-1 after:content-['']",
         "hover:bg-sunken hover:text-ink",
         tone === "danger" && "hover:bg-danger-soft hover:text-danger",
         busy && "cursor-wait opacity-70",
@@ -374,21 +379,21 @@ export function EntityCard({
       />
 
       <div className="mt-1 flex items-center gap-1.5">
-        <span className="truncate text-[13px] font-medium text-ink">{node.title}</span>
-        <span className="ml-auto shrink-0 font-mono text-[10px] text-muted">{node.key}</span>
+        <span className="truncate text-[13.5px] font-medium text-ink">{node.title}</span>
+        <span className="ml-auto shrink-0 font-mono text-[11px] text-muted">{node.key}</span>
       </div>
 
-      <div className="mt-0.5 truncate font-mono text-[11px] text-muted">{node.subtitle}</div>
+      <div className="mt-0.5 truncate font-mono text-[11.5px] text-muted">{node.subtitle}</div>
 
       {/* 状态栏：状态标签 · 关键计数 · 测试结果（数据源）· 问题角标 */}
       <div className="mt-auto flex min-w-0 items-center gap-1.5 pt-1" data-no-drag>
         <TonePill tone={node.tone} text={node.status} />
         {node.kind === "datasource" ? (
-          <span className="truncate text-[10.5px] text-muted">
+          <span className="truncate text-[11.5px] text-muted">
             v{node.datasource?.version ?? 1} · 连接池 {node.datasource?.maxConnections ?? 0}
           </span>
         ) : (
-          <span className="truncate text-[10.5px] text-muted">
+          <span className="truncate text-[11.5px] text-muted">
             {/* last_run_ms 是字符串毫秒（U64 走字符串），不能直接喂 Date —— 「1763003520000」
                 会被当成日期串解析成 Invalid Date，所以统一走 time.ts 的 toMs */}
             {node.source?.last_run_ms
@@ -400,7 +405,7 @@ export function EntityCard({
           {test && (
             <span
               className={cn(
-                "truncate rounded px-1 py-0.5 text-[10px] font-medium",
+                "truncate rounded px-1 py-0.5 text-[11px] font-medium",
                 test.ok ? "bg-success-soft text-success" : "bg-danger-soft text-danger",
               )}
             >
@@ -454,6 +459,7 @@ function SegmentChip({
   onClick: (stage: TaskStage) => void;
 }) {
   const isTarget = segment.stage === "target";
+  const describe = `${segment.label} · ${segment.detail}${segment.issues ? ` · ${segment.issues} 处待修正` : ""}`;
   return (
     <button
       type="button"
@@ -464,7 +470,9 @@ function SegmentChip({
         e.stopPropagation();
         onClick(segment.stage);
       }}
-      title={`${segment.label} · ${segment.detail}${segment.issues ? ` · ${segment.issues} 处待修正` : ""}`}
+      title={describe}
+      // 原生 title 会跟着画布 scale 缩掉；键盘/读屏走这一份完整说明
+      aria-label={`${describe}；点这里在右侧属性栏看详情`}
       className={cn(
         "group relative flex h-11 min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-md border px-1 transition-colors",
         isTarget
@@ -475,7 +483,7 @@ function SegmentChip({
     >
       <span
         className={cn(
-          "text-[10px] font-medium",
+          "text-[11px] font-medium",
           isTarget ? "text-accent-strong" : "text-ink-soft",
           segment.issues > 0 && "text-danger",
         )}
@@ -484,14 +492,14 @@ function SegmentChip({
       </span>
       <span
         className={cn(
-          "w-full truncate px-0.5 text-center font-mono text-[10.5px]",
+          "w-full truncate px-0.5 text-center font-mono text-[11.5px]",
           isTarget ? "text-accent-strong" : "text-muted",
         )}
       >
         {segment.detail}
       </span>
       {segment.issues > 0 && (
-        <span className="absolute -right-1 -top-1 flex size-3 items-center justify-center rounded-full bg-danger text-[8px] font-medium text-white">
+        <span className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full bg-danger text-[10px] font-medium text-white">
           {segment.issues}
         </span>
       )}
@@ -558,15 +566,15 @@ export function TaskCard({
       />
 
       <div className="mt-0.5 flex items-center gap-1.5">
-        <span className="truncate text-[13px] font-medium text-ink">{node.title}</span>
-        <span className="ml-auto shrink-0 font-mono text-[10.5px] text-muted">{node.key}</span>
+        <span className="truncate text-[13.5px] font-medium text-ink">{node.title}</span>
+        <span className="ml-auto shrink-0 font-mono text-[11.5px] text-muted">{node.key}</span>
       </div>
 
       <div className="mt-1.5 flex items-stretch gap-1">
         {segments.map((segment, i) => (
           <div key={segment.stage} className="flex min-w-0 flex-1 items-center gap-1">
             <SegmentChip segment={segment} onClick={onOpenStage} />
-            {i < segments.length - 1 && <span className="text-[10px] text-line-strong">›</span>}
+            {i < segments.length - 1 && <span className="text-[11px] text-line-strong">›</span>}
           </div>
         ))}
       </div>
@@ -574,17 +582,17 @@ export function TaskCard({
       {/* 状态栏：结论 + 今日量 + 失败率 + 问题角标 */}
       <div className="mt-auto flex min-w-0 items-center gap-1.5 pt-1" data-no-drag>
         <TonePill tone={node.tone} text={node.status} />
-        <span className="truncate text-[10.5px] text-muted">
+        <span className="truncate text-[11.5px] text-muted">
           {task?.spec.target.kind === "db" ? "直写库表" : "HTTP"} ·{" "}
           {node.subtitle.split(" · ")[0] ?? ""}
         </span>
-        <span className="ml-auto shrink-0 font-mono text-[10px] text-muted">
+        <span className="ml-auto shrink-0 font-mono text-[11px] text-muted">
           {stats && stats.total > 0 ? `今日 ${stats.total.toLocaleString()} 条` : "今日无记录"}
         </span>
         {stats && stats.total > 0 && (
           <span
             className={cn(
-              "shrink-0 font-mono text-[10px]",
+              "shrink-0 font-mono text-[11px]",
               badRate >= 1 ? "text-danger" : badRate > 0 ? "text-warn" : "text-muted",
             )}
           >
@@ -648,10 +656,10 @@ export function TopicCard({
     >
       <div className="flex items-center gap-1.5">
         <Layers className="size-3 shrink-0 text-muted" />
-        <span className="truncate font-mono text-[12px] text-ink">{node.title}</span>
+        <span className="truncate font-mono text-[12.5px] text-ink">{node.title}</span>
         <Flags node={node} />
       </div>
-      <span className="mt-0.5 truncate pl-4 text-[10.5px] text-muted">{node.subtitle}</span>
+      <span className="mt-0.5 truncate pl-4 text-[11.5px] text-muted">{node.subtitle}</span>
     </div>
   );
 }
