@@ -5,6 +5,24 @@
 --    匹配与列表都按 (sort_order, id) 排。
 
 alter table syn_task drop constraint if exists AK_CODE_SYN_TASK;
+
+-- 画布坐标的节点键也要从 code 换成主键 id，且**必须在 drop column 之前**做。
+-- 漏了这一步不会报错：坐标还在库里，只是没有任何节点认领它，画布上那个任务的摆放
+-- 静默退回默认布局 —— 用户拖过一次的东西被谁擦掉了都查不出来。
+-- 先删掉可能已存在的 id 行（旧前端只写 code 行，这条正常是 0 行），避免改键时撞唯一约束。
+delete from syn_canvas_layout c
+ using syn_task t
+ where c.node_type = 4
+   and c.node_key = t.id::text
+   and exists (select 1 from syn_canvas_layout d
+                where d.node_type = 4 and d.node_key = t.code);
+
+update syn_canvas_layout c
+   set node_key = t.id::text
+  from syn_task t
+ where c.node_type = 4
+   and c.node_key = t.code;
+
 alter table syn_task drop column if exists code;
 alter table syn_task rename column priority to sort_order;
 
