@@ -30,8 +30,8 @@ pub async fn list() -> Result<Json<Ro<Vec<SynSourceVo>>>, CtrlError> {
 pub async fn page(
     Query(dto): Query<SynSourceQueryDto>,
 ) -> Result<Json<Ro<PageRx<SynSourceVo>>>, CtrlError> {
-    let (total, list) = SynSourceSvc::page(dto).await?;
-    Ok(ok_page("查询数据源分页成功", U64(1), total, list))
+    let (page_num, total, list) = SynSourceSvc::page(dto).await?;
+    Ok(ok_page("查询数据源分页成功", page_num, total, list))
 }
 
 #[utoipa::path(get, path = "/syn/source/{id}", responses((status = OK, body = Ro<SynSourceVo>)))]

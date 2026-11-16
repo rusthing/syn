@@ -38,7 +38,12 @@ pub struct SynDeliverySvc;
 
 impl SynDeliverySvc {
     /// # 分页（台账 + 失败明细）
-    pub async fn page(dto: SynDeliveryQueryDto) -> Result<(U64, Vec<SynDeliveryVo>), SvcError> {
+    ///
+    /// 返回 `(实际页码, 总数, 列表)`。这里不走 DAO，页码自己夹：请求超过总页数时
+    /// 与 DAO 一致地落到最后一页，offset 也用夹过的值，避免「响应说第 2 页、列表却是空」。
+    pub async fn page(
+        dto: SynDeliveryQueryDto,
+    ) -> Result<(U64, U64, Vec<SynDeliveryVo>), SvcError> {
         let db = get_db_conn()?;
 
         // 任务名是名称筛选，两张表都只存 task_id：先换 ID，再统一按 task_id 过滤
@@ -77,10 +82,13 @@ impl SynDeliverySvc {
             .unwrap_or(0);
 
         // 分页放在 union 结果上，不能两边各取一页再合并：那样批量大小与页码都会错
+        let page_size = dto.page_size();
+        let total_pages = ((total + page_size as i64 - 1) / page_size as i64).max(1);
+        let page_num = (dto.page_num() as i64).clamp(1, total_pages);
         let mut page_values = values;
-        page_values.push((dto.page_size() as i64).into());
+        page_values.push((page_size as i64).into());
         let limit_at = page_values.len();
-        page_values.push(((dto.page_num() - 1) as i64 * dto.page_size() as i64).into());
+        page_values.push(((page_num - 1) * page_size as i64).into());
         let offset_at = page_values.len();
         let list_sql = format!(
             "select * from ({UNION_SQL}) u where {where_sql} \
@@ -101,7 +109,11 @@ impl SynDeliverySvc {
             .map(to_vo)
             .collect::<Result<Vec<_>, DbErr>>()
             .map_err(db_err)?;
-        Ok((U64::from(total.max(0) as u64), list))
+        Ok((
+            U64::from(page_num.max(1) as u64),
+            U64::from(total.max(0) as u64),
+            list,
+        ))
     }
 }
 

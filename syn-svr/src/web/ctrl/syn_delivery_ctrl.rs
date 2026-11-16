@@ -6,7 +6,7 @@
 use axum::Json;
 use axum::debug_handler;
 use axum::extract::Query;
-use robotech::api::{PageRx, Ro, U64};
+use robotech::api::{PageRx, Ro};
 use robotech::macros::log_call;
 use robotech::web::CtrlError;
 use syn_api::{SynDeliveryQueryDto, SynDeliveryVo};
@@ -21,6 +21,6 @@ use crate::svc::SynDeliverySvc;
 pub async fn page(
     Query(dto): Query<SynDeliveryQueryDto>,
 ) -> Result<Json<Ro<PageRx<SynDeliveryVo>>>, CtrlError> {
-    let (total, list) = SynDeliverySvc::page(dto).await?;
-    Ok(ok_page("查询投递记录成功", U64(1), total, list))
+    let (page_num, total, list) = SynDeliverySvc::page(dto).await?;
+    Ok(ok_page("查询投递记录成功", page_num, total, list))
 }

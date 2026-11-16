@@ -5,7 +5,7 @@
 use axum::Json;
 use axum::debug_handler;
 use axum::extract::Query;
-use robotech::api::{PageRx, Ro, U64};
+use robotech::api::{PageRx, Ro};
 use robotech::macros::log_call;
 use robotech::web::CtrlError;
 use syn_api::{SynIdemQueryDto, SynIdemVo};
@@ -20,6 +20,6 @@ use crate::svc::SynIdemSvc;
 pub async fn page(
     Query(dto): Query<SynIdemQueryDto>,
 ) -> Result<Json<Ro<PageRx<SynIdemVo>>>, CtrlError> {
-    let (total, list) = SynIdemSvc::page(dto).await?;
-    Ok(ok_page("查询幂等台账成功", U64(1), total, list))
+    let (page_num, total, list) = SynIdemSvc::page(dto).await?;
+    Ok(ok_page("查询幂等台账成功", page_num, total, list))
 }

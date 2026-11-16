@@ -15,7 +15,8 @@ pub fn ok<T: Serialize>(msg: &str, data: T) -> Json<Ro<T>> {
     Json(Ro::success(msg.to_string()).extra(Some(data)))
 }
 
-/// 分页响应。`page_num` 由 DAO 返回（超页时它会被夹到最后一页）
+/// 分页响应。`page_num` 是**实际生效**的页码：服务层把超页的请求夹到最后一页后回传，
+/// 不能让响应里的页码恒为 1，否则前端翻页会被打回第一页。
 pub fn ok_page<T: Serialize>(
     msg: &str,
     page_num: U64,

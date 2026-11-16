@@ -33,7 +33,8 @@ pub struct SynSourceSvc;
 
 impl SynSourceSvc {
     /// # 分页
-    pub async fn page(dto: SynSourceQueryDto) -> Result<(U64, Vec<SynSourceVo>), SvcError> {
+    /// 返回 `(实际页码, 总数, 列表)`；页码超页时由 DAO 夹到最后一页。
+    pub async fn page(dto: SynSourceQueryDto) -> Result<(U64, U64, Vec<SynSourceVo>), SvcError> {
         let db = get_db_conn()?;
         let mut cond = Condition::all();
         if let Some(kw) = dto.keyword.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -50,7 +51,7 @@ impl SynSourceSvc {
         if let Some(enabled) = dto.enabled {
             cond = cond.add(Column::Enabled.eq(enabled));
         }
-        let (_, total, rows) = SynSourceDao::page_by_condition::<_, Model>(
+        let (page_num, total, rows) = SynSourceDao::page_by_condition::<_, Model>(
             cond,
             &Some("code:asc".to_string()),
             U64(dto.page_num()),
@@ -60,6 +61,7 @@ impl SynSourceSvc {
         .await?;
         let cursors = cursors_of(&rows, db.as_ref()).await?;
         Ok((
+            page_num,
             total,
             rows.into_iter()
                 .map(|m| {

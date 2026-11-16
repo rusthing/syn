@@ -40,7 +40,10 @@ pub struct SynTaskSvc;
 
 impl SynTaskSvc {
     /// # 分页
-    pub async fn page(dto: SynTaskQueryDto) -> Result<(U64, Vec<SynTaskVo>), SvcError> {
+    ///
+    /// 返回 `(实际页码, 总数, 列表)`：页码由 DAO 在超页时夹到最后一页，
+    /// 响应里要回这个值，请求的 pageNum 才有意义。
+    pub async fn page(dto: SynTaskQueryDto) -> Result<(U64, U64, Vec<SynTaskVo>), SvcError> {
         let db = get_db_conn()?;
         let mut cond = Condition::all();
         if let Some(kw) = dto.keyword.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -57,7 +60,7 @@ impl SynTaskSvc {
             cond = cond.add(Column::Enabled.eq(enabled));
         }
 
-        let (_, total, list) = SynTaskDao::page_by_condition::<_, Model>(
+        let (page_num, total, list) = SynTaskDao::page_by_condition::<_, Model>(
             cond,
             &Some("sort_order:asc,id:asc".to_string()),
             U64(dto.page_num()),
@@ -65,7 +68,11 @@ impl SynTaskSvc {
             db.as_ref(),
         )
         .await?;
-        Ok((total, list.into_iter().map(SynTaskVo::from).collect()))
+        Ok((
+            page_num,
+            total,
+            list.into_iter().map(SynTaskVo::from).collect(),
+        ))
     }
 
     /// # 全量列表

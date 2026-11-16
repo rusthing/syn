@@ -32,8 +32,8 @@ pub async fn list() -> Result<Json<Ro<Vec<SynDatasourceVo>>>, CtrlError> {
 pub async fn page(
     Query(dto): Query<SynDatasourceQueryDto>,
 ) -> Result<Json<Ro<PageRx<SynDatasourceVo>>>, CtrlError> {
-    let (total, list) = SynDatasourceSvc::page(dto).await?;
-    Ok(ok_page("查询数据源分页成功", U64(1), total, list))
+    let (page_num, total, list) = SynDatasourceSvc::page(dto).await?;
+    Ok(ok_page("查询数据源分页成功", page_num, total, list))
 }
 
 #[utoipa::path(get, path = "/syn/datasource/{id}", responses((status = OK, body = Ro<SynDatasourceVo>)))]

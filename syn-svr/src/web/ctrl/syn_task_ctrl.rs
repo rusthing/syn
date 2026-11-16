@@ -29,8 +29,8 @@ pub async fn list() -> Result<Json<Ro<Vec<SynTaskVo>>>, CtrlError> {
 pub async fn page(
     Query(dto): Query<SynTaskQueryDto>,
 ) -> Result<Json<Ro<PageRx<SynTaskVo>>>, CtrlError> {
-    let (total, list) = SynTaskSvc::page(dto).await?;
-    Ok(ok_page("查询任务分页成功", U64(1), total, list))
+    let (page_num, total, list) = SynTaskSvc::page(dto).await?;
+    Ok(ok_page("查询任务分页成功", page_num, total, list))
 }
 
 #[utoipa::path(get, path = "/syn/task/{id}", responses((status = OK, body = Ro<SynTaskVo>)))]

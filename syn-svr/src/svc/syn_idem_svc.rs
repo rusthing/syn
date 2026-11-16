@@ -23,7 +23,8 @@ pub struct SynIdemSvc;
 
 impl SynIdemSvc {
     /// # 分页
-    pub async fn page(dto: SynIdemQueryDto) -> Result<(U64, Vec<SynIdemVo>), SvcError> {
+    /// 返回 `(实际页码, 总数, 列表)`；页码超页时由 DAO 夹到最后一页。
+    pub async fn page(dto: SynIdemQueryDto) -> Result<(U64, U64, Vec<SynIdemVo>), SvcError> {
         let db = get_db_conn()?;
         let mut cond = Condition::all();
         if let Some(kw) = dto.keyword.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -45,7 +46,7 @@ impl SynIdemSvc {
             cond = cond.add(IdemColumn::TaskId.is_in(ids));
         }
 
-        let (_, total, rows) = SynIdemDao::page_by_condition::<_, IdemModel>(
+        let (page_num, total, rows) = SynIdemDao::page_by_condition::<_, IdemModel>(
             cond,
             &Some("create_ms:desc".to_string()),
             U64(dto.page_num()),
@@ -70,7 +71,7 @@ impl SynIdemSvc {
                 }
             })
             .collect();
-        Ok((total, list))
+        Ok((page_num, total, list))
     }
 }
 
