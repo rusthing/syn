@@ -10,7 +10,7 @@ import { Switch } from "@/components/ui/Switch";
 import { PageHeader, StatCard } from "@/components/page";
 import { EmptyRow, TableShell, Td, Th } from "@/components/table";
 import { useToast } from "@/components/ui/Toast";
-import { cn, percent } from "@/lib/utils";
+import { WIDGET_GRID, cn, percent } from "@/lib/utils";
 import { formatRelative } from "@/lib/time";
 import type { SyncTask } from "@/lib/api/types";
 import { countRules, verdictRules } from "@/lib/spec/rules";
@@ -79,7 +79,7 @@ export function TasksPage() {
         }
       />
 
-      <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className={`mb-4 ${WIDGET_GRID}`}>
         <StatCard
           label="任务总数"
           value={stats.total}

@@ -4,6 +4,16 @@ export function cn(...values: Array<string | false | null | undefined>): string 
   return values.filter(Boolean).join(" ");
 }
 
+/**
+ * macOS 风格 widget 网格：固定列宽、从左往右排、排不下换行，右侧留白。
+ * 不用 `1fr` 等分，否则宽屏会把卡片拉长变形。
+ */
+export const WIDGET_GRID = "grid gap-3 grid-cols-[repeat(auto-fill,220px)] max-sm:grid-cols-1";
+
+/** 内容较多的卡片（数据抽取等）：固定 480，行内不强行等高，避免展开详情时整行被撑高 */
+export const WIDE_WIDGET_GRID =
+  "grid items-start gap-3 grid-cols-[repeat(auto-fill,480px)] max-sm:grid-cols-1";
+
 /** 把可能是 JSON 的字符串格式化成带缩进的文本；不是 JSON 就原样返回 */
 export function prettyJson(value: string | null | undefined): string {
   if (!value) return "";
