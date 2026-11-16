@@ -370,7 +370,7 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test, s
   const detail = node?.task && stage ? stage : null;
 
   return (
-    <aside className="flex w-[292px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-surface">
+    <aside className="flex min-h-0 w-[248px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-surface xl:w-[292px]">
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-3 py-2.5">
         <div className="flex min-w-0 items-center gap-1.5">
           {detail ? (
@@ -406,7 +406,7 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test, s
             </span>
             <p className="text-[13.5px] font-semibold text-ink">还没有选中节点</p>
             <p className="text-[11.5px] leading-relaxed text-muted">
-              单击画布上的卡片看属性；拖动卡片可摆位，滚轮缩放、拖空白平移。
+              画布随窗口大小自动适应；单击卡片只看属性、不改视角。拖动卡片可摆位，滚轮缩放、拖空白平移。
             </p>
           </div>
 
@@ -416,7 +416,7 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test, s
                 "卡片右上角的开关：启用 / 停用，改完下一拍生效。",
                 "卡片最下面的操作行：编辑、测试连接 / 试跑、删除。",
                 "任务卡的六段：点一段，这里换成那一段的只读详情。",
-                "右下角「全图」看整张拓扑；点百分比回到 100% 原始尺寸。",
+                "右下角「全图」看整张拓扑；窗口变化会自动重排，滚轮或点百分比放大看细节。",
               ].map((text, i) => (
                 <li key={text} className="flex items-start gap-2">
                   <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full bg-accent-soft font-mono text-[11px] text-accent-strong">

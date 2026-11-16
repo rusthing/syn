@@ -5,14 +5,16 @@
  * 启停任务）全部由页面传入 —— 组件不知道接口存在。
  *
  * 交互按 dbz 控制面板那套收敛：
- * - 卡片可拖，空白可平移，滚轮以指针为中心缩放，右下角可一键适应；
+ * - 默认视图按画布此刻的宽高算比例与位置（ResizeObserver 跟着窗口变化重算），
+ *   卡片可拖，空白可平移，滚轮以指针为中心缩放，右下角可切换整图概览；
+ * - 点卡片 / 键盘回车只选中，绝不改视角；要推近得自己滚、点百分比或按显式按钮；
  * - 连线只作展示：方向是数据流，不能拖拽改接（改引用要回表单改，图和表才一致）；
  *   唯一例外是落点处的独占图标（主题 → 任务那条线的终点，见 `TaskCard`）；
  * - 点卡片选中，点空白取消选中；任务卡的启用/独占开关直接在卡上切换。
  *
  * 拖拽用 window 上的 pointermove/up，而不是卡片的 onPointerMove：指针一旦移出
  * 卡片（画布上很常见），卡片收不到事件，拖拽会「粘住」。开关带 `data-no-drag`，
- * pointerdown 落在上面直接跳过拖拽 —— 否则缩到 45% 时轻微手抖就会把 click 吞掉，
+ * pointerdown 落在上面直接跳过拖拽 —— 否则缩到概览比例时轻微手抖就会把 click 吞掉，
  * 变成「拖了一下卡片」，看起来像开关点不动。开关的悬停说明也画在这一层：卡内
  * 的一切都跟着 `scale()` 缩，气泡放在缩放容器外才有正常字号。
  */
@@ -31,10 +33,16 @@ import {
   type HintHandler,
 } from "./TopologyCards";
 
-const MIN_SCALE = 0.3;
+/** 自动适应允许缩到很小：窄窗口也要把整张图装进来，细节交给滚轮 / 百分比按钮 */
+const MIN_SCALE = 0.16;
 const MAX_SCALE = 2;
-/** 概览比例下单击卡片，镜头推到这个比例：11px 的字才真正读得了 */
-const READABLE_SCALE = 0.9;
+/** 自动适应不放大超过 1:1，否则只有两三张卡时会铺满整屏 */
+const AUTO_MAX_SCALE = 1;
+/** 可读视图的比例区间：窗口再窄也不把字缩成色块，宽窗口维持上一版的 90% */
+const READABLE_MAX_SCALE = 0.9;
+const READABLE_MIN_SCALE = 0.55;
+/** 装图时四周留白（CSS 像素） */
+const FIT_PAD = 24;
 /** 世界坐标系的逻辑尺寸：节点拖到边缘也不会被裁掉 */
 const WORLD_W = 2600;
 const WORLD_H = 1800;
@@ -130,7 +138,7 @@ export function TopologyCanvas({
   focus,
 }: Props) {
   const boxRef = useRef<HTMLDivElement>(null);
-  const [view, setView] = useState<View>({ x: 0, y: 0, scale: READABLE_SCALE });
+  const [view, setView] = useState<View>({ x: 0, y: 0, scale: 1 });
   /**
    * 拖拽状态同时放在 ref 与 state：ref 供常驻的 window 监听器同步读取
    * （pointerdown 后立刻 pointerup 也不会漏），state 只负责把卡画到新位置。
@@ -139,7 +147,13 @@ export function TopologyCanvas({
   const dragRef = useRef<DragState | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const panRef = useRef<{ px: number; py: number; vx: number; vy: number } | null>(null);
-  const fittedRef = useRef(false);
+  /** 已经按哪个节点数做过自动适应：节点增删要重排，拖动坐标则不该抢走视角 */
+  const fittedCountRef = useRef(0);
+  /**
+   * 用户是否亲手改过视角（滚轮 / 缩放按钮 / 平移 / 定位）。没改过时窗口大小变化
+   * 就重新适应；改过之后只把视口中心的世界坐标保持住，不覆盖用户选的比例。
+   */
+  const userAdjustedRef = useRef(false);
   const [hint, setHint] = useState<Hint | null>(null);
 
   /** 开关的悬停说明。只在 enter/focus 时算一次位置，不跟着 mousemove 每帧重渲染画布 */
@@ -185,10 +199,14 @@ export function TopologyCanvas({
 
   /* ------------------------------ 适应窗口 ------------------------------ */
 
-  const fit = useCallback((floor = MIN_SCALE) => {
+  /**
+   * 按画布此刻的真实宽高把整张图居中装下：比例不是写死的，窗口越大字越大，
+   * 窗口变小也不会把右侧几列裁掉。先用夹紧后的 scale 再算偏移 —— 以前
+   * x/y 用未夹紧的 scale、显示却用夹紧后的值，小窗口下整张图会整体偏出画布。
+   */
+  const fit = useCallback(() => {
     const box = boxRef.current;
     if (!box || graph.nodes.length === 0) return;
-    const pad = 32;
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -200,24 +218,68 @@ export function TopologyCanvas({
       maxX = Math.max(maxX, r.x + r.w);
       maxY = Math.max(maxY, r.y + r.h);
     }
+    const contentW = Math.max(1, maxX - minX);
+    const contentH = Math.max(1, maxY - minY);
     const scale = Math.min(
-      (box.clientWidth - pad * 2) / Math.max(1, maxX - minX),
-      (box.clientHeight - pad * 2) / Math.max(1, maxY - minY),
-      MAX_SCALE,
+      AUTO_MAX_SCALE,
+      Math.max(
+        MIN_SCALE,
+        Math.min(
+          (box.clientWidth - FIT_PAD * 2) / contentW,
+          (box.clientHeight - FIT_PAD * 2) / contentH,
+        ),
+      ),
     );
     setView({
-      x: pad - minX * scale + Math.max(0, (box.clientWidth - pad * 2 - (maxX - minX) * scale) / 2),
-      y: pad - minY * scale,
-      scale: Math.max(floor, scale),
+      x: (box.clientWidth - contentW * scale) / 2 - minX * scale,
+      y: (box.clientHeight - contentH * scale) / 2 - minY * scale,
+      scale,
     });
   }, [graph.nodes, rectOf]);
 
-  /** 把某张卡移到视口正中：警示条、键盘选中、定位按钮共用这一条路径 */
+  /**
+   * 默认视图：按画布宽度算比例，保证最宽的那张卡（任务卡）整张装得下。
+   * 窗口变窄就等比缩一点、窗口变宽就在左边多露几列上游节点 —— 比例与位置
+   * 都跟着容器走，但不会为了「一屏塞下 18 张卡」把 11px 的字缩成 3px。
+   */
+  const readableView = useCallback(() => {
+    const box = boxRef.current;
+    if (!box || graph.nodes.length === 0) return;
+    let minX = Infinity;
+    let minY = Infinity;
+    let taskX = Infinity;
+    let maxCardW = 0;
+    for (const node of graph.nodes) {
+      const r = rectOf(node);
+      minX = Math.min(minX, r.x);
+      minY = Math.min(minY, r.y);
+      maxCardW = Math.max(maxCardW, r.w);
+      if (node.kind === "task") taskX = Math.min(taskX, r.x);
+    }
+    const anchorX = Number.isFinite(taskX) ? taskX : minX;
+    const scale = Math.min(
+      READABLE_MAX_SCALE,
+      Math.max(READABLE_MIN_SCALE, (box.clientWidth - FIT_PAD * 2) / Math.max(1, maxCardW)),
+    );
+    // 任务列尽量靠右、左边多露上游列；窄窗口时退到左留白，保证整张卡不被裁
+    const left = Math.min(
+      box.clientWidth * 0.28,
+      Math.max(FIT_PAD, box.clientWidth - maxCardW * scale - FIT_PAD),
+    );
+    setView({
+      x: left - anchorX * scale,
+      y: FIT_PAD - minY * scale,
+      scale,
+    });
+  }, [graph.nodes, rectOf]);
+
+  /** 把某张卡移到视口正中：只由警示条节点和「定位到选中卡片」这两个显式入口调用 */
   const focusOn = useCallback(
     (id: string, scale: number) => {
       const box = boxRef.current;
       const node = graph.nodes.find((n) => n.id === id);
       if (!box || !node) return;
+      userAdjustedRef.current = true;
       const r = rectOf(node);
       const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
       setView({
@@ -237,42 +299,63 @@ export function TopologyCanvas({
     focusOn(focus.id, 1);
   }, [focus, focusOn]);
 
-  /**
-   * 首屏不追求「一屏装下十几张卡」：45% 时 11.5px 的字只剩 5px，开关也点不准。
-   * 从数据流起点以 90% 进入，卡片可读、操作可点；全貌交给右下角的「全图」按钮。
-   */
-  const readableStart = useCallback(() => {
-    const box = boxRef.current;
-    if (!box || graph.nodes.length === 0) return;
-    let minX = Infinity;
-    let minY = Infinity;
-    let taskX = Infinity;
-    for (const node of graph.nodes) {
-      const r = rectOf(node);
-      minX = Math.min(minX, r.x);
-      minY = Math.min(minY, r.y);
-      if (node.kind === "task") taskX = Math.min(taskX, r.x);
-    }
-    // 以任务列为锚：任务卡信息最密、也最常被操作，让它在首屏完整可见；
-    // 左边还留出主题列 / 取数来源列的一角，其余列交给「全图」和平移。
-    const anchorX = Number.isFinite(taskX) ? taskX : minX;
-    // 窄窗口下优先保证整张任务卡装得下，宁可少露一点左侧主题列
-    const left = Math.min(
-      box.clientWidth * 0.28,
-      Math.max(24, box.clientWidth - 620 * READABLE_SCALE - 16),
-    );
-    setView({
-      x: left - anchorX * READABLE_SCALE,
-      y: 28 - minY * READABLE_SCALE,
-      scale: READABLE_SCALE,
-    });
-  }, [graph.nodes, rectOf]);
+  /** 两种自动视图：默认可读局部，切一下是整图概览；两个都按容器尺寸算 */
+  const [overview, setOverview] = useState(false);
+  const autoView = useCallback(() => {
+    if (overview) fit();
+    else readableView();
+  }, [overview, fit, readableView]);
 
+  /** ResizeObserver 只挂一次，靠 ref 拿最新的自动视图计算（依赖会随坐标变化） */
+  const autoViewRef = useRef(autoView);
   useEffect(() => {
-    if (fittedRef.current || graph.nodes.length === 0) return;
-    fittedRef.current = true;
-    readableStart();
-  }, [graph.nodes.length, readableStart]);
+    autoViewRef.current = autoView;
+  }, [autoView]);
+
+  /**
+   * 首屏按画布真实尺寸自动适应；节点增删也要重排。用节点数做闸门：
+   * 拖卡片 / 刷新坐标会让 autoView 的引用变化，但不该把用户摆好的视角抢回去。
+   */
+  useEffect(() => {
+    const count = graph.nodes.length;
+    if (count === 0 || userAdjustedRef.current || fittedCountRef.current === count) return;
+    fittedCountRef.current = count;
+    autoViewRef.current();
+  }, [graph.nodes.length]);
+
+  /** 切换可读 / 全图时立刻重算（节点数没变，上面那个 effect 不会触发） */
+  useEffect(() => {
+    if (userAdjustedRef.current || graph.nodes.length === 0) return;
+    autoViewRef.current();
+  }, [overview, graph.nodes.length]);
+
+  /**
+   * 容器尺寸变化（窗口缩放、侧栏折叠、页面高度变化）时重新适应，不是只在挂载算一次。
+   * 用户亲手缩放/平移过之后不再改比例，只把视口中心的世界坐标保持住。
+   */
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box || typeof ResizeObserver === "undefined") return;
+    let prevW = box.clientWidth;
+    let prevH = box.clientHeight;
+    const observer = new ResizeObserver(() => {
+      const w = box.clientWidth;
+      const h = box.clientHeight;
+      if (!w || !h) return;
+      const dw = w - prevW;
+      const dh = h - prevH;
+      if (dw === 0 && dh === 0) return;
+      prevW = w;
+      prevH = h;
+      if (userAdjustedRef.current) {
+        setView((v) => ({ ...v, x: v.x + dw / 2, y: v.y + dh / 2 }));
+      } else {
+        autoViewRef.current();
+      }
+    });
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
 
   /* -------------------------------- 缩放 -------------------------------- */
 
@@ -285,6 +368,7 @@ export function TopologyCanvas({
     if (!box) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      userAdjustedRef.current = true;
       const rect = box.getBoundingClientRect();
       const px = e.clientX - rect.left;
       const py = e.clientY - rect.top;
@@ -304,6 +388,7 @@ export function TopologyCanvas({
   const zoomBy = (factor: number) => {
     const box = boxRef.current;
     if (!box) return;
+    userAdjustedRef.current = true;
     const cx = box.clientWidth / 2;
     const cy = box.clientHeight / 2;
     const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, view.scale * factor));
@@ -316,6 +401,7 @@ export function TopologyCanvas({
   const resetScale = () => {
     const box = boxRef.current;
     if (!box) return;
+    userAdjustedRef.current = true;
     const cx = box.clientWidth / 2;
     const cy = box.clientHeight / 2;
     const wx = (cx - view.x) / view.scale;
@@ -382,11 +468,9 @@ export function TopologyCanvas({
         onMove(d.id, { x: Math.round(d.x), y: Math.round(d.y) });
         return;
       }
-      // 单击始终选中（右侧属性栏常驻）：点空白才取消。以前做成 toggle，
-      // 连点同一张卡会把选中态抵消掉，属性栏会莫名消失。
+      // 单击只选中（右侧属性栏常驻），镜头一动不动：点卡片不该把整张图推来推去。
+      // 以前做成 toggle，连点同一张卡会把选中态抵消掉，属性栏会莫名消失。
       onSelect(d.id);
-      // 缩到概览比例时字只有 4~5px，选中了也读不出内容：顺手把镜头推回可读尺寸。
-      if (view.scale < READABLE_SCALE) focusOn(d.id, READABLE_SCALE);
     };
     window.addEventListener("pointermove", onMoveEvent);
     window.addEventListener("pointerup", onUp);
@@ -394,7 +478,7 @@ export function TopologyCanvas({
       window.removeEventListener("pointermove", onMoveEvent);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [view.x, view.y, view.scale, onMove, onSelect, focusOn]);
+  }, [view.x, view.y, view.scale, onMove, onSelect]);
 
   const startPan = (e: React.PointerEvent) => {
     if (e.button !== 0 || isControl(e.target)) return;
@@ -406,6 +490,7 @@ export function TopologyCanvas({
     const onMoveEvent = (e: PointerEvent) => {
       const p = panRef.current;
       if (!p) return;
+      userAdjustedRef.current = true;
       setView((v) => ({ ...v, x: p.vx + (e.clientX - p.px), y: p.vy + (e.clientY - p.py) }));
     };
     const onUp = () => {
@@ -457,11 +542,11 @@ export function TopologyCanvas({
   const isEmpty = graph.nodes.length === 0;
 
   return (
-    <div className="relative overflow-hidden rounded-[14px] border border-line bg-surface">
+    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[14px] border border-line bg-surface">
       <div
         ref={boxRef}
         onPointerDown={startPan}
-        className="relative h-[calc(100vh-320px)] min-h-[440px] w-full cursor-grab touch-none overflow-hidden bg-canvas active:cursor-grabbing"
+        className="relative h-full min-h-0 w-full flex-1 cursor-grab touch-none overflow-hidden bg-canvas active:cursor-grabbing"
         style={{
           backgroundImage: "radial-gradient(circle, #d8dbd2 1px, transparent 1px)",
           backgroundSize: `${24 * view.scale}px ${24 * view.scale}px`,
@@ -555,15 +640,8 @@ export function TopologyCanvas({
                 if (e.target !== e.currentTarget) return;
                 if (e.key !== "Enter" && e.key !== " ") return;
                 e.preventDefault();
+                // 和鼠标单击一致：只选中，不改视角
                 onSelect(node.id);
-                focusOn(node.id, Math.max(view.scale, READABLE_SCALE));
-              },
-              onFocus: (e: React.FocusEvent) => {
-                // Tab 到画布外的卡片时把镜头带过去，否则焦点圈在裁剪区外根本看不见。
-                // 鼠标点击不会命中 :focus-visible，浏览时视角不会被抢走。
-                if (e.target !== e.currentTarget) return;
-                if (!e.currentTarget.matches(":focus-visible")) return;
-                focusOn(node.id, view.scale);
               },
               onPointerDown: startNodeDrag(node),
               onDoubleClick: (e: React.MouseEvent) => {
@@ -720,17 +798,29 @@ export function TopologyCanvas({
               <Crosshair className="size-3.5" />
             </button>
           )}
-          {/* 首屏是可读的局部视图，这条回全图的路要做成能看见文字的主按钮 */}
+          {/* 可读局部 ⇄ 全图概览；每次点击都把视角交回自动模式，窗口变化继续跟着重算 */}
           <button
             type="button"
-            aria-label="适应窗口：看全整张图"
-            title="适应窗口：回到能看全整张图的比例"
+            aria-label={overview ? "切回可读视图" : "看全整张图"}
+            title={
+              overview
+                ? "切回可读视图：按当前窗口算比例，卡片保持可读"
+                : "看全整张图：缩到能一屏装下所有节点"
+            }
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => fit()}
-            className="flex h-8 items-center gap-1 rounded-md border border-accent/30 bg-accent-soft px-2 text-[11.5px] font-medium text-accent-strong hover:bg-[#d9ebe3]"
+            onClick={() => {
+              userAdjustedRef.current = false;
+              setOverview((v) => !v);
+            }}
+            className={cn(
+              "flex h-8 items-center gap-1 rounded-md border px-2 text-[11.5px] font-medium",
+              overview
+                ? "border-accent bg-accent-soft text-accent-strong hover:bg-[#d9ebe3]"
+                : "border-accent/30 bg-accent-soft text-accent-strong hover:bg-[#d9ebe3]",
+            )}
           >
             <Maximize2 className="size-3.5" />
-            全图
+            {overview ? "可读" : "全图"}
           </button>
         </div>
       </div>

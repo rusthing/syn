@@ -316,10 +316,12 @@ export function TopologyPage() {
   const loading = (loadingDs || loadingTasks) && graph.nodes.length === 0;
 
   return (
-    <>
+    // 整页按视口高度收口（顶栏 56 + main 上 20 + 下 48 = 124），画布吃掉剩余高度。
+    // 以前画布写死 calc(100vh-320px) + min-h-440px，小窗口必然整页滚动、卡片被裁。
+    <div className="flex h-[calc(100vh-124px)] min-h-[560px] flex-col">
       <PageHeader
         title="控制面板"
-        subtitle="数据源 → 取数来源 → 主题 → 任务。单击卡片看属性，卡上开关与操作行直接改配置；点右下角「全图」看完整拓扑。"
+        subtitle="数据源 → 取数来源 → 主题 → 任务。画布随窗口大小自动适应；点卡片只看属性、不改视角，右下角「全图」可看整张拓扑。"
         actions={
           <>
             <Button
@@ -373,13 +375,13 @@ export function TopologyPage() {
       )}
 
       {loading ? (
-        <div className="flex h-[520px] items-center justify-center rounded-[14px] border border-line bg-surface text-[12.5px] text-muted">
+        <div className="flex flex-1 items-center justify-center rounded-[14px] border border-line bg-surface text-[12.5px] text-muted">
           正在拼图…
         </div>
       ) : (
-        <div className="flex items-stretch gap-2.5">
+        <div className="flex min-h-0 flex-1 items-stretch gap-2.5">
           <TopologyPalette onAdd={(kind) => setEditing(CREATE_KIND[kind])} />
-          <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-1 flex-col">
             <TopologyCanvas
               graph={graph}
               positions={positions}
@@ -467,7 +469,7 @@ export function TopologyPage() {
         onCancel={() => setRemoving(null)}
         onConfirm={confirmRemove}
       />
-    </>
+    </div>
   );
 }
 

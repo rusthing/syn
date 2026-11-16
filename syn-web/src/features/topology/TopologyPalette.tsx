@@ -49,11 +49,11 @@ export function TopologyPalette({
   return (
     <aside
       className={cn(
-        "flex w-[88px] shrink-0 flex-col gap-1.5 rounded-[14px] border border-line bg-surface p-2",
+        "flex w-[76px] shrink-0 flex-col gap-1.5 rounded-[14px] border border-line bg-surface p-2 xl:w-[88px]",
         className,
       )}
     >
-      <p className="flex items-center gap-1 px-1 text-[11.5px] font-medium text-muted">
+      <p className="flex items-center gap-1 whitespace-nowrap px-1 text-[11.5px] font-medium text-muted">
         <MousePointerClick className="size-3" />
         组件栏
       </p>
@@ -79,7 +79,8 @@ export function TopologyPalette({
         <Layers className="size-4" />
         主题
       </div>
-      <p className="mt-auto px-1 pt-1 text-[11px] leading-relaxed text-muted">
+      {/* 窄窗口下组件栏只有 76px，这行说明硬塞会把字拆得七零八落 */}
+      <p className="mt-auto hidden px-1 pt-1 text-[11px] leading-relaxed text-muted xl:block">
         点选新建 · 保存即上图
       </p>
     </aside>
