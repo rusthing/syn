@@ -28,8 +28,10 @@
 import {
   ArrowDownToLine,
   Database,
+  GripVertical,
   Layers,
   Pencil,
+  Play,
   Plug,
   FlaskConical,
   Radio,
@@ -70,6 +72,9 @@ export const CARD_SIZE: Record<CanvasNodeKind, { w: number; h: number }> = {
 export function cardSize(kind: CanvasNodeKind): { w: number; h: number } {
   return CARD_SIZE[kind];
 }
+
+/** 与 uiam 网关图一致：卡片本身是可点击（pointer），只有拖动把手才是移动手型（grab） */
+export const GRIP_ATTR = "data-grip";
 
 const KIND_META: Record<CanvasNodeKind, { label: string; icon: typeof Database; accent: string }> = {
   datasource: { label: "数据源", icon: Database, accent: "text-info" },
@@ -118,23 +123,20 @@ function Flags({ node, onHint }: { node: GraphNode; onHint?: HintHandler }) {
   );
 }
 
-/** 卡片外壳：左侧状态色条 + 白底 + 选中描边 */
+/** 卡片外壳：左侧状态色条 + 白底 + 选中描边。泳道网格里位置由 CSS Grid 决定，卡片本身不接收拖拽 */
 export function CardShell({
   node,
   selected,
   children,
   className,
-  onPointerDown,
 }: {
   node: GraphNode;
   selected: boolean;
   children: React.ReactNode;
   className?: string;
-  onPointerDown?: (e: React.PointerEvent) => void;
 }) {
   return (
     <div
-      onPointerDown={onPointerDown}
       className={cn(
         "relative flex h-full w-full cursor-pointer flex-col rounded-[10px] border bg-surface px-2.5 py-2 shadow-panel transition-shadow",
         selected
@@ -146,6 +148,41 @@ export function CardShell({
       <span className={cn("absolute left-0 top-2 bottom-2 w-[3px] rounded-full", TONE_BAR[node.tone])} />
       {children}
     </div>
+  );
+}
+
+/**
+ * 拖动把手：可拖的东西才是移动手型（grab / grabbing），跟 uiam 网关图的路由排序把手一致。
+ * 按下即开始拖动，独立一小块而非整卡可拖 —— 卡片本体是「点一下选中 / 双击进窗体」。
+ */
+export function GripButton({
+  onPointerDown,
+  onHint,
+  label = "拖动调整匹配顺序",
+}: {
+  onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => void;
+  onHint?: HintHandler;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      {...{ [GRIP_ATTR]: "" }}
+      aria-label={label}
+      data-no-drag
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        onHint?.(null, "");
+        onPointerDown(e);
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onMouseEnter={(e) => onHint?.(e, label)}
+      onMouseLeave={() => onHint?.(null, "")}
+      className="flex size-6 shrink-0 cursor-grab items-center justify-center rounded-md text-muted transition-colors hover:bg-sunken hover:text-ink active:cursor-grabbing"
+    >
+      <GripVertical className="size-3.5" />
+    </button>
   );
 }
 
@@ -338,27 +375,30 @@ function ExclusiveToggle({
 export function EntityCard({
   node,
   selected,
-  onPointerDown,
   onEdit,
   onDelete,
   onToggleEnabled,
   onTest,
+  onPull,
   test,
   testBusy,
+  pullBusy,
   enabledBusy,
   onHint,
 }: {
   node: GraphNode;
   selected: boolean;
-  onPointerDown?: (e: React.PointerEvent) => void;
   onEdit: () => void;
   onDelete: () => void;
   /** 启用开关直接走 toggle 接口；窗体里不再有这一项 */
   onToggleEnabled: (next: boolean) => void;
   /** 只有数据源有：测一次连接，结果进状态栏 */
   onTest?: () => void;
+  /** 只有数据抽取有：手动拉取一轮（与计划任务同一条路径） */
+  onPull?: () => void;
   test?: DatasourceTestResult | null;
   testBusy?: boolean;
+  pullBusy?: boolean;
   enabledBusy?: boolean;
   onHint?: HintHandler;
 }) {
@@ -368,7 +408,7 @@ export function EntityCard({
     : `当前停用：点击启用「${node.title}」。`;
 
   return (
-    <CardShell node={node} selected={selected} onPointerDown={onPointerDown}>
+    <CardShell node={node} selected={selected}>
       <CardHead
         node={node}
         enabled={enabled}
@@ -426,15 +466,26 @@ export function EntityCard({
           />
         }
         right={
-          onTest && (
-            <CardAction
-              label={testBusy ? "正在测试连接…" : "测试连接"}
-              icon={<Plug className="size-3.5" />}
-              onClick={onTest}
-              onHint={onHint}
-              busy={testBusy}
-            />
-          )
+          <>
+            {onPull && (
+              <CardAction
+                label={pullBusy ? "正在拉取…" : "立即拉取一轮"}
+                icon={<Play className="size-3.5" />}
+                onClick={onPull}
+                onHint={onHint}
+                busy={pullBusy}
+              />
+            )}
+            {onTest && (
+              <CardAction
+                label={testBusy ? "正在测试连接…" : "测试连接"}
+                icon={<Plug className="size-3.5" />}
+                onClick={onTest}
+                onHint={onHint}
+                busy={testBusy}
+              />
+            )}
+          </>
         }
         danger={
           <CardAction
@@ -510,20 +561,19 @@ function SegmentChip({
 export function TaskCard({
   node,
   selected,
-  onPointerDown,
   onOpenStage,
   onEdit,
   onTry,
   onDelete,
   onToggleEnabled,
   onToggleExclusive,
+  onGripDown,
   onHint,
   enabledBusy,
   exclusiveBusy,
 }: {
   node: GraphNode;
   selected: boolean;
-  onPointerDown?: (e: React.PointerEvent) => void;
   /** 点某一段：只切换右侧属性栏，不弹窗体 */
   onOpenStage: (stage: TaskStage) => void;
   onEdit: () => void;
@@ -531,6 +581,8 @@ export function TaskCard({
   onDelete: () => void;
   onToggleEnabled: (next: boolean) => void;
   onToggleExclusive: () => void;
+  /** 拖动把手按下：在同一主题泳道内调整匹配顺序 */
+  onGripDown?: (e: React.PointerEvent<HTMLButtonElement>) => void;
   onHint?: HintHandler;
   /** 两个请求各记各的，互不置灰；都只影响视觉，不禁用按钮 */
   enabledBusy?: boolean;
@@ -548,7 +600,7 @@ export function TaskCard({
   const badRate = stats && stats.total > 0 ? (bad / stats.total) * 100 : 0;
 
   return (
-    <CardShell node={node} selected={selected} onPointerDown={onPointerDown}>
+    <CardShell node={node} selected={selected}>
       <ExclusiveToggle
         exclusive={exclusive}
         busy={exclusiveBusy}
@@ -604,12 +656,15 @@ export function TaskCard({
 
       <CardActions
         left={
-          <CardAction
-            label="编辑配置"
-            icon={<Pencil className="size-3.5" />}
-            onClick={onEdit}
-            onHint={onHint}
-          />
+          <>
+            {onGripDown && <GripButton onPointerDown={onGripDown} onHint={onHint} />}
+            <CardAction
+              label="编辑配置"
+              icon={<Pencil className="size-3.5" />}
+              onClick={onEdit}
+              onHint={onHint}
+            />
+          </>
         }
         right={
           <CardAction
@@ -638,26 +693,27 @@ export function TaskCard({
 export function TopicCard({
   node,
   selected,
-  onPointerDown,
+  onHint,
 }: {
   node: GraphNode;
   selected: boolean;
-  onPointerDown?: (e: React.PointerEvent) => void;
+  onHint?: HintHandler;
 }) {
+  const detail = [...node.issues, ...node.hints].filter(Boolean).join("\n");
   return (
     <div
-      onPointerDown={onPointerDown}
+      onMouseEnter={(e) => detail && onHint?.(e, detail)}
+      onMouseLeave={() => onHint?.(null, "")}
       className={cn(
-        "flex h-full w-full cursor-pointer flex-col justify-center rounded-full border bg-sunken px-4",
+        "flex h-14 w-full cursor-pointer flex-col justify-center rounded-full border bg-sunken px-4",
         selected ? "border-accent ring-2 ring-accent/25" : "border-line hover:border-line-strong",
         node.tone === "warn" && "bg-warn-soft",
       )}
-      title={node.hints.join("\n")}
     >
       <div className="flex items-center gap-1.5">
         <Layers className="size-3 shrink-0 text-muted" />
         <span className="truncate font-mono text-[12.5px] text-ink">{node.title}</span>
-        <Flags node={node} />
+        <Flags node={node} onHint={onHint} />
       </div>
       <span className="mt-0.5 truncate pl-4 text-[11.5px] text-muted">{node.subtitle}</span>
     </div>

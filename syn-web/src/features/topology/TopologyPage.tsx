@@ -1,17 +1,18 @@
 /**
  * # 控制面板
  *
- * 一张图看清「数据从哪来、经过哪些任务、投到哪去」：
- * 数据源 → 数据抽取 → 主题 → 任务，投递是任务第六段之前的最后一步（判定看投递响应），
- * 画在卡里。
+ * 一张泳道图看清「数据从哪来、经过哪些任务、投到哪去」（学习 uiam 网关配置图）：
+ * 数据源 → 数据抽取 → 主题 → 任务，一条泳道就是一个主题；节点按引用关系自动排布，
+ * **不再自由拖拽、坐标不再入库**。投递是任务卡里的一段（判定看投递响应），不单独建节点。
  *
- * 图不落库：节点来自三张业务表，连线来自它们之间的引用，库里只存节点坐标
- * （`syn_canvas_layout`）。所以这张图不可能和真实配置不一致 —— 这也意味着
- * **不能在这里直接改引用关系**：改「数据抽取用哪个数据源」要回表单，图只负责呈现与跳转。
+ * 图不落库：节点来自三张业务表，连线来自它们之间的引用。所以图不可能和真实配置
+ * 不一致 —— 这也意味着 **不能在这里直接改引用关系**：改「数据抽取用哪个数据源」
+ * 要回表单，图只负责呈现与跳转。唯一可拖的是任务卡把手，在同一主题泳道内调整
+ * 匹配顺序（写 `spec.sort_order`，与任务表单保存同一条路径）。
  *
  * 操作都在卡片上，属性栏只读：
  * - 卡片右上角：启用/停用；连线落点：独占；
- * - 卡片状态栏下面：编辑（最左）、测试连接 / 试跑、删除（最右隔开）；
+ * - 卡片状态栏下面：编辑（最左）、测试连接 / 立即拉取 / 试跑、删除（最右隔开）；
  * - 卡里点某一段：右侧属性栏换成那一段的详情，**不弹窗体**；
  * - 双击卡片仍然直接进窗体，是给老用户的近路。
  */
@@ -24,21 +25,18 @@ import { PageHeader } from "@/components/page";
 import { useToast } from "@/components/ui/Toast";
 import { ConfirmDialog } from "@/components/ui/Drawer";
 import type {
-  CanvasNodePos,
   DatasourceInfo,
   DatasourceTestResult,
   SyncSource,
   SyncTask,
 } from "@/lib/api/types";
-import { useAllTasks } from "@/hooks/use-tasks";
+import { useAllTasks, useTaskMutations } from "@/hooks/use-tasks";
 import { useDatasources, useServices, useSources, useSourceMutations, useDatasourceMutations } from "@/hooks/use-sources";
-import { useCanvasLayout, useCanvasMutations } from "@/hooks/use-canvas";
-import { useTaskMutations } from "@/hooks/use-tasks";
 import { cloneSpec } from "@/lib/spec/defaults";
 import { SourceEditorDrawer } from "@/features/sources/SourceEditorDrawer";
 import { DatasourceEditorDrawer } from "@/features/datasources/DatasourceEditorDrawer";
 import { TaskEditorDrawer, type TaskTab } from "@/features/tasks/TaskEditorDrawer";
-import { buildGraph, mergePositions, nodeId, type GraphNode, type TaskStage } from "./graph";
+import { buildGraph, nodeId, type GraphNode, type TaskStage } from "./graph";
 import { TopologyCanvas } from "./TopologyCanvas";
 import { TopologyInspector } from "./TopologyInspector";
 import { TopologyPalette } from "./TopologyPalette";
@@ -69,22 +67,18 @@ type Removing =
 export function TopologyPage() {
   const toast = useToast();
   const navigate = useNavigate();
-  const { data: datasources = [], isLoading: loadingDs } = useDatasources();
-  const { data: sources = [] } = useSources();
-  const { data: tasks = [], isLoading: loadingTasks } = useAllTasks();
+  const { data: datasources = [], isLoading: loadingDs, refetch: refetchDs } = useDatasources();
+  const { data: sources = [], refetch: refetchSources } = useSources();
+  const { data: tasks = [], isLoading: loadingTasks, refetch: refetchTasks } = useAllTasks();
   const { data: services = [] } = useServices();
-  const { data: stored = [], refetch } = useCanvasLayout();
   const { save: saveTask, toggle: toggleTaskMutation, remove: removeTask } = useTaskMutations();
-  const { save } = useCanvasMutations();
-  const { toggle: toggleSource, remove: removeSource } = useSourceMutations();
+  const { pull: pullSource, toggle: toggleSource, remove: removeSource } = useSourceMutations();
   const { setEnabled: setDatasourceEnabled, remove: removeDatasource, test: testDatasource } =
     useDatasourceMutations();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   /** 选中的任务段：非空时属性栏显示该段详情（点卡片里的第 N 段进来） */
   const [stage, setStage] = useState<TaskStage | null>(null);
-  /** 拖动中的临时坐标：不等接口回来就先把卡放到新位置 */
-  const [dragging, setDragging] = useState<Record<string, CanvasNodePos>>({});
   const [editing, setEditing] = useState<Editing>(null);
   const [removing, setRemoving] = useState<Removing>(null);
   /**
@@ -181,6 +175,64 @@ export function TopologyPage() {
     );
   };
 
+  /**
+   * 数据抽取卡片的「立即拉取」：与「数据抽取」页的手动拉取走同一条接口，
+   * 但与任务启停不同，拉取是**可能失败也可能停在中途**的动作，结果要说清楚。
+   * 只把「本轮几行 / 是否拉到底 / 卡在哪」写进提示，游标前移由列表刷新体现。
+   */
+  const pullSourceNode = (node: GraphNode) => {
+    if (!node.source) return;
+    runPending(`${node.id}:pull`, (settled) =>
+      pullSource.mutate(node.source!.id, {
+        onSuccess: (result) => {
+          if (result.stalled) {
+            toast.info(
+              `已拉取 ${result.rows} 行，游标停在失败记录前`,
+              `耗时 ${result.duration_ms}ms；${result.stalled}。修好这一条之前不会继续推进`,
+            );
+          } else if (result.full_done) {
+            toast.success(
+              "全量拉取完成",
+              `本轮 ${result.rows} 行，拉到底了；要重跑点「数据抽取」页的重跑全量`,
+            );
+          } else {
+            toast.success(
+              `已拉取 ${result.rows} 行`,
+              `耗时 ${result.duration_ms}ms；游标已前移，下一轮从新位置继续`,
+            );
+          }
+        },
+        onError: (err) => toast.error("拉取失败", err instanceof Error ? err.message : "接口不可达"),
+        onSettled: settled,
+      }),
+    );
+  };
+
+  /**
+   * 泳道内拖动任务调整匹配顺序：把新顺序写进各任务的 spec.sort_order（版本 +1）。
+   * 逐条保存走的是任务表单同一条 update 接口，后端会把 spec 里的 sort_order
+   * 反写回列；全部成功后再失效缓存重排泳道。失败只提示，不回滚本地图 ——
+   * 图本来就是从服务端读的，下一次刷新自然会回到真实顺序。
+   */
+  const reorderTasks = (_laneKey: string, orderedIds: string[]) => {
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    const members = orderedIds.flatMap((id) => {
+      const task = byId.get(id);
+      return task ? [task] : [];
+    });
+    if (members.length < 2) return;
+    // 从这一泳道最小的 sort_order 起重新编号，既保住原来的数值区间，又保证互不相同
+    // （相同 sort_order 的任务排序会被 id 打破，拖动就永远存不住新顺序）。
+    const base = Math.min(...members.map((t) => t.sort_order));
+    const writes = orderedIds.map((id, i) => {
+      const task = byId.get(id)!;
+      return { id, name: task.name, spec: { ...cloneSpec(task.spec), sort_order: base + i } };
+    });
+    Promise.all(writes.map((w) => saveTask.mutateAsync({ id: w.id, name: w.name, spec: w.spec })))
+      .then(() => toast.success("顺序已保存", "已通知各副本刷新执行器快照，按新顺序匹配"))
+      .catch((err: Error) => toast.error("排序没保存成功", err.message));
+  };
+
   /** 连线落点的独占开关：改 spec.exclusive 保存（版本 +1） */
   const toggleExclusive = (node: GraphNode) => {
     if (!node.task) return;
@@ -213,11 +265,6 @@ export function TopologyPage() {
     [datasources, sources, tasks, services],
   );
 
-  const positions = useMemo(() => {
-    const base = mergePositions(graph.nodes, stored);
-    return { ...base, ...dragging };
-  }, [graph.nodes, stored, dragging]);
-
   /** 属性栏只读图节点，不另存一份选中实体：图变了属性跟着变，不存在两份状态不同步 */
   const selectedNode = graph.nodes.find((n) => n.id === selectedId) ?? null;
 
@@ -231,24 +278,6 @@ export function TopologyPage() {
   const stripIssues = issueNodes.slice(0, 6);
   const stripWarns = warnNodes.slice(0, Math.max(0, 6 - stripIssues.length));
   const stripMore = issueNodes.length + warnNodes.length - stripIssues.length - stripWarns.length;
-
-  const onMove = (id: string, pos: { x: number; y: number }) => {
-    const node = graph.nodes.find((n) => n.id === id);
-    if (!node) return;
-    const next: CanvasNodePos = { kind: node.kind, key: node.key, x: pos.x, y: pos.y };
-    setDragging((prev) => ({ ...prev, [id]: next }));
-    save.mutate([next], {
-      onError: (err) => {
-        // 保存失败就把卡放回原位：留着会让人以为「已经记住了」
-        setDragging((prev) => {
-          const rest = { ...prev };
-          delete rest[id];
-          return rest;
-        });
-        toast.error("位置没保存成功", err instanceof Error ? err.message : "接口不可达");
-      },
-    });
-  };
 
   /** 选中节点时把段详情收回去：换了卡片还挂着上一张卡的段会莫名其妙 */
   const selectNode = (id: string | null) => {
@@ -322,7 +351,7 @@ export function TopologyPage() {
     <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader
         title="控制面板"
-        subtitle="数据源 → 数据抽取 → 主题 → 任务。画布随窗口大小自动适应；点卡片只看属性、不改视角，右下角「全图」可看整张拓扑。"
+        subtitle="一个主题一条泳道：数据源 → 数据抽取 → 主题 → 任务。图按引用关系自动排布；拖动任务把手改匹配顺序，双击卡片进编辑。"
         actions={
           <>
             <Button
@@ -330,8 +359,8 @@ export function TopologyPage() {
               size="sm"
               icon={<RefreshCw className="size-3.5" />}
               onClick={() => {
-                void refetch();
-                toast.info("已刷新", "坐标按服务端最新值重排");
+                void Promise.all([refetchDs(), refetchSources(), refetchTasks()]);
+                toast.info("已刷新", "按服务端最新配置重排泳道");
               }}
             >
               刷新
@@ -385,10 +414,8 @@ export function TopologyPage() {
           <div className="flex min-w-0 flex-1 flex-col">
             <TopologyCanvas
               graph={graph}
-              positions={positions}
               selectedId={selectedId}
               onSelect={selectNode}
-              onMove={onMove}
               onOpenStage={openStage}
               onOpenEntity={openEntity}
               onDeleteEntity={removeNode}
@@ -402,6 +429,9 @@ export function TopologyPage() {
               onToggleExclusive={toggleExclusive}
               onToggleEntity={toggleEntity}
               onTestDatasource={testDatasourceNode}
+              onPullSource={pullSourceNode}
+              onReorderTasks={reorderTasks}
+              onAdd={(kind) => setEditing(CREATE_KIND[kind])}
               testResults={testResults}
               pendingKeys={pendingKeys}
               focus={focus}

@@ -186,6 +186,322 @@
   }
 }
 
+/* ==========================================================================
+   控制面板 · 泳道图（学习 uiam 网关配置图）
+   列 = 数据流阶段，行 = 引用关系；节点按文档流排，连线从 DOM 量出来画贝塞尔。
+   光标语义：卡片/按钮 pointer，任务把手 grab/grabbing，画布空白 default。
+   全部沿用上面的设计令牌，不新增主色。
+   ========================================================================== */
+@layer components {
+  /* 唯一滚动容器：横竖都它滚，题头 sticky 有一个真的会滚的参照物 */
+  .tl-scroll {
+    position: relative;
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow: auto;
+    overscroll-behavior: contain;
+    background-color: var(--color-surface);
+  }
+
+  /* 缩放载体：宽度取容器宽度，zoom 作用在整块内容上（含滚动范围与 sticky） */
+  .tl-stage {
+    min-width: min-content;
+  }
+
+  .tl-head,
+  .tl-grid {
+    display: grid;
+    grid-template-columns: 268px 292px 220px 620px;
+    column-gap: 40px;
+  }
+
+  .tl-head {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    padding: 8px 16px 8px;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .tl-h {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--color-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .tl-h-add {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 0.5px solid var(--color-line-strong);
+    background: none;
+    color: var(--color-muted);
+    cursor: pointer;
+    transition: color 0.12s ease, border-color 0.12s ease;
+  }
+  .tl-h-add:hover {
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+
+  /* 上留白给悬浮把手探出卡片顶边；连线 SVG 与卡片共用这一套布局坐标 */
+  .tl-wrap {
+    position: relative;
+    padding: 18px 16px 16px;
+    min-width: min-content;
+  }
+  .tl-wrap.dragging {
+    user-select: none;
+    cursor: grabbing;
+  }
+
+  .tl-edges {
+    position: absolute;
+    left: 0;
+    top: 0;
+    z-index: 0;
+    overflow: visible;
+    pointer-events: none;
+  }
+  .tl-arrow {
+    fill: #a9b0a2;
+  }
+  .tl-arrow.bad {
+    fill: #cdd2c6;
+  }
+  .tl-edge {
+    fill: none;
+    stroke: #a9b0a2;
+    stroke-width: 1.2;
+  }
+  .tl-edge.muted {
+    stroke: #cdd2c6;
+    stroke-dasharray: 4 4;
+  }
+  /* 跑动的光点：方向感靠它，箭头只负责「到哪」 */
+  .tl-flow {
+    fill: none;
+    stroke: var(--color-accent);
+    stroke-width: 1.6;
+    stroke-dasharray: 3 200;
+    stroke-linecap: round;
+    opacity: 0.55;
+    animation: tl-dash 2.6s linear infinite;
+  }
+
+  .tl-grid {
+    position: relative;
+    z-index: 1;
+    align-items: center;
+    row-gap: 8px;
+  }
+  .tl-cell {
+    display: grid;
+    align-items: center;
+    min-width: 0;
+    cursor: pointer;
+  }
+  /* 卡片高度交给内容，但给每种一个下限，行与行之间才对得齐 */
+  .tl-cell-datasource,
+  .tl-cell-source {
+    min-height: 140px;
+  }
+  .tl-cell-task {
+    min-height: 178px;
+  }
+  .tl-cell-topic-span {
+    align-self: center;
+    min-height: 56px;
+  }
+  .tl-cell.dragging {
+    opacity: 0.5;
+  }
+  .tl-cell.dragging > * {
+    border-style: dashed;
+  }
+  .tl-spacer {
+    height: 14px;
+  }
+
+  /* 插入线：拖到哪一格就画在目标卡上方，松手才落库 */
+  .tl-dropline {
+    position: absolute;
+    z-index: 5;
+    height: 2px;
+    border-radius: 2px;
+    background: var(--color-accent);
+    box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--color-accent) 22%, transparent);
+    pointer-events: none;
+  }
+  .tl-dropline::before,
+  .tl-dropline::after {
+    content: "";
+    position: absolute;
+    top: -2.5px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-accent);
+  }
+  .tl-dropline::before {
+    left: -3px;
+  }
+  .tl-dropline::after {
+    right: -3px;
+  }
+
+  /* 悬停说明：挂 body 不被 overflow 裁、不随 zoom 缩；完整详情逐行呈现 */
+  .tl-hint {
+    position: fixed;
+    z-index: 90;
+    max-width: min(420px, calc(100vw - 24px));
+    padding: 6px 9px;
+    border-radius: 7px;
+    border: 1px solid var(--color-line-strong);
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font-size: 11.5px;
+    line-height: 1.55;
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+    box-shadow: var(--shadow-float);
+    pointer-events: none;
+    animation: tl-hint-in 0.12s ease-out both;
+  }
+  @keyframes tl-hint-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  /* 右下角工具条 */
+  .tl-dock {
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    z-index: 6;
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+  }
+  .tl-zoomctl {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px;
+    border: 1px solid var(--color-line);
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--color-surface) 95%, transparent);
+    box-shadow: var(--shadow-panel);
+  }
+  .tl-zoomctl button {
+    display: grid;
+    place-items: center;
+    min-width: 30px;
+    height: 30px;
+    padding: 0 4px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--color-muted);
+    cursor: pointer;
+    font-size: 11.5px;
+  }
+  .tl-zoomctl button:hover {
+    background: var(--color-sunken);
+    color: var(--color-ink);
+  }
+  .tl-zoomctl button.pct {
+    min-width: 44px;
+    font-family: var(--font-mono);
+  }
+  .tl-zoomctl button.on,
+  .tl-zoomctl button.accent {
+    color: var(--color-accent);
+    background: var(--color-accent-soft);
+  }
+  .tl-zoomctl .sep {
+    width: 1px;
+    height: 16px;
+    margin: 0 2px;
+    background: var(--color-line);
+  }
+  .tl-map-ico {
+    display: block;
+    width: 11px;
+    height: 11px;
+    border: 1px solid currentColor;
+    border-radius: 2px;
+    background: linear-gradient(90deg, currentColor 1px, transparent 1px) 0 0 / 4px 100%;
+    opacity: 0.85;
+  }
+
+  /* 预览图：整张图缩成小地图，蓝框 = 当前可见范围 */
+  .tl-map {
+    position: relative;
+    padding: 6px;
+    border: 1px solid var(--color-line);
+    border-radius: 9px;
+    background: var(--color-surface);
+    box-shadow: var(--shadow-panel);
+  }
+  .tl-map svg {
+    display: block;
+    cursor: crosshair;
+  }
+  .tl-map-x {
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    border: 0;
+    background: none;
+    color: var(--color-muted);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+  }
+  .tl-map-n {
+    fill: #cdd2c6;
+  }
+  .tl-map-n.ds {
+    fill: #9bb7cf;
+  }
+  .tl-map-n.src {
+    fill: var(--color-violet);
+    opacity: 0.5;
+  }
+  .tl-map-n.topic {
+    fill: #b7bdaf;
+  }
+  .tl-map-n.task {
+    fill: var(--color-accent);
+    opacity: 0.55;
+  }
+  .tl-map-vp {
+    fill: color-mix(in srgb, var(--color-accent) 10%, transparent);
+    stroke: var(--color-accent);
+    stroke-width: 1;
+  }
+}
+
+@keyframes tl-dash {
+  from {
+    stroke-dashoffset: 203;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
 @keyframes rise {
   from {
     opacity: 0;
@@ -235,5 +551,9 @@
   *::after {
     animation-duration: 0.001ms !important;
     transition-duration: 0.001ms !important;
+  }
+  /* 连线的光点是纯装饰：减少动效时直接藏掉，不必留一帧闪一下 */
+  .tl-flow {
+    display: none;
   }
 }
