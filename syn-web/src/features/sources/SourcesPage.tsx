@@ -9,8 +9,20 @@ import { useToast } from "@/components/ui/Toast";
 import { cn } from "@/lib/utils";
 import { formatRelative } from "@/lib/time";
 import type { SyncSource } from "@/lib/api/types";
+import { buildSourceSql } from "@/lib/spec/source-sql";
 import { useSourceMutations, useSources } from "@/hooks/use-sources";
 import { RemoveSourceDialog, SourceEditorDrawer } from "./SourceEditorDrawer";
+
+/** 全量源（sql 快照 / http）拉完就停，可以「重跑全量」 */
+function isFull(s: SyncSource) {
+  return s.kind === "http" || (s.spec.mode ?? "cursor") === "snapshot";
+}
+
+/** 抽取方式的展示名：sql 再按 mode 分快照 / 增量 */
+function modeLabel(s: SyncSource) {
+  if (s.kind === "http") return "http 分页";
+  return (s.spec.mode ?? "cursor") === "snapshot" ? "全量快照" : "游标增量";
+}
 
 export function SourcesPage() {
   const { data, isLoading, error, refetch } = useSources();
@@ -33,7 +45,7 @@ export function SourcesPage() {
         `耗时 ${r.duration_ms} ms；${r.stalled}。修好这一条之前不会继续推进`,
       );
     } else if (r.full_done) {
-      toast.success("全量同步完成", `本轮 ${r.rows} 行，翻到底了；之后不再自动拉取，要重跑点「重跑全量」`);
+      toast.success("全量拉取完成", `本轮 ${r.rows} 行，拉到底了；之后不再自动拉取，要重跑点「重跑全量」`);
     } else {
       toast.success(
         `已拉取 ${r.rows} 行`,
@@ -48,8 +60,8 @@ export function SourcesPage() {
   return (
     <>
       <PageHeader
-        title="取数来源"
-        subtitle="没有 CDC 的表靠自拉：按复合游标增量读，写进虚拟 topic source:{code}，五段完全不知道数据是推来的还是拉来的。"
+        title="数据抽取"
+        subtitle="没有 CDC 的表靠自拉：全量快照或复合游标增量，写进虚拟 topic source:{code}，五段完全不知道数据是推来的还是拉来的。"
         actions={
           <Button
             variant="primary"
@@ -57,16 +69,16 @@ export function SourcesPage() {
             icon={<Plus className="size-3.5" />}
             onClick={() => setEditor({ open: true, source: null })}
           >
-            新增来源
+            新增抽取
           </Button>
         }
       />
 
       <div className="mb-4 grid gap-3 sm:grid-cols-3">
-        <StatCard label="来源总数" value={list.length} suffix={`/ ${enabled} 启用`} icon={<Radio className="size-4" />} />
+        <StatCard label="抽取总数" value={list.length} suffix={`/ ${enabled} 启用`} icon={<Radio className="size-4" />} />
         <StatCard label="累计行数" value={totalRows.toLocaleString()} suffix="行" icon={<DatabaseZap className="size-4" />} />
         <StatCard
-          label="异常来源"
+          label="异常抽取"
           value={stalled}
           suffix="个"
           accent={stalled > 0 ? "danger" : "default"}
@@ -124,11 +136,11 @@ export function SourcesPage() {
           {list.length === 0 && (
             <Panel className="xl:col-span-2">
               <PanelState
-                title="还没有来源"
+                title="还没有数据抽取"
                 description="CDC 覆盖不到的表才需要自拉；能走 sink 的表不要重复配。"
                 action={
                   <Button size="sm" icon={<Plus className="size-3.5" />} onClick={() => setEditor({ open: true, source: null })}>
-                    新增来源
+                    新增抽取
                   </Button>
                 }
               />
@@ -140,8 +152,9 @@ export function SourcesPage() {
       <Panel className="mt-4">
         <PanelHeader title="自拉的边界" subtitle="配之前先确认这几条能接受" icon={<AlertTriangle className="size-3.5" />} />
         <ul className="grid gap-x-6 gap-y-2 px-4 py-3 text-[11.5px] leading-relaxed text-ink-soft sm:grid-cols-2">
-          <li>· 游标是 <span className="font-mono">(updated_at, id)</span> 复合，回读 5 秒重叠窗口，重复行靠下游幂等或判定段 skip 掉。</li>
+          <li>· 游标是 <span className="font-mono">(主游标, 决胜字段)</span> 复合，时间戳游标回读 5 秒重叠窗口，重复行靠下游幂等或判定段 skip 掉。</li>
           <li>· <b>删除拉不到</b>：物理删除不会留下行；要同步删除必须有 CDC 或软删除标记。</li>
+          <li>· <b>全量快照只用于初始化</b>：拉完即停，增量交给游标模式或 dbz，两边别同时写同一张表。</li>
           <li>· 只允许单写者：多副本同时拉会互相把游标推乱，调度必须走 jobx 的单实例任务。</li>
           <li>· 游标存在 syn 库里，不与业务库同事务：崩溃后最多重复一轮，不会丢。</li>
           <li>· <b>连接串不在这里维护</b>：<code className="font-mono">[syn.datasources.*]</code> 在 <code className="font-mono">syn-svr.toml</code> / consul KV，本页只选名字；改完等 syn-svr 热更新。</li>
@@ -176,6 +189,8 @@ function SourceCard({
   pulling: boolean;
 }) {
   const Icon = source.kind === "sql" ? DatabaseZap : Globe;
+  const full = isFull(source);
+  const cursorFields = [source.spec.cursor_field, source.spec.tie_field].filter(Boolean).join(", ");
   return (
     <Panel className={cn(!source.enabled && "opacity-70")}>
       <PanelHeader
@@ -183,8 +198,8 @@ function SourceCard({
           <span className="flex items-center gap-2">
             <Icon className="size-3.5 text-muted" />
             {source.name}
-            <Badge tone={source.kind === "sql" ? "info" : "violet"} mono>
-              {source.kind}
+            <Badge tone={source.kind === "http" ? "violet" : "info"} mono>
+              {modeLabel(source)}
             </Badge>
           </span>
         }
@@ -195,14 +210,14 @@ function SourceCard({
         }
         actions={
           <>
-            <Switch checked={source.enabled} size="sm" label="启用来源" onChange={onToggle} />
-            <IconButton label="编辑来源" onClick={onEdit}>
+            <Switch checked={source.enabled} size="sm" label="启用抽取" onChange={onToggle} />
+            <IconButton label="编辑数据抽取" onClick={onEdit}>
               <Pencil className="size-3.5" />
             </IconButton>
-            <IconButton label="删除来源" tone="danger" onClick={onRemove}>
+            <IconButton label="删除数据抽取" tone="danger" onClick={onRemove}>
               <Trash2 className="size-3.5" />
             </IconButton>
-            {source.kind === "http" && (
+            {full && (
               <Button
                 size="xs"
                 variant="ghost"
@@ -254,13 +269,23 @@ function SourceCard({
           </dd>
         </div>
         <div className="flex items-baseline gap-2">
-          <dt className="w-[68px] shrink-0 text-muted">{source.kind === "sql" ? "游标列" : "地址"}</dt>
+          <dt className="w-[68px] shrink-0 text-muted">{source.kind === "http" ? "地址" : "源表"}</dt>
           <dd className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
-            {source.kind === "sql"
-              ? (source.spec.cursor_column ?? "—")
-              : (source.spec.url ?? "—")}
+            {source.kind === "http"
+              ? (source.spec.url ?? "—")
+              : source.spec.sql !== undefined
+                ? "手写 SQL（见下方预览）"
+                : (source.spec.table ?? "—")}
           </dd>
         </div>
+        {source.kind === "sql" && (
+          <div className="flex items-baseline gap-2">
+            <dt className="w-[68px] shrink-0 text-muted">抽取字段</dt>
+            <dd className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted">
+              {full ? "全表（无游标）" : cursorFields || "—"}
+            </dd>
+          </div>
+        )}
       </dl>
 
       {source.last_error && (
@@ -270,11 +295,11 @@ function SourceCard({
         </div>
       )}
 
-      {source.kind === "sql" && source.spec.select && (
+      {source.kind === "sql" && (
         <details className="group border-t border-line/70 px-3 py-2">
           <summary className="cursor-pointer list-none text-[11px] text-muted hover:text-ink">查看取数 SQL</summary>
           <pre className="mt-1.5 max-h-[180px] overflow-auto rounded-md bg-sunken/70 p-2 font-mono text-[10.5px] leading-relaxed text-ink-soft">
-            {source.spec.select}
+            {buildSourceSql(source.spec, source.batch_size)}
           </pre>
         </details>
       )}

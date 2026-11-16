@@ -28,7 +28,7 @@ import { targetDetail, targetSummary, type GraphNode, type TaskSegment, type Tas
 
 const KIND_LABEL: Record<GraphNode["kind"], string> = {
   datasource: "数据源",
-  source: "取数来源",
+  source: "数据抽取",
   topic: "主题（虚拟节点）",
   task: "同步任务",
 };
@@ -432,7 +432,7 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test, s
             <div className="py-2">
               {[
                 { label: "数据源", dot: "bg-info", text: "连接配置" },
-                { label: "取数来源", dot: "bg-violet", text: "周期取数" },
+                { label: "数据抽取", dot: "bg-violet", text: "周期取数" },
                 { label: "主题", dot: "bg-line-strong", text: "虚拟节点，自动生成" },
                 { label: "任务", dot: "bg-accent", text: "六段流水线" },
               ].map((item) => (
@@ -634,7 +634,7 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test, s
                   <Row label="写入来源">{node.producers}</Row>
                   <Row label="消费任务">{node.consumers}</Row>
                   <p className="py-2 text-[11.5px] leading-relaxed text-muted">
-                    主题不是库表实体，由来源写入、被任务消费。要改它请编辑两端的取数来源或任务。
+                    主题不是库表实体，由数据抽取写入、被任务消费。要改它请编辑两端的数据抽取或任务。
                   </p>
                 </Section>
               )}

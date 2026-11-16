@@ -41,7 +41,7 @@ pub struct SynTaskEnabledDto {
 pub struct SynTaskQueryDto {
     /// 关键字，匹配 `name` / `topic`
     pub keyword: Option<String>,
-    /// 按来源 topic 精确筛
+    /// 按 topic 精确筛
     pub topic: Option<String>,
     /// 按启用状态筛
     pub enabled: Option<bool>,

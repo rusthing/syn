@@ -1,13 +1,23 @@
-//! # 自拉数据源的取数定义
+//! # 数据抽取的抽取定义
 //!
-//! 对应 `syn_source.spec`（JSONB）。两种取数方式共用一层外壳，`kind` 决定用哪半边：
+//! 对应 `syn_source.spec`（JSONB）。`kind` 决定用哪半边，都是「数据从源端怎么来」：
 //!
 //! ```yaml
-//! # kind = sql：按游标增量查库
+//! # kind = sql, mode = cursor：游标增量（推荐）
 //! datasource: adm
-//! select: select id, name, updated_at from adm_person where deleted = false
-//! cursor_column: updated_at, id
-//! cursor_type: timestamp
+//! mode: cursor
+//! table: dtw_polygon                # 填 sql 时可省略
+//! sql: select id, update_timestamp from dtw_polygon where deleted = false   # 可选：手写覆盖
+//! cursor_field: update_timestamp     # 主游标：时间戳 / 自增 ID / 编码
+//! cursor_type: timestamptz
+//! tie_field: id                      # 决胜字段：必须唯一，解决同一时间戳并发写入
+//! tie_type: bigint
+//!
+//! # kind = sql, mode = snapshot：全量快照（首次同步用）
+//! datasource: adm
+//! mode: snapshot
+//! table: dtw_polygon
+//! snapshot_batched: true             # true = 按 batch_size 分批拉完；false = 一条 SQL 拉全表
 //!
 //! # kind = http：全量分页拉接口（首次同步用，一轮翻到底后标记 done）
 //! url: https://crm.example.com/api/person?page={cursor}&size={size}
@@ -19,22 +29,47 @@
 //! Authorization = "Bearer …"
 //! ```
 //!
+//! ## SQL 由系统生成，不再手写
+//!
+//! 原型只让人填「源表名 + 主游标 + 决胜字段」，SQL 由执行器按模板拼：
+//!
+//! ```sql
+//! -- mode = cursor
+//! SELECT * FROM dtw_polygon
+//! WHERE (update_timestamp, id) > ($1::timestamptz, $2::bigint)
+//! ORDER BY update_timestamp ASC, id ASC
+//! LIMIT $3
+//!
+//! -- mode = snapshot（snapshot_batched = false）
+//! SELECT * FROM dtw_polygon
+//!
+//! -- mode = snapshot（snapshot_batched = true）
+//! SELECT * FROM dtw_polygon LIMIT $1 OFFSET $2
+//! ```
+//!
+//! 表名与字段名在保存时按标识符白名单校验，拼 SQL 前再校验一次；值一律绑参数，
+//! 没有字符串拼接用户输入。
+//!
+//! ## 为什么游标要声明类型
+//!
+//! 「水位」以字符串存（可能是时间戳、自增 ID、UUID），但拼 SQL 时必须知道把它
+//! 当什么类型比较：`(update_timestamp, id) > ($1, $2)` 里的 `$1` 没有类型上下文，
+//! PG 会直接报 `could not determine data type`。与其猜，不如让配置写明
+//! [`FieldType`]，拼 SQL 时显式加 `::timestamptz` / `::int8` / `::uuid` / `::text`。
+//!
+//! ## 全量快照的完成语义
+//!
+//! 一轮调用内把整表拉完（分批模式在调用内循环翻页），游标写
+//! `{"snapshot":{"done":true,"rows":n}}`，此后调度跳过；要重跑得显式 reset。
+//! 与 http 全量一样**只用于首次同步**，增量交给游标模式或 dbz；两边同时写同一张表
+//! 会让旧快照覆盖新值、删除语义打架，见 `doc/syn-开发规范.md` §11.14。
+//!
 //! ## http 为什么是「全量」而不是「增量」
 //!
 //! HTTP 接口一般只有页码或 token 分页，没有 `(updated_at, id)` 这种稳定水位：
 //! 翻页中途源端插入会让第 2 页漏行或重复，游标 token 还会过期。所以 http 源按
 //! **全量一次性**同步设计：第一轮从第 1 页开始，一轮推一页，翻到底写
 //! `{"http":{"done":true}}`，此后调度跳过；要重跑得显式 reset。
-//!
-//! 这也决定了它的使用前提：**只用于首次同步**，增量交给 dbz。全量叠加 dbz 同时写
-//! 同一张表会让旧快照覆盖新值、删除语义打架，见 `doc/syn-开发规范.md` §11.14。
-//!
-//! ## 为什么游标要声明类型
-//!
-//! 「水位」以字符串存（可能是时间戳、自增 ID、页码 token），但拼 SQL 时必须知道把它
-//! 当什么类型比较：`(updated_at, id) > ($1, $2)` 里的 `$1` 没有类型上下文，PG 会直接
-//! 报 `could not determine data type`。与其猜，不如让配置写明
-//! [`CursorType`]，拼 SQL 时显式加 `::timestamptz` / `::int8` / `::text`。
 
 use std::collections::BTreeMap;
 
@@ -44,27 +79,51 @@ use serde_json::Value;
 use crate::dic::SourceKind;
 use crate::issue::{SpecIssue, SpecIssueKind};
 
-/// # 游标列的类型
+/// # 抽取模式（`kind = sql` 时）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum CursorType {
-    /// 时间戳列（`timestamp` / `timestamptz`）
+pub enum ExtractMode {
+    /// 游标增量：按 `(主游标, 决胜字段)` 复合游标一批一批往前推
     #[default]
-    Timestamp,
-    /// 整数列（自增 ID）
-    Int,
-    /// 文本列（编码、UUID）
-    Text,
+    Cursor,
+    /// 全量快照：把整表拉一遍，拉完标记完成
+    Snapshot,
 }
 
-impl CursorType {
+/// # 游标 / 决胜字段的类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FieldType {
+    /// 整数列（自增 ID、毫秒时间戳）
+    #[default]
+    Bigint,
+    /// 时间戳列（`timestamp` / `timestamptz`）
+    Timestamptz,
+    /// UUID 列
+    Uuid,
+    /// 文本列（编码）
+    Varchar,
+}
+
+impl FieldType {
     /// 拼 SQL 用的类型名
     pub fn cast(self) -> &'static str {
         match self {
-            Self::Timestamp => "timestamptz",
-            Self::Int => "int8",
-            Self::Text => "text",
+            Self::Bigint => "int8",
+            Self::Timestamptz => "timestamptz",
+            Self::Uuid => "uuid",
+            Self::Varchar => "text",
         }
+    }
+
+    /// 能否做主游标：UUID 单调性不可依赖
+    pub fn allowed_for_cursor(self) -> bool {
+        !matches!(self, Self::Uuid)
+    }
+
+    /// 能否做决胜字段：时间戳不唯一，不能决胜
+    pub fn allowed_for_tie(self) -> bool {
+        !matches!(self, Self::Timestamptz)
     }
 }
 
@@ -79,22 +138,38 @@ pub enum WrapMode {
     Cdc,
 }
 
-/// # 取数定义
+/// # 抽取定义
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SourceSpec {
     /// 源库的数据源名，对应 `syn_datasource` 表的 `code`
     /// （表里没有时回退 `[syn.datasources.<name>]`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub datasource: Option<String>,
-    /// 取数 SQL（必须是单条 `select` / `with`，不允许分号分隔多句）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub select: Option<String>,
-    /// 游标列，复合时写成 `updated_at, id`
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor_column: Option<String>,
-    /// 游标列的类型
+    /// sql 的抽取模式：游标增量 / 全量快照
     #[serde(default)]
-    pub cursor_type: CursorType,
+    pub mode: ExtractMode,
+    /// 源表名，允许 `schema.table`。填了 `sql` 时可省略
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table: Option<String>,
+    /// 手写 SQL（可选）：填了就用它当行来源，表名不再必填。
+    /// 必须是单条 select / with；输出里要包含主游标字段与决胜字段
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sql: Option<String>,
+    /// 主游标字段（时间戳 / 自增 ID / 编码），游标增量必填
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor_field: Option<String>,
+    /// 主游标字段的类型
+    #[serde(default)]
+    pub cursor_type: FieldType,
+    /// 决胜字段（必须唯一），游标增量必填
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tie_field: Option<String>,
+    /// 决胜字段的类型
+    #[serde(default)]
+    pub tie_type: FieldType,
+    /// 全量快照是否分批拉：true = 按 `batch_size` 循环翻页，false = 一条 SQL 拉全表
+    #[serde(default)]
+    pub snapshot_batched: bool,
     /// 行 → 记录的包装方式
     #[serde(default)]
     pub wrap: WrapMode,
@@ -124,12 +199,29 @@ impl SourceSpec {
         serde_json::from_value(value.clone())
     }
 
-    /// # 游标列（已去空白）
-    pub fn cursor_columns(&self) -> Vec<&str> {
-        self.cursor_column
+    /// # 源表名（已去空白）
+    pub fn table_or_empty(&self) -> &str {
+        self.table
             .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .unwrap_or("")
-            .split(',')
+    }
+
+    /// # 手写 SQL（已去空白与结尾分号），没填就是空
+    pub fn custom_sql(&self) -> Option<&str> {
+        self.sql
+            .as_deref()
+            .map(str::trim)
+            .map(|s| s.trim_end_matches(';').trim())
+            .filter(|s| !s.is_empty())
+    }
+
+    /// # 复合游标的两列：`[主游标, 决胜字段]`（已去空白，缺失的省略）
+    pub fn cursor_fields(&self) -> Vec<&str> {
+        [self.cursor_field.as_deref(), self.tie_field.as_deref()]
+            .into_iter()
+            .flatten()
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .collect()
@@ -169,72 +261,98 @@ impl SourceSpec {
 
         match kind {
             SourceKind::Sql => {
-                // 只有库表取数才需要数据源连接；http 分页取数走 URL，没有 datasource 的概念
+                // 只有库表抽取才需要数据源连接；http 分页取数走 URL，没有 datasource 的概念
                 if self.datasource.as_deref().unwrap_or("").trim().is_empty() {
                     issues.push(SpecIssue::new(
                         "spec.datasource",
                         SpecIssueKind::Missing,
-                        "库表取数必须写数据源名（对应控制台里的数据源编码）",
+                        "库表抽取必须写数据源名（对应控制台里的数据源编码）",
                     ));
                 }
-                match self.select.as_deref().map(str::trim) {
-                    None | Some("") => issues.push(SpecIssue::new(
-                        "spec.select",
-                        SpecIssueKind::Missing,
-                        "sql 取数必须写 select",
-                    )),
-                    Some(sql) => {
-                        let lower = sql.trim_start().to_ascii_lowercase();
-                        if !lower.starts_with("select") && !lower.starts_with("with") {
-                            issues.push(SpecIssue::new(
-                                "spec.select",
-                                SpecIssueKind::Invalid,
-                                "只支持 select / with 查询：自拉是只读的",
-                            ));
-                        }
-                        // 分号只允许出现在结尾（用户习惯带），中间有分号说明是多条语句
-                        if sql.trim_end_matches(';').contains(';') {
-                            issues.push(SpecIssue::new(
-                                "spec.select",
-                                SpecIssueKind::Invalid,
-                                "不允许多条语句：拼进子查询后会语法错",
-                            ));
-                        }
+
+                // `sql` 存在即「手写模式」：空串是「切到手写但还没填」，报 Missing 而不是
+                // 悄悄回退到表名，否则界面显示手写、实际按表名跑，最难查
+                if self.sql.is_some() {
+                    match self.custom_sql() {
+                        None => issues.push(SpecIssue::new(
+                            "spec.sql",
+                            SpecIssueKind::Missing,
+                            "手写 SQL 不能为空；不想手写就切回按表名生成",
+                        )),
+                        Some(sql) if !is_single_select(sql) => issues.push(SpecIssue::new(
+                            "spec.sql",
+                            SpecIssueKind::Invalid,
+                            "手写 SQL 只能是单条 select / with，不能带分号或写操作",
+                        )),
+                        Some(_) => {}
+                    }
+                } else {
+                    match self.table_or_empty() {
+                        "" => issues.push(SpecIssue::new(
+                            "spec.table",
+                            SpecIssueKind::Missing,
+                            "必须写源表名或手写 SQL：取数语句按它生成",
+                        )),
+                        table if !is_qualified_ident(table) => issues.push(SpecIssue::new(
+                            "spec.table",
+                            SpecIssueKind::Invalid,
+                            "表名只能是小写字母/数字/下划线，可用 schema.table",
+                        )),
+                        _ => {}
                     }
                 }
 
-                let cols = self.cursor_columns();
-                if cols.is_empty() {
-                    issues.push(SpecIssue::new(
-                        "spec.cursor_column",
-                        SpecIssueKind::Missing,
-                        "必须写游标列：没有它无法增量拉取",
-                    ));
-                }
-                if cols.len() > 2 {
-                    issues.push(SpecIssue::new(
-                        "spec.cursor_column",
-                        SpecIssueKind::Invalid,
-                        "游标列最多两列（时间戳 + ID）",
-                    ));
-                }
-                for (i, c) in cols.iter().enumerate() {
-                    if !is_ident(c) {
+                if self.mode == ExtractMode::Cursor {
+                    let cursor = self.cursor_field.as_deref().unwrap_or("").trim();
+                    let tie = self.tie_field.as_deref().unwrap_or("").trim();
+
+                    if cursor.is_empty() {
                         issues.push(SpecIssue::new(
-                            format!("spec.cursor_column[{i}]"),
+                            "spec.cursor_field",
+                            SpecIssueKind::Missing,
+                            "游标增量必须写主游标字段（时间戳 / 自增 ID）",
+                        ));
+                    } else if !is_ident(cursor) {
+                        issues.push(SpecIssue::new(
+                            "spec.cursor_field",
                             SpecIssueKind::Invalid,
-                            "列名只能是小写字母/数字/下划线",
+                            "字段名只能是小写字母/数字/下划线",
                         ));
                     }
-                }
-                // 单列游标用 int 时是自增主键；两列时第一列必须是时间戳，
-                // 否则「回退重叠窗口」无从谈起
-                if cols.len() == 2 && self.cursor_type != CursorType::Timestamp {
-                    issues.push(SpecIssue::new(
-                        "spec.cursor_type",
-                        SpecIssueKind::Conflict,
-                        "两列游标的第一列是时间戳，类型必须写 timestamp",
-                    ));
+                    if tie.is_empty() {
+                        issues.push(SpecIssue::new(
+                            "spec.tie_field",
+                            SpecIssueKind::Missing,
+                            "游标增量必须写决胜字段：同一主游标值靠它排出唯一顺序",
+                        ));
+                    } else if !is_ident(tie) {
+                        issues.push(SpecIssue::new(
+                            "spec.tie_field",
+                            SpecIssueKind::Invalid,
+                            "字段名只能是小写字母/数字/下划线",
+                        ));
+                    }
+                    if !cursor.is_empty() && cursor == tie {
+                        issues.push(SpecIssue::new(
+                            "spec.tie_field",
+                            SpecIssueKind::Conflict,
+                            "决胜字段必须与主游标字段不同",
+                        ));
+                    }
+                    if !self.cursor_type.allowed_for_cursor() {
+                        issues.push(SpecIssue::new(
+                            "spec.cursor_type",
+                            SpecIssueKind::Invalid,
+                            "主游标不支持 uuid：UUID 没有可依赖的单调顺序",
+                        ));
+                    }
+                    if !self.tie_type.allowed_for_tie() {
+                        issues.push(SpecIssue::new(
+                            "spec.tie_type",
+                            SpecIssueKind::Invalid,
+                            "决胜字段不支持 timestamptz：时间戳不唯一，无法决胜",
+                        ));
+                    }
                 }
             }
             SourceKind::Http => {
@@ -284,17 +402,19 @@ impl SourceSpec {
                     ));
                 }
                 // 两种取数的字段混在一起，说明配置是复制来的半成品：按 http 跑会静默
-                // 忽略这些字段，反过来按 sql 跑又缺游标列，早点报出来
+                // 忽略这些字段，反过来按 sql 跑又缺表名，早点报出来
                 for (field, present) in [
                     ("spec.datasource", self.datasource.is_some()),
-                    ("spec.select", self.select.is_some()),
-                    ("spec.cursor_column", self.cursor_column.is_some()),
+                    ("spec.table", self.table.is_some()),
+                    ("spec.sql", self.sql.is_some()),
+                    ("spec.cursor_field", self.cursor_field.is_some()),
+                    ("spec.tie_field", self.tie_field.is_some()),
                 ] {
                     if present {
                         issues.push(SpecIssue::new(
                             field,
                             SpecIssueKind::Conflict,
-                            "http 取数不使用该字段：分页拉接口没有库表与游标列的概念",
+                            "http 取数不使用该字段：分页拉接口没有库表与游标字段的概念",
                         ));
                     }
                 }
@@ -318,6 +438,20 @@ fn is_ident(s: &str) -> bool {
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
+/// `table` 或 `schema.table`，两段都必须是合法标识符
+fn is_qualified_ident(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    !parts.is_empty() && parts.len() <= 2 && parts.iter().all(|p| is_ident(p))
+}
+
+/// 手写 SQL 的底线：单条 `select` / `with`，去掉结尾分号后内部不能再有分号。
+/// 不做语法解析 —— 真正的校验是「立即拉取」时源库报错。
+fn is_single_select(sql: &str) -> bool {
+    let s = sql.trim().trim_end_matches(';').trim();
+    let first = s.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+    matches!(first.as_str(), "select" | "with") && !s.contains(';')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +463,81 @@ mod tests {
             Ok(()) => Vec::new(),
             Err(issues) => issues.into_iter().map(|i| (i.path, i.kind)).collect(),
         }
+    }
+
+    fn cursor_spec() -> serde_json::Value {
+        json!({
+            "datasource": "adm",
+            "mode": "cursor",
+            "table": "dtw_polygon",
+            "cursor_field": "update_timestamp",
+            "cursor_type": "timestamptz",
+            "tie_field": "id",
+            "tie_type": "bigint"
+        })
+    }
+
+    #[test]
+    fn cursor_minimal_ok() {
+        assert!(check(cursor_spec(), SourceKind::Sql).is_empty());
+    }
+
+    #[test]
+    fn cursor_requires_table_and_fields() {
+        let issues = check(
+            json!({ "datasource": "adm", "mode": "cursor" }),
+            SourceKind::Sql,
+        );
+        let paths: Vec<&str> = issues.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(paths.contains(&"spec.table"), "{issues:?}");
+        assert!(paths.contains(&"spec.cursor_field"), "{issues:?}");
+        assert!(paths.contains(&"spec.tie_field"), "{issues:?}");
+    }
+
+    #[test]
+    fn cursor_rejects_same_field_and_bad_types() {
+        let mut v = cursor_spec();
+        v["tie_field"] = json!("update_timestamp");
+        v["cursor_type"] = json!("uuid");
+        v["tie_type"] = json!("timestamptz");
+        let issues = check(v, SourceKind::Sql);
+        let paths: Vec<&str> = issues.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(paths.contains(&"spec.tie_field"), "{issues:?}");
+        assert!(paths.contains(&"spec.cursor_type"), "{issues:?}");
+        assert!(paths.contains(&"spec.tie_type"), "{issues:?}");
+    }
+
+    #[test]
+    fn table_must_be_identifier() {
+        let mut v = cursor_spec();
+        v["table"] = json!("dtw_polygon; drop table x");
+        assert_eq!(
+            check(v, SourceKind::Sql),
+            vec![("spec.table".into(), SpecIssueKind::Invalid)]
+        );
+        // schema.table 允许
+        let mut ok = cursor_spec();
+        ok["table"] = json!("public.dtw_polygon");
+        assert!(check(ok, SourceKind::Sql).is_empty());
+    }
+
+    #[test]
+    fn snapshot_only_needs_table() {
+        assert!(
+            check(
+                json!({ "datasource": "adm", "mode": "snapshot", "table": "dtw_polygon" }),
+                SourceKind::Sql
+            )
+            .is_empty()
+        );
+        assert!(
+            check(
+                json!({ "datasource": "adm", "mode": "snapshot" }),
+                SourceKind::Sql
+            )
+            .iter()
+            .any(|(p, _)| p == "spec.table")
+        );
     }
 
     #[test]
@@ -380,6 +589,40 @@ mod tests {
     }
 
     #[test]
+    fn custom_sql_replaces_table() {
+        let mut v = cursor_spec();
+        v.as_object_mut().unwrap().remove("table");
+        v["sql"] = json!("select id, update_timestamp from dtw_polygon where deleted = false;");
+        assert!(check(v, SourceKind::Sql).is_empty());
+    }
+
+    #[test]
+    fn empty_custom_sql_is_missing_not_fallback_to_table() {
+        let mut v = cursor_spec();
+        v["sql"] = json!("");
+        assert_eq!(
+            check(v, SourceKind::Sql),
+            vec![("spec.sql".into(), SpecIssueKind::Missing)]
+        );
+    }
+
+    #[test]
+    fn custom_sql_must_be_single_select() {
+        let mut v = cursor_spec();
+        v["sql"] = json!("update dtw_polygon set deleted = true");
+        assert_eq!(
+            check(v, SourceKind::Sql),
+            vec![("spec.sql".into(), SpecIssueKind::Invalid)]
+        );
+        // 分号拼多条同样不行（结尾的分号会先被去掉，这个不算）
+        let mut multi = cursor_spec();
+        multi["sql"] = json!("select 1; drop table dtw_polygon");
+        assert!(check(multi, SourceKind::Sql)
+            .iter()
+            .any(|(p, _)| p == "spec.sql"));
+    }
+
+    #[test]
     fn http_rejects_sql_fields() {
         // 复制 sql 源的配置改成 http 时最容易留下这堆字段：按 http 跑会静默忽略，
         // 早点报 Conflict 比跑出「0 行」好查
@@ -387,16 +630,20 @@ mod tests {
             json!({
                 "url": "https://x/api?page={cursor}",
                 "datasource": "adm",
-                "select": "select 1",
-                "cursor_column": "id"
+                "table": "t",
+                "sql": "select 1",
+                "cursor_field": "id",
+                "tie_field": "seq"
             }),
             SourceKind::Http,
         );
         let paths: Vec<&str> = issues.iter().map(|(p, _)| p.as_str()).collect();
-        assert_eq!(paths.len(), 3, "{issues:?}");
+        assert_eq!(paths.len(), 5, "{issues:?}");
         assert!(paths.contains(&"spec.datasource"));
-        assert!(paths.contains(&"spec.select"));
-        assert!(paths.contains(&"spec.cursor_column"));
+        assert!(paths.contains(&"spec.table"));
+        assert!(paths.contains(&"spec.sql"));
+        assert!(paths.contains(&"spec.cursor_field"));
+        assert!(paths.contains(&"spec.tie_field"));
         assert!(issues.iter().all(|(_, k)| *k == SpecIssueKind::Conflict));
     }
 
@@ -414,15 +661,7 @@ mod tests {
 
     #[test]
     fn sql_path_unaffected_by_http_rules() {
-        let issues = check(
-            json!({
-                "datasource": "adm",
-                "select": "select id, updated_at from t",
-                "cursor_column": "updated_at, id"
-            }),
-            SourceKind::Sql,
-        );
-        assert!(issues.is_empty(), "{issues:?}");
+        assert!(check(cursor_spec(), SourceKind::Sql).is_empty());
     }
 
     #[test]
@@ -431,5 +670,15 @@ mod tests {
         assert_eq!(spec.data_path_or_root(), "$");
         assert_eq!(spec.method_or_get(), "GET");
         assert!(!spec.token_paging(), "没有 next_path 就是页码模式");
+    }
+
+    #[test]
+    fn cursor_fields_are_trimmed_and_optional() {
+        let spec = serde_json::from_value::<SourceSpec>(cursor_spec()).unwrap();
+        assert_eq!(spec.cursor_fields(), vec!["update_timestamp", "id"]);
+        let snapshot =
+            serde_json::from_value::<SourceSpec>(json!({ "mode": "snapshot" })).unwrap();
+        assert!(snapshot.cursor_fields().is_empty());
+        assert_eq!(snapshot.mode, ExtractMode::Snapshot);
     }
 }

@@ -2,12 +2,12 @@
  * # 控制面板
  *
  * 一张图看清「数据从哪来、经过哪些任务、投到哪去」：
- * 数据源 → 取数来源 → 主题 → 任务，投递是任务第六段之前的最后一步（判定看投递响应），
+ * 数据源 → 数据抽取 → 主题 → 任务，投递是任务第六段之前的最后一步（判定看投递响应），
  * 画在卡里。
  *
  * 图不落库：节点来自三张业务表，连线来自它们之间的引用，库里只存节点坐标
  * （`syn_canvas_layout`）。所以这张图不可能和真实配置不一致 —— 这也意味着
- * **不能在这里直接改引用关系**：改「来源用哪个数据源」要回表单，图只负责呈现与跳转。
+ * **不能在这里直接改引用关系**：改「数据抽取用哪个数据源」要回表单，图只负责呈现与跳转。
  *
  * 操作都在卡片上，属性栏只读：
  * - 卡片右上角：启用/停用；连线落点：独占；
@@ -126,7 +126,7 @@ export function TopologyPage() {
     );
   };
 
-  /** 卡右上角的启用开关（来源 / 数据源）：各自一条 set_enabled */
+  /** 卡右上角的启用开关（数据抽取 / 数据源）：各自一条 set_enabled */
   const toggleEntity = (node: GraphNode, next: boolean) => {
     const label = next ? "已启用" : "已停用";
     if (node.source) {
@@ -267,7 +267,7 @@ export function TopologyPage() {
     if (node.task) return setEditing({ kind: "task", task: node.task, tab: "match" });
     if (node.source) return setEditing({ kind: "source", source: node.source });
     if (node.datasource) return setEditing({ kind: "datasource", datasource: node.datasource });
-    toast.info("主题是虚拟节点", "它由来源写入、被任务消费；改两端的卡片即可。");
+    toast.info("主题是虚拟节点", "它由数据抽取写入、被任务消费；改两端的卡片即可。");
   };
 
   /** 卡里点某一段：只切属性栏，不弹窗体 */
@@ -302,7 +302,7 @@ export function TopologyPage() {
     }
     if (removing.kind === "source") {
       removeSource.mutate(removing.source.id, {
-        onSuccess: () => done("来源已删除"),
+        onSuccess: () => done("数据抽取已删除"),
         onError: fail,
       });
       return;
@@ -321,7 +321,7 @@ export function TopologyPage() {
     <div className="flex h-[calc(100vh-124px)] min-h-[560px] flex-col">
       <PageHeader
         title="控制面板"
-        subtitle="数据源 → 取数来源 → 主题 → 任务。画布随窗口大小自动适应；点卡片只看属性、不改视角，右下角「全图」可看整张拓扑。"
+        subtitle="数据源 → 数据抽取 → 主题 → 任务。画布随窗口大小自动适应；点卡片只看属性、不改视角，右下角「全图」可看整张拓扑。"
         actions={
           <>
             <Button
@@ -481,7 +481,7 @@ function shortNodeName(title: string): string {
 function removingTitle(removing: Removing): string {
   if (!removing) return "";
   if (removing.kind === "task") return `任务「${removing.task.name}」`;
-  if (removing.kind === "source") return `取数来源「${removing.source.name}」`;
+  if (removing.kind === "source") return `数据抽取「${removing.source.name}」`;
   return `数据源「${removing.datasource.name}」`;
 }
 
@@ -491,12 +491,12 @@ function removingDescription(removing: Removing) {
     return <>任务配置会连同版本历史一起删除。已经发出去的数据不会回滚；只是想暂停就把右上角的开关关掉。</>;
   }
   if (removing.kind === "source") {
-    return <>来源会被删除，游标一并清掉；已经拉到下游的数据不会回滚。只是想暂停就把右上角的开关关掉。</>;
+    return <>数据抽取会被删除，游标一并清掉；已经拉到下游的数据不会回滚。只是想暂停就把右上角的开关关掉。</>;
   }
   return (
     <>
       数据源记录会被删除，<b className="text-ink-soft">连接串不会回显也无法恢复</b>；
-      仍有来源引用它时，取数会直接报错。
+      仍有数据抽取引用它时，取数会直接报错。
     </>
   );
 }

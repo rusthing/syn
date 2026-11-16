@@ -8,9 +8,12 @@
   "remark": "e2e: 复合游标 (updated_at, id)",
   "spec": {
     "datasource": "src",
-    "select": "select id, name, updated_at from public.demo_person",
-    "cursor_column": "updated_at, id",
-    "cursor_type": "timestamp",
+    "mode": "cursor",
+    "table": "public.demo_person",
+    "cursor_field": "updated_at",
+    "cursor_type": "timestamptz",
+    "tie_field": "id",
+    "tie_type": "bigint",
     "wrap": "row"
   }
 }

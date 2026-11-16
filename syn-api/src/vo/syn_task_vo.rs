@@ -19,7 +19,7 @@ pub struct SynTaskVo {
     pub id: U64,
     /// 名称
     pub name: String,
-    /// 来源 topic
+    /// topic
     pub topic: String,
     /// 同一主题内的排序值
     pub sort_order: i32,

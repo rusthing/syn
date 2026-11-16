@@ -2,7 +2,7 @@ use robotech::macros::dao;
 
 /// # DB 数据源（连接配置）
 ///
-/// 唯一键 `code`（`AK_CODE_SYN_DATASOURCE`）：任务与来源按它指代数据源，重复了
+/// 唯一键 `code`（`AK_CODE_SYN_DATASOURCE`）：任务与数据抽取按它指代数据源，重复了
 /// 就分不清引用的是哪一条。
 ///
 /// 模糊查询放在 `code` / `name` / `remark` 上；`url` 含账号密码，**不参与检索**，

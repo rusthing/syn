@@ -1,4 +1,4 @@
-//! # 自拉数据源 VO
+//! # 数据抽取 VO
 
 use robotech::api::U64;
 use serde::{Deserialize, Serialize};
@@ -9,16 +9,16 @@ use crate::dic::SourceKind;
 use crate::mo::syn_cursor::Model as CursorModel;
 use crate::mo::syn_source::Model as SourceModel;
 
-/// # 数据源的水位
+/// # 数据抽取的水位
 ///
 /// 与 `syn_cursor` 的列不完全同名：`cursor_value` 出去叫 `position`（「水位值」在
 /// 界面上是「当前位置」），并且把「最近一次跑」的四个字段收在一起 —— 游标是
-/// 一个整体状态，拆开摆在数据源上会让人以为它们是数据源的属性。
+/// 一个整体状态，拆开摆在抽取定义上会让人以为它们是抽取定义的属性。
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SynCursorVo {
-    /// 水位值（时间戳 / 自增 ID / 页码 token），空表示还没跑过
+    /// 水位值（游标增量是 [主游标, 决胜字段]，全量是进度 JSON，http 是页码 / token）
     pub position: Option<String>,
     /// 累计同步行数
     pub rows_synced: i64,
@@ -39,18 +39,18 @@ impl From<CursorModel> for SynCursorVo {
     }
 }
 
-/// # 自拉数据源
+/// # 数据抽取
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SynSourceVo {
     /// ID
     pub id: U64,
-    /// 数据源编码
+    /// 抽取编码
     pub code: String,
     /// 名称
     pub name: String,
-    /// 取数方式
+    /// 抽取方式
     pub kind: SourceKind,
     /// 虚拟 topic
     pub topic: String,
@@ -60,7 +60,7 @@ pub struct SynSourceVo {
     pub interval_duration: String,
     /// 单批行数
     pub batch_size: i32,
-    /// 取数定义（JSONB 原样）
+    /// 抽取定义（JSONB 原样）
     pub spec: serde_json::Value,
     /// 配置版本号
     pub version: i32,
@@ -76,7 +76,7 @@ pub struct SynSourceVo {
     pub updater_id: U64,
     /// 更新时间
     pub update_ms: U64,
-    /// 保存时的提示（例如「取数定义变了，水位已清空」）。只在本次响应里出现，
+    /// 保存时的提示（例如「抽取定义变了，水位已清空」）。只在本次响应里出现，
     /// 列表/详情不会带
     pub notice: Option<String>,
 }
@@ -138,6 +138,6 @@ pub struct SynSourcePullVo {
     pub position: Option<String>,
     /// 卡住的原因（第一条非 success/skip 的结论），成功一轮为 `null`
     pub stalled: Option<String>,
-    /// 仅 http 全量源：本轮结束后是否已经翻到底。`null` = 不适用（sql 源）
+    /// 仅全量源（快照 / http）：本轮结束后是否已经拉完。`null` = 不适用（游标增量）
     pub full_done: Option<bool>,
 }

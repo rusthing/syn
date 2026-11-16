@@ -1,6 +1,6 @@
 # syn-web · 同步控制台
 
-`syn` 的前端工程：任务规则（六段）、取数来源、试跑、投递记录、幂等台账。
+`syn` 的前端工程：任务规则（六段）、数据抽取、试跑、投递记录、幂等台账。
 
 技术栈跟 `jobx-web` 保持一致，不另起一套：React 19 + Vite 7 + Tailwind 4 +
 React Router 7 + TanStack Query + lucide-react。没有引组件库 —— 一个控制台需要的
@@ -24,7 +24,7 @@ pnpm typecheck
 | 演示数据 | `VITE_API_BASE` 为空（默认） | 全站在内存里跑，写操作不落库，刷新还原 |
 | 实时接口 | 配了 `VITE_API_BASE` | 请求打到 syn-svr |
 
-演示数据不是随便编的：5 个任务、3 个来源、160 条投递、24 条幂等记录，失败码、耗时、
+演示数据不是随便编的：5 个任务、3 个数据抽取、160 条投递、24 条幂等记录，失败码、耗时、
 命中分布都按真实形状造，用来确认「界面读起来对不对」。样例报文里那条 `POINT/POLYGON`
 的 WKB 是 Debezium 真实输出，能完整走到 `wkb_to_wkt`。
 
@@ -68,7 +68,7 @@ pnpm typecheck
 | 页面 | 接口 |
 |---|---|
 | 任务 | `GET /syn/task/list`、`GET /syn/task/page`、`GET/POST/PUT/DELETE /syn/task[/{id}]`、`PUT /syn/task/{id}/enabled` |
-| 来源 | `GET /syn/source/list|page`、`POST/PUT/DELETE /syn/source[/{id}]`、`POST /syn/source/{id}/pull`、`PUT /syn/source/{id}/enabled` |
+| 数据抽取 | `GET /syn/source/list|page`、`POST/PUT/DELETE /syn/source[/{id}]`、`POST /syn/source/{id}/pull`、`PUT /syn/source/{id}/enabled` |
 | 数据源 | `GET /syn/datasource/list|page`、`POST/PUT/DELETE /syn/datasource[/{id}]`、`PUT /syn/datasource/{id}/enabled` |
 | 控制面板 | `GET/PUT /syn/canvas/layout`、`GET /syn/registry/services` |
 | 投递 / 幂等 / 总览 | `GET /syn/delivery/page`、`GET /syn/idem/page`、`GET /syn/overview?window=24h` |

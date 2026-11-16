@@ -275,14 +275,14 @@ create table syn_source (
 );
 
 comment on table syn_source is
-'自拉数据源（poll）：一个数据源的一批数据可以同步到多个任务，任务侧不需要知道数据是推来的还是拉来的。';
+'数据抽取（poll）：一个抽取定义的一批数据可以同步到多个任务，任务侧不需要知道数据是推来的还是拉来的。';
 
 comment on column syn_source.id is
 'ID
 由 idworker 生成，全局唯一';
 
 comment on column syn_source.code is
-'数据源编码
+'抽取编码
 如 adm_person_full；虚拟 topic 由它拼出
 @len 1..=64';
 
@@ -291,9 +291,9 @@ comment on column syn_source.name is
 @len 1..=100';
 
 comment on column syn_source.kind is
-'取数方式
+'抽取方式
 @enum SourceKind default=Sql
-  0=Sql   按游标查库（推荐）
+  0=Sql   SQL 库表抽取（spec.mode 决定全量快照或游标增量）
   1=Http  分页拉接口';
 
 comment on column syn_source.topic is
@@ -316,8 +316,8 @@ comment on column syn_source.batch_size is
 @range 1..=5000';
 
 comment on column syn_source.spec is
-'取数定义
-sql 的查询、游标列与重叠窗口；http 的地址与分页规则';
+'抽取定义
+sql：mode（cursor 游标增量 / snapshot 全量快照）、table、sql（可选，手写单条 select/with 覆盖表名）、cursor_field/cursor_type、tie_field/tie_type、snapshot_batched、wrap；http：地址与分页规则';
 
 comment on column syn_source.version is
 '配置版本号
@@ -372,18 +372,19 @@ create table syn_cursor (
 );
 
 comment on table syn_cursor is
-'自拉数据源的水位（poll 模式）：单独一张表是因为它每轮都在写，而数据源是低频配置，混在一起会让读配置和推水位争同一行。';
+'数据抽取的水位（poll 模式）：单独一张表是因为它每轮都在写，而抽取配置是低频配置，混在一起会让读配置和推水位争同一行。';
 
 comment on column syn_cursor.id is
 'ID
 由 idworker 生成，全局唯一';
 
 comment on column syn_cursor.source_id is
-'数据源 ID
-一个数据源一条游标，不建历史多行';
+'抽取定义 ID
+一个抽取定义一条游标，不建历史多行';
 
 comment on column syn_cursor.cursor_value is
-'水位值（时间戳 / 自增 ID / 页码 token）
+'水位值
+游标增量：JSON 数组 [主游标, 决胜字段]；全量快照：{"snapshot":{"offset":n,"rows":n}} 或 {"snapshot":{"done":true,"rows":n}}；http：页码 / token
 下一轮从这里继续；为空表示还没跑过，首轮从头取
 @len 0..=500';
 
@@ -542,13 +543,13 @@ comment on column syn_canvas_layout.node_type is
 '节点类型
 @enum CanvasNodeType default=Task
   1=Datasource  数据源
-  2=Source      取数来源
+  2=Source      数据抽取
   3=Topic       主题
   4=Task        任务';
 
 comment on column syn_canvas_layout.node_key is
 '节点标识
-数据源 / 取数来源填各自的 code，任务填主键 id，主题填 topic 名
+数据源 / 数据抽取填各自的 code，任务填主键 id，主题填 topic 名
 @len 1..=128';
 
 comment on column syn_canvas_layout.x is

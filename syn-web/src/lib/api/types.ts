@@ -221,7 +221,7 @@ export type CanvasNodeKind = "datasource" | "source" | "topic" | "task";
 /** 一个节点的世界坐标（与缩放无关） */
 export interface CanvasNodePos {
   kind: CanvasNodeKind;
-  /** 数据源 / 取数来源填 code，任务填 id，主题填 topic 名 */
+  /** 数据源 / 数据抽取填 code，任务填 id，主题填 topic 名 */
   key: string;
   x: number;
   y: number;
@@ -267,15 +267,28 @@ export interface SourceCursor {
 
 export type SourceKind = "sql" | "http";
 
+/** 抽取模式：sql 内部再分「游标增量 / 全量快照」 */
+export type SourceMode = "cursor" | "snapshot";
+
 export interface SourceSpec {
   /** 数据源名，取 [syn.datasources.<name>] */
   datasource?: string;
-  /** 游标列类型：拼 SQL 时决定 ::timestamptz / ::int8 / ::text */
-  cursor_type?: "timestamp" | "int" | "text";
-  /** sql：select 语句，必须带 (updated_at, id) 复合游标占位 */
-  select?: string;
-  /** sql：游标列，复合时按 `updated_at,id` 写 */
-  cursor_column?: string;
+  /** sql：游标增量 / 全量快照 */
+  mode?: SourceMode;
+  /** sql：源表名，允许 schema.table。填了 sql 时可省略 */
+  table?: string;
+  /** sql：手写 SQL（可选），单条 select / with；填了就替代表名，输出需含主游标与决胜字段 */
+  sql?: string;
+  /** sql 游标增量：主游标字段（时间戳 / 自增 ID / 编码） */
+  cursor_field?: string;
+  /** 主游标类型：拼 SQL 时决定 ::int8 / ::timestamptz / ::text */
+  cursor_type?: "bigint" | "timestamptz" | "varchar";
+  /** sql 游标增量：决胜字段（必须唯一），解决同一主游标值并发写入 */
+  tie_field?: string;
+  /** 决胜字段类型：拼 SQL 时决定 ::int8 / ::uuid / ::text */
+  tie_type?: "bigint" | "uuid" | "varchar";
+  /** sql 全量快照：true = 按 batchSize 分批拉完，false = 一条 SQL 拉全表 */
+  snapshot_batched?: boolean;
   /** http：分页地址模板 */
   url?: string;
   /** http：取下一页的游标路径；有它就按 token 翻页，没有就按页码 1,2,3… */
@@ -293,7 +306,7 @@ export interface SourceSpec {
 }
 
 /**
- * 保存取数来源的入参（对应后端 `SynSourceSaveDto`）。
+ * 保存数据抽取的入参（对应后端 `SynSourceSaveDto`）。
  * 顶层字段是 camelCase，`spec` 是 JSONB 原样、内部保持 snake_case ——
  * 一个请求里两种风格，是后端 DTO 与 JSONB 的边界，不是笔误。
  */
@@ -404,7 +417,7 @@ export interface SyncSource extends Audit {
   last_run_ms: string | null;
   last_rows: number;
   last_error: string | null;
-  /** 保存响应里的提示（如「取数定义变更，水位已清空」），列表/详情不带 */
+  /** 保存响应里的提示（如「抽取定义变更，水位已清空」），列表/详情不带 */
   notice?: string | null;
 }
 

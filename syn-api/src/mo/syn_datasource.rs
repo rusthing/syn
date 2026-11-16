@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// # DB 数据源（连接配置）
 ///
-/// `code` 是任务与来源按名字引用数据源的唯一标识；`url` 明文只写不回显，
+/// `code` 是任务与数据抽取按名字引用数据源的唯一标识；`url` 明文只写不回显，
 /// 编辑时留空表示不修改。改动后由刷新信号失效各副本连接池（不在实体层职责内）。
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize, Default)]

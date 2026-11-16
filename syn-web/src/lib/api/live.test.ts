@@ -19,6 +19,7 @@ import {
   liveSources,
   liveTasks,
 } from "./live";
+import type { SourceSaveInput } from "./types";
 
 function reply(extra: unknown) {
   return {
@@ -145,7 +146,15 @@ describe("liveSources", () => {
     enabled: true,
     intervalDuration: "30s",
     batchSize: 500,
-    spec: { datasource: "adm", cursor_column: "updated_at,id" },
+    spec: {
+      datasource: "adm",
+      mode: "cursor",
+      table: "adm.person",
+      cursor_field: "updated_at",
+      cursor_type: "timestamptz",
+      tie_field: "id",
+      tie_type: "bigint",
+    },
     version: 1,
     cursor: {
       position: "1763003520,8821",
@@ -227,15 +236,23 @@ describe("liveSources", () => {
     });
   });
 
-  const saveInput = {
+  const saveInput: SourceSaveInput = {
     code: "adm_person",
     name: "人员表",
-    kind: "sql" as const,
+    kind: "sql",
     topic: "",
     enabled: true,
     intervalDuration: "30s",
     batchSize: 500,
-    spec: { datasource: "adm", cursor_column: "updated_at,id" },
+    spec: {
+      datasource: "adm",
+      mode: "cursor",
+      table: "adm.person",
+      cursor_field: "updated_at",
+      cursor_type: "timestamptz",
+      tie_field: "id",
+      tie_type: "bigint",
+    },
     remark: "",
   };
 
@@ -248,13 +265,14 @@ describe("liveSources", () => {
     const body = JSON.parse(String(calls[0].init.body));
     expect(body.kind).toBe(0); // sql
     expect(body.intervalDuration).toBe("30s");
-    expect(body.spec.cursor_column).toBe("updated_at,id"); // JSONB 内部保持 snake_case
+    expect(body.spec.table).toBe("adm.person"); // JSONB 内部保持 snake_case
+    expect(body.spec.cursor_field).toBe("updated_at");
     expect(body).not.toHaveProperty("id");
     expect(body).not.toHaveProperty("topic");
     expect(body).not.toHaveProperty("remark");
   });
 
-  it("http 来源的 kind 是 1；写字符串会被后端 serde 挡掉", async () => {
+  it("http 数据抽取的 kind 是 1；写字符串会被后端 serde 挡掉", async () => {
     const calls = capture(sourceVo);
     await liveSources.create({ ...saveInput, kind: "http" });
     expect(JSON.parse(String(calls[0].init.body)).kind).toBe(1);

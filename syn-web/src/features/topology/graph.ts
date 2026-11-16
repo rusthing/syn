@@ -1,16 +1,16 @@
 /**
  * # 拓扑图的拼装（纯函数，便于单测）
  *
- * 画布上**没有任何结构存在库里**：节点来自任务 / 取数来源 / 数据源三张表，
+ * 画布上**没有任何结构存在库里**：节点来自任务 / 数据抽取 / 数据源三张表，
  * 连线来自它们之间的引用（`source.spec.datasource`、`source.topic`、`task.topic`），
  * 库里只存节点坐标（`syn_canvas_layout`）。这样「图」永远和业务表一致 ——
  * 不可能出现「任务已经删了、图上还挂着」或者「改了引用关系、线还连着老的」。
  *
- * 主题（topic）是拼出来的虚拟节点：CDC 直接产 topic（没有来源记录），自拉来源
- * 写 `source:{code}` 虚拟 topic。所以 topic 节点的生产者集合 = 写了它的来源，
+ * 主题（topic）是拼出来的虚拟节点：CDC 直接产 topic（没有抽取记录），数据抽取
+ * 写 `source:{code}` 虚拟 topic。所以 topic 节点的生产者集合 = 写了它的抽取，
  * 消费者集合 = 匹配它的任务；两边都为空的 topic 不存在，不会被画出来。
  *
- * 方向就是数据流：数据源 → 取数来源 → 主题 → 任务。投递不画成节点 ——
+ * 方向就是数据流：数据源 → 数据抽取 → 主题 → 任务。投递不画成节点 ——
  * 它是任务的第五段（第六段判定看的就是投递的响应），画到卡里（见 `TaskCard`），
  * 否则多个任务投同一个服务时会连出一堆交叉线，还把「投递目标」误当成共享实体。
  */
@@ -63,7 +63,7 @@ export interface GraphNode {
   datasource?: DatasourceInfo;
   /** 任务卡的六段 */
   segments?: TaskSegment[];
-  /** 主题节点：写它的来源数 / 消费它的任务数 */
+  /** 主题节点：写它的数据抽取数 / 消费它的任务数 */
   producers: number;
   consumers: number;
 }
@@ -198,7 +198,7 @@ export function buildGraph({
     const users = sources.filter((s) => (s.spec.datasource ?? "").trim() === ds.code);
     const issues: string[] = [];
     if (!ds.enabled && users.length > 0) {
-      issues.push(`数据源已停用，但仍有 ${users.length} 个来源在引用它`);
+      issues.push(`数据源已停用，但仍有 ${users.length} 个数据抽取在引用它`);
     }
     nodes.push({
       id: nodeId("datasource", ds.code),
@@ -207,7 +207,7 @@ export function buildGraph({
       title: ds.name,
       subtitle: ds.target || ds.code,
       tone: !ds.enabled ? "muted" : issues.length ? "bad" : "ok",
-      status: ds.enabled ? `${users.length} 个来源` : "停用",
+      status: ds.enabled ? `${users.length} 个数据抽取` : "停用",
       issues,
       hints: [],
       datasource: ds,
@@ -216,7 +216,7 @@ export function buildGraph({
     });
   }
 
-  /* 取数来源 */
+  /* 数据抽取 */
   for (const src of sources) {
     const dsCode = (src.spec.datasource ?? "").trim();
     const issues: string[] = [];
@@ -227,12 +227,14 @@ export function buildGraph({
       issues.push(`引用的数据源 ${dsCode} 不存在`);
     }
 
+    const modeLabel =
+      src.kind === "http" ? "http 分页" : (src.spec.mode ?? "cursor") === "snapshot" ? "全量快照" : "游标增量";
     nodes.push({
       id: nodeId("source", src.code),
       kind: "source",
       key: src.code,
       title: src.name,
-      subtitle: `${src.kind} · ${src.interval_duration} · ${src.topic}`,
+      subtitle: `${modeLabel} · ${src.interval_duration} · ${src.topic}`,
       tone: !src.enabled ? "muted" : issues.length ? "bad" : "ok",
       status: !src.enabled ? "停用" : src.last_error ? "异常" : "运行中",
       issues,
@@ -252,7 +254,7 @@ export function buildGraph({
     }
   }
 
-  /* 主题：来源与任务两边的 topic 求并集 */
+  /* 主题：数据抽取与任务两边的 topic 求并集 */
   const topicNames = new Set<string>();
   for (const s of sources) if (s.topic) topicNames.add(s.topic);
   for (const t of tasks) if (t.topic) topicNames.add(t.topic);
@@ -261,7 +263,7 @@ export function buildGraph({
     const producers = sources.filter((s) => s.topic === topic).length;
     const consumers = tasks.filter((t) => t.topic === topic).length;
     const hints: string[] = [];
-    if (producers === 0) hints.push("没有在本控制台登记的取数来源（走 CDC 推来的可忽略）");
+    if (producers === 0) hints.push("没有在本控制台登记的数据抽取（走 CDC 推来的可忽略）");
     if (consumers === 0 && producers > 0) hints.push("没有任务消费这个主题，拉到的事件会被丢掉");
 
     nodes.push({
@@ -269,7 +271,7 @@ export function buildGraph({
       kind: "topic",
       key: topic,
       title: topic,
-      subtitle: `${producers} 个来源写入 · ${consumers} 个任务消费`,
+      subtitle: `${producers} 个数据抽取写入 · ${consumers} 个任务消费`,
       tone: consumers === 0 ? "warn" : "ok",
       status: consumers === 0 ? "无消费" : "正常",
       issues: [],
@@ -338,7 +340,7 @@ export function buildGraph({
     }
   }
 
-  // 外键对不上的连线直接丢掉，避免画出悬空的线（引用写错的来源会在这里显出「断开」）
+  // 外键对不上的连线直接丢掉，避免画出悬空的线（引用写错的数据抽取会在这里显出「断开」）
   const ids = new Set(nodes.map((n) => n.id));
   return {
     nodes,

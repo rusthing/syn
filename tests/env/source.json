@@ -8,9 +8,12 @@
   "remark": "env 联调：admrs.public.syn_it_person，topic 留空由服务端生成",
   "spec": {
     "datasource": "adm",
-    "select": "select id, name, updated_at from public.syn_it_person",
-    "cursor_column": "updated_at, id",
-    "cursor_type": "timestamp",
+    "mode": "cursor",
+    "table": "public.syn_it_person",
+    "cursor_field": "updated_at",
+    "cursor_type": "timestamptz",
+    "tie_field": "id",
+    "tie_type": "bigint",
     "wrap": "row"
   }
 }

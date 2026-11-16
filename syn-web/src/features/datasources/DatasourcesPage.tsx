@@ -39,7 +39,7 @@ export function DatasourcesPage() {
     <>
       <PageHeader
         title="数据源"
-        subtitle="已配置的 DB 连接。连接串（含账号密码）只在保存时提交，列表里只显示脱敏后的目标；取数来源与投递的 db 目标都按 code 引用这里。"
+        subtitle="已配置的 DB 连接。连接串（含账号密码）只在保存时提交，列表里只显示脱敏后的目标；数据抽取与投递的 db 目标都按 code 引用这里。"
         actions={
           <Button
             variant="primary"
@@ -58,7 +58,7 @@ export function DatasourcesPage() {
           value={list.length}
           suffix={`/ ${enabled} 启用`}
           icon={<DatabaseZap className="size-4" />}
-          footer="取数来源与 db 投递都按 code 引用"
+          footer="数据抽取与 db 投递都按 code 引用"
         />
         <StatCard
           label="启用中"
@@ -203,7 +203,7 @@ export function DatasourcesPage() {
       <ConfirmDialog
         open={removing !== null}
         title={`删除数据源 ${removing?.code ?? ""}？`}
-        description="连接配置会一起删掉。引用了它的取数来源 / 任务不会自动改，按 code 找不到连接会报错；只是想暂停就关掉「启用」。"
+        description="连接配置会一起删掉。引用了它的数据抽取 / 任务不会自动改，按 code 找不到连接会报错；只是想暂停就关掉「启用」。"
         confirmText="删除"
         loading={remove.isPending}
         onCancel={() => setRemoving(null)}

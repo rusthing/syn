@@ -1,12 +1,12 @@
 use robotech::macros::dao;
 
-/// # 自拉数据源
+/// # 数据抽取
 ///
-/// 两个唯一键：`code` 是数据源标识（虚拟 topic 由它拼），`topic` 必须唯一 ——
-/// 两个数据源共用一个虚拟 topic，任务就分不清记录是哪来的。
+/// 两个唯一键：`code` 是抽取定义标识（虚拟 topic 由它拼），`topic` 必须唯一 ——
+/// 两个抽取定义共用一个虚拟 topic，任务就分不清记录是哪来的。
 #[dao(
     unique_keys: [
-        ("code", "数据源编码"),
+        ("code", "抽取编码"),
         ("topic", "虚拟 topic"),
     ],
     like_columns: [

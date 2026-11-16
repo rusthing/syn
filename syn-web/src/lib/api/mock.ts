@@ -400,7 +400,7 @@ let TASKS: SyncTask[] = [
   }, 1),
 ];
 
-/* -------------------------------- 来源 -------------------------------- */
+/* ------------------------------- 数据抽取 ------------------------------- */
 
 /** http 全量源在演示数据里翻几页算完（后端是「翻到空页为止」） */
 const MOCK_HTTP_TOTAL_PAGES = 3;
@@ -419,10 +419,13 @@ let SOURCES: SyncSource[] = [
     batch_size: 500,
     spec: {
       datasource: "dtw",
-      select:
-        "select id, name, area_code, st_asbinary(polygon_location) as polygon_wkb, update_time\nfrom dtw_task.region\nwhere (update_time, id) > ($1, $2)\norder by update_time, id\nlimit $3",
-      cursor_column: "update_time,id",
-      wrap: "cdc",
+      mode: "cursor",
+      table: "dtw_task.region",
+      cursor_field: "update_time",
+      cursor_type: "timestamptz",
+      tie_field: "id",
+      tie_type: "bigint",
+      wrap: "row",
     },
     cursor: { position: "1763003520,8821", updated_ms: String(NOW - 42_000), rows_total: 184_320 },
     last_run_ms: String(NOW - 42_000),
@@ -444,10 +447,13 @@ let SOURCES: SyncSource[] = [
     batch_size: 200,
     spec: {
       datasource: "dtw",
-      select:
-        "select id, person_id, locator_id, bind_time, update_time\nfrom dtw_task.locator_bind\nwhere (update_time, id) > ($1, $2)\norder by update_time, id\nlimit $3",
-      cursor_column: "update_time,id",
-      wrap: "cdc",
+      mode: "cursor",
+      table: "dtw_task.locator_bind",
+      cursor_field: "update_time",
+      cursor_type: "timestamptz",
+      tie_field: "id",
+      tie_type: "bigint",
+      wrap: "row",
     },
     cursor: { position: "1763003550,771", updated_ms: String(NOW - 6 * MIN), rows_total: 31_204 },
     last_run_ms: String(NOW - 6 * MIN),
@@ -816,7 +822,7 @@ export const mockDatasources = {
   async update(id: string, input: DatasourceSaveInput): Promise<DatasourceInfo> {
     const current = await mockDatasources.get(id);
     if (current.code !== input.code.trim()) {
-      throw new Error("数据源编码不可修改：任务与来源都按它指代");
+      throw new Error("数据源编码不可修改：任务与数据抽取都按它指代");
     }
     const url = input.url?.trim();
     const next: DatasourceInfo = {
@@ -899,12 +905,12 @@ export const mockSources = {
     const now = String(Date.now());
     const code = input.code.trim();
     if (!input.id && SOURCES.some((s) => s.code === code)) {
-      throw new Error(`来源编码 ${code} 已存在`);
+      throw new Error(`数据抽取编码 ${code} 已存在`);
     }
     const current = input.id ? SOURCES.find((s) => s.id === input.id) : undefined;
-    if (input.id && !current) throw new Error(`来源 ${input.id} 不存在`);
+    if (input.id && !current) throw new Error(`数据抽取 ${input.id} 不存在`);
     if (current && current.code !== code) {
-      throw new Error("来源编码不可修改：虚拟 topic 与游标都按它指代");
+      throw new Error("数据抽取编码不可修改：虚拟 topic 与游标都按它指代");
     }
     const next: SyncSource = {
       id: current?.id ?? String(19_0000_0000 + (idSeq += 1)),
@@ -933,7 +939,7 @@ export const mockSources = {
   },
 
   async remove(id: string): Promise<null> {
-    if (!SOURCES.some((s) => s.id === id)) throw new Error(`来源 ${id} 不存在`);
+    if (!SOURCES.some((s) => s.id === id)) throw new Error(`数据抽取 ${id} 不存在`);
     SOURCES = SOURCES.filter((s) => s.id !== id);
     return null;
   },
@@ -946,8 +952,8 @@ export const mockSources = {
    */
   async pull(id: string, reset = false): Promise<PullResult> {
     const source = SOURCES.find((s) => s.id === id);
-    if (!source) throw new Error(`来源 ${id} 不存在`);
-    if (!source.enabled) throw new Error("来源已停用，先启用再拉取");
+    if (!source) throw new Error(`数据抽取 ${id} 不存在`);
+    if (!source.enabled) throw new Error("数据抽取已停用，先启用再拉取");
 
     if (source.kind !== "http") {
       const rows = Math.floor(rand() * source.batch_size * 0.4);
@@ -983,7 +989,7 @@ export const mockSources = {
 
   async toggle(id: string, enabled: boolean): Promise<SyncSource> {
     const source = SOURCES.find((s) => s.id === id);
-    if (!source) throw new Error(`来源 ${id} 不存在`);
+    if (!source) throw new Error(`数据抽取 ${id} 不存在`);
     const next = { ...source, enabled, update_ms: String(Date.now()) };
     SOURCES = SOURCES.map((s) => (s.id === id ? next : s));
     return next;

@@ -233,7 +233,7 @@ assert_eq "服务名候选降级为空数组" "200" \
 # into_active_model 带的是 Unchanged，UPDATE 的变更集里根本没有 enabled —— 接口 200、
 # updateMs 变了，开关却纹丝不动。前端看起来就是「停用失效」，而且不报任何错。
 # 这里逐层锁死：响应里的值、再查一次的值、列表筛选的结果，三处都必须是新的。
-say "启停：任务与取数来源都要真的写进列"
+say "启停：任务与数据抽取都要真的写进列"
 task_id=$(curl -fsS "$API/syn/task/list" | jq -r '.extra[0].id')
 src_id=$(curl -fsS "$API/syn/source/list" | jq -r '.extra[0].id')
 assert_eq "任务停用响应" "false" \
@@ -254,9 +254,9 @@ assert_eq "重新启用后 page 又能查到" 1 \
 
 curl -fsS -X PUT "$API/syn/source/$src_id/enabled" -H 'Content-Type: application/json' \
   -H 'X-User-Id: 1' --data '{"enabled":false}' >/dev/null
-assert_eq "来源停用后重新查询" "false" \
+assert_eq "数据抽取停用后重新查询" "false" \
   "$(curl -fsS "$API/syn/source/$src_id" | jq -r '.extra.enabled')"
-assert_eq "来源重新启用" "true" \
+assert_eq "数据抽取重新启用" "true" \
   "$(curl -fsS -X PUT "$API/syn/source/$src_id/enabled" -H 'Content-Type: application/json' \
      -H 'X-User-Id: 1' --data '{"enabled":true}' | jq -r '.extra.enabled')"
 

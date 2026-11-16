@@ -8,7 +8,7 @@ export const canvasKeys = {
 const keyOf = (pos: CanvasNodePos) => `${pos.kind}:${pos.key}`;
 
 /**
- * 画布坐标。节点本身不在这里 —— 页面从数据源 / 来源 / 任务三个列表现拼，
+ * 画布坐标。节点本身不在这里 —— 页面从数据源 / 数据抽取 / 任务三个列表现拼，
  * 所以这三个列表变了，图自动跟着变，坐标只多不少也无所谓（多出来的会被 `mergePositions` 忽略）。
  */
 export function useCanvasLayout() {

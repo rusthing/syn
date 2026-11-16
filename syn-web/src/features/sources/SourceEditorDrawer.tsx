@@ -1,9 +1,11 @@
 /**
- * 取数来源的新增 / 编辑窗体。
+ * 数据抽取的新增 / 编辑窗体。
  *
  * 后端 `syn_source` 的 CRUD 一直在，缺的是这个入口：以前只能靠直接写库或调接口
- * 建来源，界面上只有「看 / 拉 / 启停」。连接串不在这里维护 —— 那是
+ * 建抽取定义，界面上只有「看 / 拉 / 启停」。连接串不在这里维护 —— 那是
  * `[syn.datasources.*]`（toml / consul）的事，这里只从只读清单里选名字。
+ *
+ * 功能上只让人填「表名 + 游标字段」，取数 SQL 由系统生成（下方预览与后端执行器同模板）。
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -13,16 +15,11 @@ import { Badge } from "@/components/ui/Badge";
 import { ConfirmDialog, Modal } from "@/components/ui/Drawer";
 import { Field, Input, Select, Textarea } from "@/components/ui/Field";
 import { useToast } from "@/components/ui/Toast";
+import { cn } from "@/lib/utils";
 import type { SourceSaveInput, SourceSpec, SyncSource } from "@/lib/api/types";
+import { buildSourceSql } from "@/lib/spec/source-sql";
 import { sourceIssue, validateSource } from "@/lib/spec/validate-source";
 import { useDatasources, useSourceMutations } from "@/hooks/use-sources";
-
-const SQL_TEMPLATE =
-  "select id, name, updated_at\n" +
-  "from public.demo_table\n" +
-  "where (updated_at, id) > ($1, $2)\n" +
-  "order by updated_at, id\n" +
-  "limit $3";
 
 function newSource(): SourceSaveInput {
   return {
@@ -35,10 +32,14 @@ function newSource(): SourceSaveInput {
     batchSize: 500,
     spec: {
       datasource: "",
-      cursor_type: "timestamp",
-      cursor_column: "updated_at,id",
+      mode: "cursor",
+      table: "",
+      cursor_field: "",
+      cursor_type: "bigint",
+      tie_field: "",
+      tie_type: "bigint",
+      snapshot_batched: false,
       wrap: "row",
-      select: SQL_TEMPLATE,
     },
     remark: "",
   };
@@ -74,10 +75,13 @@ export function SourceEditorDrawer({
   const { save } = useSourceMutations();
   const { data: datasourceList, isLoading: dsLoading } = useDatasources();
   const [draft, setDraft] = useState<SourceSaveInput>(() => newSource());
+  /** 自动生成 / 手写 SQL。手写时 spec.sql 存在（哪怕是空串），后端据此判定「手写模式」 */
+  const [sqlMode, setSqlMode] = useState<"auto" | "custom">("auto");
 
   useEffect(() => {
     if (!open) return;
     setDraft(source ? fromSource(source) : newSource());
+    setSqlMode(source?.spec.sql !== undefined ? "custom" : "auto");
   }, [open, source]);
 
   const issues = useMemo(() => validateSource(draft), [draft]);
@@ -89,6 +93,28 @@ export function SourceEditorDrawer({
   const names = datasourceList ?? [];
   const spec = draft.spec;
   const isSql = draft.kind === "sql";
+  const mode = spec.mode ?? "cursor";
+  const isCursor = isSql && mode === "cursor";
+
+  /** 切抽取方式时把半边字段清掉：http 源里残留库表字段会被后端判为冲突 */
+  const switchKind = (kind: SourceSaveInput["kind"]) => {
+    if (kind === draft.kind) return;
+    setSqlMode("auto");
+    patch({
+      kind,
+      spec:
+        kind === "sql"
+          ? { ...newSource().spec }
+          : { url: "", data_path: "", next_path: "", method: "GET", wrap: spec.wrap ?? "row" },
+    });
+  };
+
+  /** 切「自动 / 手写」：切回自动要真的删掉 sql，否则后端仍按手写跑 */
+  const switchSqlMode = (next: "auto" | "custom") => {
+    setSqlMode(next);
+    if (next === "auto") patchSpec({ sql: undefined });
+    else patchSpec({ sql: spec.sql ?? "" });
+  };
 
   const submit = () => {
     if (issues.length > 0) {
@@ -98,10 +124,13 @@ export function SourceEditorDrawer({
     save.mutate(draft, {
       onSuccess: (saved) => {
         if (saved.notice) {
-          // 取数定义变了，后端已清空水位：用 info 而不是 success，避免被当成普通保存
-          toast.info(source ? "来源已更新" : "来源已创建", saved.notice);
+          // 抽取定义变了，后端已清空水位：用 info 而不是 success，避免被当成普通保存
+          toast.info(source ? "数据抽取已更新" : "数据抽取已创建", saved.notice);
         } else {
-          toast.success(source ? "来源已更新" : "来源已创建", `${saved.code} · 游标保留在 ${saved.topic}`);
+          toast.success(
+            source ? "数据抽取已更新" : "数据抽取已创建",
+            `${saved.code} · 游标保留在 ${saved.topic}`,
+          );
         }
         onSaved?.();
         onClose();
@@ -114,8 +143,8 @@ export function SourceEditorDrawer({
     <Modal
       open={open}
       onClose={onClose}
-      width={720}
-      title={source ? `编辑 ${source.code}` : "新增取数来源"}
+      width={760}
+      title={source ? `编辑 ${source.code}` : "新增数据抽取"}
       subtitle="配完点「立即拉取」先验一轮；保存不会推进游标"
       badge={
         <Badge tone={issues.length > 0 ? "danger" : "success"} dot>
@@ -164,10 +193,13 @@ export function SourceEditorDrawer({
             <Field label="名称" required error={err("name")}>
               <Input value={draft.name} placeholder="区域增量拉取" onChange={(e) => patch({ name: e.target.value })} />
             </Field>
-            <Field label="取数方式" hint="http 分页取数的运行时尚未实现，只能先存配置">
-              <Select value={draft.kind} onChange={(e) => patch({ kind: e.target.value as SourceSaveInput["kind"] })}>
-                <option value="sql">sql — 按复合游标查库</option>
-                <option value="http">http — 分页拉接口（未实现）</option>
+            <Field label="抽取方式" hint="SQL 库表可选全量快照 / 游标增量；http 按页全量拉接口，只用于首次同步">
+              <Select
+                value={draft.kind}
+                onChange={(e) => switchKind(e.target.value as SourceSaveInput["kind"])}
+              >
+                <option value="sql">sql — 库表取数</option>
+                <option value="http">http — 分页拉接口</option>
               </Select>
             </Field>
             <Field label="虚拟 topic" error={err("topic")} hint={<>留空自动生成 <code className="font-mono">source:{draft.code || "编码"}</code></>}>
@@ -186,7 +218,7 @@ export function SourceEditorDrawer({
                 onChange={(e) => patch({ intervalDuration: e.target.value })}
               />
             </Field>
-            <Field label="单批行数" required error={err("batchSize")} hint="1..=5000">
+            <Field label="单批行数" required error={err("batchSize")} hint="1..=5000；也是快照分批的大小">
               <Input
                 type="number"
                 min={1}
@@ -204,9 +236,26 @@ export function SourceEditorDrawer({
 
         <section className="space-y-3 border-t border-line/70 pt-4">
           <SectionTitle
-            title="取数定义"
-            hint={isSql ? "SQL 只读，游标占位 ($1, $2) 与 limit $3 由执行器注入" : "HTTP 分页配置只会入库，不会被执行"}
+            title="抽取定义"
+            hint={isSql ? "表名与游标字段填好后，取数 SQL 由系统生成" : "HTTP 全量分页：一轮推一页，翻到底自动完成"}
           />
+
+          {isSql && (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <ModeCard
+                active={mode === "cursor"}
+                title="游标增量"
+                desc="按主游标 + 决胜字段定时拉，捕获不到物理删除"
+                onClick={() => patchSpec({ mode: "cursor" })}
+              />
+              <ModeCard
+                active={mode === "snapshot"}
+                title="全量快照"
+                desc="一次性把整表拉一遍，用于初始化"
+                onClick={() => patchSpec({ mode: "snapshot" })}
+              />
+            </div>
+          )}
 
           <Field
             label="数据源连接"
@@ -244,50 +293,120 @@ export function SourceEditorDrawer({
 
           {isSql ? (
             <>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="游标类型" error={err("spec.cursor_type")} hint="两列游标必须 timestamp">
-                  <Select
-                    value={spec.cursor_type ?? "timestamp"}
-                    onChange={(e) => patchSpec({ cursor_type: e.target.value as SourceSpec["cursor_type"] })}
-                    className="font-mono text-[12.5px]"
-                  >
-                    <option value="timestamp">timestamp</option>
-                    <option value="int">int</option>
-                    <option value="text">text</option>
-                  </Select>
-                </Field>
-                <Field label="行包装" hint="row → op=r 的快照读；cdc → 查询本身就返回 CDC 形态">
-                  <Select
-                    value={spec.wrap ?? "row"}
-                    onChange={(e) => patchSpec({ wrap: e.target.value as SourceSpec["wrap"] })}
-                    className="font-mono text-[12.5px]"
-                  >
-                    <option value="row">row</option>
-                    <option value="cdc">cdc</option>
-                  </Select>
-                </Field>
-              </div>
-              <Field
-                label="游标列"
-                required
-                error={err("spec.cursor_column") || err("spec.cursor_column[0]") || err("spec.cursor_column[1]")}
-                hint="最多两列：时间戳 + ID，逗号分隔；回读 5 秒重叠窗口靠第一列"
-              >
-                <Input
-                  value={spec.cursor_column ?? ""}
-                  placeholder="updated_at,id"
-                  className="font-mono text-[12.5px]"
-                  onChange={(e) => patchSpec({ cursor_column: e.target.value })}
-                />
+              <Field label="SQL 来源" hint="自动生成按源表名拼；手写适合 join / 自定义过滤，输出仍受游标条件约束">
+                <Select value={sqlMode} onChange={(e) => switchSqlMode(e.target.value as "auto" | "custom")}>
+                  <option value="auto">自动生成 — 填源表名</option>
+                  <option value="custom">手写 SQL — 单条 select / with</option>
+                </Select>
               </Field>
-              <Field label="取数 SQL" required error={err("spec.select")} hint="单条 select / with；不要写分号结尾之外的第二条语句">
-                <Textarea
-                  rows={7}
-                  spellCheck={false}
-                  value={spec.select ?? ""}
-                  className="font-mono text-[11.5px]"
-                  onChange={(e) => patchSpec({ select: e.target.value })}
-                />
+
+              {sqlMode === "auto" ? (
+                <Field label="源表名" required error={err("spec.table")} hint="表名写库里的真实名字，可用 schema.table">
+                  <Input
+                    value={spec.table ?? ""}
+                    placeholder="dtw_polygon"
+                    className="font-mono text-[12.5px]"
+                    onChange={(e) => patchSpec({ table: e.target.value })}
+                  />
+                </Field>
+              ) : (
+                <Field
+                  label="手写 SQL"
+                  required
+                  error={err("spec.sql")}
+                  hint="输出必须含主游标字段与决胜字段；系统会把它当子查询，再套游标条件、排序与 LIMIT"
+                >
+                  <Textarea
+                    rows={8}
+                    value={spec.sql ?? ""}
+                    placeholder={"select id, update_time\nfrom dtw_polygon\nwhere deleted = false"}
+                    className="font-mono text-[11.5px] leading-relaxed"
+                    onChange={(e) => patchSpec({ sql: e.target.value })}
+                  />
+                </Field>
+              )}
+
+              {isCursor ? (
+                <>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field
+                      label="主游标字段"
+                      required
+                      error={err("spec.cursor_field")}
+                      hint="时间戳 / 自增 ID，建好索引才能快"
+                    >
+                      <Input
+                        value={spec.cursor_field ?? ""}
+                        placeholder="update_timestamp"
+                        className="font-mono text-[12.5px]"
+                        onChange={(e) => patchSpec({ cursor_field: e.target.value })}
+                      />
+                    </Field>
+                    <Field label="主游标类型" error={err("spec.cursor_type")} hint="按源库真实类型选">
+                      <Select
+                        value={spec.cursor_type ?? "bigint"}
+                        onChange={(e) =>
+                          patchSpec({ cursor_type: e.target.value as SourceSpec["cursor_type"] })
+                        }
+                        className="font-mono text-[12.5px]"
+                      >
+                        <option value="bigint">bigint</option>
+                        <option value="timestamptz">timestamptz</option>
+                        <option value="varchar">varchar</option>
+                      </Select>
+                    </Field>
+                    <Field
+                      label="决胜字段"
+                      required
+                      error={err("spec.tie_field")}
+                      hint="必须唯一：解决同一主游标值并发写入"
+                    >
+                      <Input
+                        value={spec.tie_field ?? ""}
+                        placeholder="id"
+                        className="font-mono text-[12.5px]"
+                        onChange={(e) => patchSpec({ tie_field: e.target.value })}
+                      />
+                    </Field>
+                    <Field label="决胜字段类型" error={err("spec.tie_type")} hint="uuid 不能做主游标，时间戳不能决胜">
+                      <Select
+                        value={spec.tie_type ?? "bigint"}
+                        onChange={(e) => patchSpec({ tie_type: e.target.value as SourceSpec["tie_type"] })}
+                        className="font-mono text-[12.5px]"
+                      >
+                        <option value="bigint">bigint</option>
+                        <option value="uuid">uuid</option>
+                        <option value="varchar">varchar</option>
+                      </Select>
+                    </Field>
+                  </div>
+                  <div className="flex items-start gap-2 rounded-lg bg-warn-soft/60 px-3 py-2 text-[11.5px] leading-snug text-ink-soft">
+                    <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warn" />
+                    <span>
+                      基于 SQL 轮询的增量机制<b className="font-semibold text-ink">无法捕获源库的物理删除</b>；
+                      需要同步删除得靠 CDC 或软删标记。
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <Field
+                  label="拉取方式"
+                  hint="分批按单批行数循环翻页，一次调用内拉完；单次全表适合小表"
+                >
+                  <Select
+                    value={spec.snapshot_batched ? "batched" : "single"}
+                    onChange={(e) => patchSpec({ snapshot_batched: e.target.value === "batched" })}
+                  >
+                    <option value="single">单次全表 — SELECT * FROM 表</option>
+                    <option value="batched">分批拉取 — 每批按单批行数翻页</option>
+                  </Select>
+                </Field>
+              )}
+
+              <Field label="取数 SQL（预览）" hint="只读：最终执行形态；手写 SQL 会被包成子查询">
+                <pre className="max-h-[190px] overflow-auto rounded-lg bg-sunken/70 p-3 font-mono text-[11.5px] leading-relaxed text-ink-soft">
+                  {buildSourceSql(spec, draft.batchSize)}
+                </pre>
               </Field>
             </>
           ) : (
@@ -363,12 +482,44 @@ export function SourceEditorDrawer({
         <div className="flex items-start gap-2 rounded-lg bg-sunken/70 px-3 py-2 text-[11px] leading-relaxed text-muted">
           <DatabaseZap className="mt-0.5 size-3.5 shrink-0" />
           <span>
-            来源把行包进虚拟 topic <code className="font-mono">{draft.topic?.trim() || `source:${draft.code || "编码"}`}</code>；
-            要真正投递，还得有一个监听这个 topic 的同步任务。改来源配置不会让执行器立刻生效，任务那边保存时会自动通知各副本刷新快照。
+            数据抽取把行包进虚拟 topic <code className="font-mono">{draft.topic?.trim() || `source:${draft.code || "编码"}`}</code>；
+            要真正投递，还得有一个监听这个 topic 的同步任务。改抽取配置不会让执行器立刻生效，任务那边保存时会自动通知各副本刷新快照。
           </span>
         </div>
       </div>
     </Modal>
+  );
+}
+
+function ModeCard({
+  active,
+  title,
+  desc,
+  onClick,
+}: {
+  active: boolean;
+  title: string;
+  desc: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "rounded-lg border px-3 py-2 text-left transition-colors",
+        active
+          ? "border-accent bg-accent-soft"
+          : "border-line bg-surface hover:border-line-strong hover:bg-sunken",
+      )}
+    >
+      <div className="flex items-center justify-between text-[13px] font-semibold text-ink">
+        {title}
+        {active && <CircleCheck className="size-3.5 text-accent-strong" />}
+      </div>
+      <p className="mt-0.5 text-[11.5px] leading-snug text-muted">{desc}</p>
+    </button>
   );
 }
 
@@ -394,7 +545,7 @@ export function RemoveSourceDialog({
   return (
     <ConfirmDialog
       open={!!source}
-      title={`删除来源 ${source?.code ?? ""}？`}
+      title={`删除数据抽取 ${source?.code ?? ""}？`}
       description="配置与游标会一起删掉（syn_cursor 级联）。已经投递到下游的数据不受影响；下次用同名重建会从零水位重跑。"
       confirmText="删除"
       loading={remove.isPending}
@@ -403,7 +554,7 @@ export function RemoveSourceDialog({
         if (!source) return;
         remove.mutate(source.id, {
           onSuccess: () => {
-            toast.success("来源已删除", `${source.code} 的配置与游标已清除`);
+            toast.success("数据抽取已删除", `${source.code} 的配置与游标已清除`);
             onClose();
           },
           onError: (e: Error) => toast.error("删除失败", e.message),

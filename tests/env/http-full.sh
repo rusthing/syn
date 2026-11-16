@@ -4,7 +4,7 @@
 # 验的是「首次同步」这条路：一轮推一页、空页收尾、翻到底标 done、此后不再拉、
 # reset 能重跑同一批。数据由 `tests/env/mock-paging.py` 提供（3 页 7 行 + token 模式）。
 #
-# 前提：先跑 `tests/env/run.sh`（建隔离表 `syn_it_person`；来源/任务的清理规则见那边）。
+# 前提：先跑 `tests/env/run.sh`（建隔离表 `syn_it_person`；数据抽取/任务的清理规则见那边）。
 # 本脚本只用 9007 与 19098，跑完自动停服务、删自己建的源与任务。
 #
 # 用法：tests/env/http-full.sh
@@ -39,7 +39,7 @@ fail() {
 assert_eq() { [ "$2" = "$3" ] || fail "${1}：期望 [${2}]，实际 [${3}]"; ok "$1 = ${3}"; }
 
 # 只删自己建的源与任务，按 code 精确匹配。
-# **退出时也要删**：留着它们会让 run.sh 的「剩余来源数」断言变成 3，而且 http 全量源
+# **退出时也要删**：留着它们会让 run.sh 的「剩余数据抽取数」断言变成 3，而且 http 全量源
 # 一旦停在「未完成」，jobx 心跳会每拍继续推它。
 clean_config() {
   cat >"$TMP/clean.sql" <<'SQL'
@@ -191,7 +191,7 @@ task_json http_token_to_dtw http_token >"$TMP/task-token.json"
 assert_eq "建页码任务" "200" "$(req POST /syn/task "$TMP/task-page.json")"
 assert_eq "建 token 任务" "200" "$(req POST /syn/task "$TMP/task-token.json")"
 assert_eq "重载快照" "200" "$(req POST /syn/task/reload)"
-ok "来源 $PAGE_ID / $TOKEN_ID 已就绪"
+ok "数据抽取 $PAGE_ID / $TOKEN_ID 已就绪"
 
 say "页码模式：一轮一页，空页收尾"
 HITS0="$(hits page)"

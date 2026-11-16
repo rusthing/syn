@@ -49,7 +49,7 @@ const WORLD_H = 1800;
 
 const NODE_KIND_LABEL: Record<GraphNode["kind"], string> = {
   datasource: "数据源",
-  source: "取数来源",
+  source: "数据抽取",
   topic: "主题",
   task: "任务",
 };
@@ -98,7 +98,7 @@ interface Props {
   onOpenEntity: (node: GraphNode) => void;
   onDeleteEntity: (node: GraphNode) => void;
   onTryTask: (node: GraphNode) => void;
-  /** 卡片右上角的启用开关：任务走 tasks.toggle，来源/数据源走各自的 set_enabled */
+  /** 卡片右上角的启用开关：任务走 tasks.toggle，数据抽取/数据源走各自的 set_enabled */
   onToggleTask: (node: GraphNode, next: boolean) => void;
   /** 连线落点处的独占开关：改 spec.exclusive 保存 */
   onToggleExclusive: (node: GraphNode) => void;
@@ -707,7 +707,7 @@ export function TopologyCanvas({
                     onSelect(node.id);
                     onToggleEntity(node, next);
                   }}
-                  // 只有数据源能测：来源连的是 Kafka/业务源，测它没有统一动作
+                  // 只有数据源能测：数据抽取连的是 Kafka/业务源，测它没有统一动作
                   onTest={
                     node.kind === "datasource"
                       ? () => {
@@ -730,7 +730,7 @@ export function TopologyCanvas({
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center">
             <p className="text-[13px] font-medium text-ink">还没有可画的东西</p>
             <p className="max-w-[380px] text-[12px] leading-relaxed text-muted">
-              先到「数据源」登记连接、到「取数来源」登记拉取规则、或到「同步任务」新建任务，
+              先到「数据源」登记连接、到「数据抽取」登记拉取规则、或到「同步任务」新建任务，
               拓扑会自动长出来。
             </p>
           </div>

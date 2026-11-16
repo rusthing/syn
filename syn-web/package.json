@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "syn 同步控制台 — 任务规则、取数来源、试跑与投递记录的可视化台",
+  "description": "syn 同步控制台 — 任务规则、数据抽取、试跑与投递记录的可视化台",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

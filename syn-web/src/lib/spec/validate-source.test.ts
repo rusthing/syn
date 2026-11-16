@@ -1,5 +1,5 @@
 /**
- * 取数来源保存校验的用例。
+ * 数据抽取保存校验的用例。
  *
  * 这些断言的价值是「跟后端同源」：后端 `SourceSpec::validate` /
  * `SynSourceSaveDto` 的约束改了而这里没跟上，界面会让人保存一个后端必拒的
@@ -20,9 +20,12 @@ const valid = (): SourceSaveInput => ({
   batchSize: 500,
   spec: {
     datasource: "adm",
-    select: "select id, name, updated_at from public.person",
-    cursor_column: "updated_at,id",
-    cursor_type: "timestamp",
+    mode: "cursor",
+    table: "public.person",
+    cursor_field: "updated_at",
+    cursor_type: "timestamptz",
+    tie_field: "id",
+    tie_type: "bigint",
     wrap: "row",
   },
   remark: "",
@@ -35,44 +38,72 @@ describe("validateSource", () => {
     expect(validateSource(valid())).toEqual([]);
   });
 
+  it("全量快照只要数据源 + 表名", () => {
+    const input = valid();
+    input.spec = { datasource: "adm", mode: "snapshot", table: "public.person", wrap: "row" };
+    expect(validateSource(input)).toEqual([]);
+  });
+
   it("空编码只报一条错，不把必填与格式错误叠加", () => {
     const issues = validateSource({ ...valid(), code: "" });
     expect(issues.filter((i) => i.path === "code")).toHaveLength(1);
   });
 
-  it("缺数据源 / 缺 SQL / 缺游标列各自定位到 spec 字段", () => {
+  it("缺数据源 / 表名 / 主游标 / 决胜字段各自定位到 spec 字段", () => {
     const input = valid();
-    input.spec = { cursor_type: "timestamp", wrap: "row" };
+    input.spec = { mode: "cursor", wrap: "row" };
     expect(paths(input)).toEqual(
-      expect.arrayContaining(["spec.datasource", "spec.select", "spec.cursor_column"]),
+      expect.arrayContaining(["spec.datasource", "spec.table", "spec.cursor_field", "spec.tie_field"]),
     );
   });
 
-  it("http 来源不要求数据源：分页取数没有 datasource 的概念", () => {
+  it("表名只允许标识符，可用 schema.table", () => {
+    const input = valid();
+    input.spec.table = "person; drop table x";
+    expect(paths(input)).toContain("spec.table");
+    input.spec.table = "public.person";
+    expect(paths(input)).not.toContain("spec.table");
+  });
+
+  it("主游标与决胜字段不能相同，类型要符合各自可选集", () => {
+    const input = valid();
+    input.spec.tie_field = "updated_at";
+    expect(paths(input)).toContain("spec.tie_field");
+    input.spec.tie_field = "id";
+    input.spec.cursor_type = "uuid" as "bigint";
+    expect(paths(input)).toContain("spec.cursor_type");
+    input.spec.cursor_type = "timestamptz";
+    input.spec.tie_type = "timestamptz" as "bigint";
+    expect(paths(input)).toContain("spec.tie_type");
+  });
+
+  it("手写 SQL 可以替代表名", () => {
+    const input = valid();
+    input.spec.table = undefined;
+    input.spec.sql = "select id, updated_at from person where deleted = false;";
+    expect(validateSource(input)).toEqual([]);
+  });
+
+  it("手写 SQL 必须非空且是单条 select / with", () => {
+    const empty = valid();
+    empty.spec.table = undefined;
+    empty.spec.sql = "";
+    expect(paths(empty)).toContain("spec.sql");
+
+    const write = valid();
+    write.spec.sql = "update person set deleted = true";
+    expect(paths(write)).toContain("spec.sql");
+
+    const multi = valid();
+    multi.spec.sql = "select 1; drop table person";
+    expect(paths(multi)).toContain("spec.sql");
+  });
+
+  it("http 数据抽取不要求数据源：分页取数没有 datasource 的概念", () => {
     const input = valid();
     input.kind = "http";
     input.spec = { url: "http://upstream/page?cursor={cursor}", page_size: 100, wrap: "row" };
     expect(validateSource(input)).toEqual([]);
-  });
-
-  it("select 只许单条 select/with；中间分号挡住", () => {
-    const input = valid();
-    input.spec.select = "select 1; select 2";
-    expect(paths(input)).toContain("spec.select");
-    input.spec.select = "delete from person";
-    expect(paths(input)).toContain("spec.select");
-    // 结尾分号是习惯写法，允许
-    input.spec.select = "select 1;";
-    expect(paths(input)).not.toContain("spec.select");
-  });
-
-  it("两列游标必须 timestamp；列名只允许小写下划线", () => {
-    const input = valid();
-    input.spec.cursor_type = "int";
-    expect(paths(input)).toContain("spec.cursor_type");
-    input.spec.cursor_type = "timestamp";
-    input.spec.cursor_column = "UpdatedAt, id";
-    expect(paths(input)).toContain("spec.cursor_column[0]");
   });
 
   it("http 全量：路径要以 $ 开头、方法只许 GET/POST", () => {
@@ -102,13 +133,13 @@ describe("validateSource", () => {
     input.spec = {
       url: "http://upstream/page?cursor={cursor}",
       datasource: "adm",
-      select: "select 1",
-      cursor_column: "id",
+      table: "person",
+      cursor_field: "id",
     };
     const p = paths(input);
     expect(p).toContain("spec.datasource");
-    expect(p).toContain("spec.select");
-    expect(p).toContain("spec.cursor_column");
+    expect(p).toContain("spec.table");
+    expect(p).toContain("spec.cursor_field");
   });
 
   it("间隔 < 1s、批大小越界都要在保存前挡住", () => {

@@ -211,7 +211,7 @@ export function DatasourceEditorDrawer({
     >
       <div className="space-y-5">
         <section className="space-y-3">
-          <SectionTitle title="基本" hint="编码建好后不建议改：取数来源与任务的 db 目标都按它指代连接" />
+          <SectionTitle title="基本" hint="编码建好后不建议改：数据抽取与任务的 db 目标都按它指代连接" />
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="编码" required error={err("code")} hint="小写字母 / 数字 / 下划线">
               <Input

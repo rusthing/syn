@@ -16,7 +16,7 @@
 # 安全边界：只碰这三处，绝不改任何已有业务表、任何其它 consul 键：
 #   1. consul KV `dev/syn-svr.toml`
 #   2. `admrs.public.syn_it_person` / `dtwrs_ui.public.syn_it_person`（本脚本建的隔离表）
-#   3. `syn` 库里 code 为 adm_person / tmp_delete_me 的来源行，与 name 等于联调任务名的任务行
+#   3. `syn` 库里 code 为 adm_person / tmp_delete_me 的数据抽取行，与 name 等于联调任务名的任务行
 #      （任务没有 code，身份是主键 id，人读用 name，见 syn/doc/syn-开发规范.md §4.1）
 
 set -euo pipefail
@@ -67,7 +67,7 @@ stop_server() {
 }
 trap stop_server EXIT
 
-# 只清联调自己写的行：来源按 code 精确匹配，任务按 name 精确匹配；级联表先删
+# 只清联调自己写的行：数据抽取按 code 精确匹配，任务按 name 精确匹配；级联表先删
 clean_config() {
   pg syn -c "
     delete from syn_idem where task_id in (select id from syn_task where name = '$TASK_NAME');
@@ -144,22 +144,22 @@ assert_eq "清单接口" "200" "$(req GET /syn/datasource/list)"
 assert_eq "可选数据源" '["adm","dtw"]' "$(jq -c '[.extra[].name]|sort' "$RESP")"
 assert_eq "不含连接串字段" "0" "$(jq -c '[.extra[]|has("url")]|map(select(.))|length' "$RESP")"
 
-say "取数来源：新增 / 编辑 / 编码保护 / 删除"
-assert_eq "新增来源" "200" "$(req POST /syn/source "${ENV_DIR}/source.json")"
+say "数据抽取：新增 / 编辑 / 编码保护 / 删除"
+assert_eq "新增数据抽取" "200" "$(req POST /syn/source "${ENV_DIR}/source.json")"
 assert_eq "虚拟 topic 自动生成" "source:adm_person" "$(resp '.extra.topic')"
 assert_eq "kind 是 #[dic] 整数" "0" "$(resp '.extra.kind')"
 SRC="$(resp '.extra.id')"
 jq '.name="人员主数据增量（已改名）" | .intervalDuration="120s"' "${ENV_DIR}/source.json" > "${TMPDIR:-/tmp}/syn-env-source-update.json"
-assert_eq "修改来源" "200" "$(req PUT "/syn/source/${SRC}" "${TMPDIR:-/tmp}/syn-env-source-update.json")"
+assert_eq "修改数据抽取" "200" "$(req PUT "/syn/source/${SRC}" "${TMPDIR:-/tmp}/syn-env-source-update.json")"
 assert_eq "还没跑过时水位诚实为 null" "null" "$(resp '.extra.cursor')"
 jq '.code="renamed"' "${ENV_DIR}/source.json" > "${TMPDIR:-/tmp}/syn-env-source-bad.json"
 assert_eq "编码不可改" "400" "$(req PUT "/syn/source/${SRC}" "${TMPDIR:-/tmp}/syn-env-source-bad.json")"
-jq '.code="tmp_delete_me" | .name="临时来源"' "${ENV_DIR}/source.json" > "${TMPDIR:-/tmp}/syn-env-source-tmp.json"
-assert_eq "新建临时来源" "200" "$(req POST /syn/source "${TMPDIR:-/tmp}/syn-env-source-tmp.json")"
+jq '.code="tmp_delete_me" | .name="临时数据抽取"' "${ENV_DIR}/source.json" > "${TMPDIR:-/tmp}/syn-env-source-tmp.json"
+assert_eq "新建临时数据抽取" "200" "$(req POST /syn/source "${TMPDIR:-/tmp}/syn-env-source-tmp.json")"
 TMP="$(resp '.extra.id')"
-assert_eq "删除临时来源" "200" "$(req DELETE "/syn/source/${TMP}")"
+assert_eq "删除临时数据抽取" "200" "$(req DELETE "/syn/source/${TMP}")"
 req GET /syn/source/list >/dev/null
-assert_eq "剩余来源数" "1" "$(jq -r '.extra|length' "$RESP")"
+assert_eq "剩余数据抽取数" "1" "$(jq -r '.extra|length' "$RESP")"
 
 say "任务与快照"
 assert_eq "创建 DB 直写任务" "200" "$(req POST /syn/task "${ENV_DIR}/task.json")"
@@ -205,7 +205,7 @@ say "控制台接口"
 req GET '/syn/task/page?pageNum=1&pageSize=10' >/dev/null
 assert_eq "任务分页" "1" "$(resp '.extra.total')"
 req GET '/syn/source/page?pageNum=1&pageSize=10' >/dev/null
-assert_eq "来源分页带水位" "4" "$(resp '.extra.list[0].cursor.rowsSynced')"
+assert_eq "数据抽取分页带水位" "4" "$(resp '.extra.list[0].cursor.rowsSynced')"
 req GET '/syn/delivery/page?verdict=fatal' >/dev/null
 assert_eq "失败不出现在投递记录" "0" "$(resp '.extra.total')"
 curl -sS -G "${API}/syn/delivery/page" --data-urlencode "taskName=${TASK_NAME}" -o "$RESP" >/dev/null

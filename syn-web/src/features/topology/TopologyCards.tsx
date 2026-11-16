@@ -73,7 +73,7 @@ export function cardSize(kind: CanvasNodeKind): { w: number; h: number } {
 
 const KIND_META: Record<CanvasNodeKind, { label: string; icon: typeof Database; accent: string }> = {
   datasource: { label: "数据源", icon: Database, accent: "text-info" },
-  source: { label: "取数来源", icon: Radio, accent: "text-violet" },
+  source: { label: "数据抽取", icon: Radio, accent: "text-violet" },
   topic: { label: "主题", icon: Layers, accent: "text-muted" },
   task: { label: "任务", icon: Workflow, accent: "text-accent" },
 };
@@ -330,10 +330,10 @@ function ExclusiveToggle({
 }
 
 /**
- * 数据源 / 取数来源卡片。
+ * 数据源 / 数据抽取卡片。
  *
  * 两者的差别只有两处：数据源多一个「测试连接」动作（结果写在状态栏），
- * 取数来源的状态栏显示「最近一轮」而不是引用数。
+ * 数据抽取的状态栏显示「最近一轮」而不是引用数。
  */
 export function EntityCard({
   node,

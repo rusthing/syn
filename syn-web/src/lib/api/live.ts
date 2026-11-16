@@ -554,7 +554,7 @@ function toCanvasNode(v: WireCanvasNode): CanvasNodePos | null {
 }
 
 /**
- * 画布布局：只读写节点坐标，节点本身由任务 / 来源 / 数据源三张表现拼。
+ * 画布布局：只读写节点坐标，节点本身由任务 / 数据抽取 / 数据源三张表现拼。
  * 保存按 `(kind, key)` upsert，只提交拖动过的节点。
  */
 export const liveCanvas = {

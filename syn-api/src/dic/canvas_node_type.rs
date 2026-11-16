@@ -4,7 +4,7 @@ use strum::{AsRefStr, Display, EnumString};
 /// 拓扑画布上的节点类型，对应 `syn_canvas_layout.node_type`。
 ///
 /// 只用来给坐标定位：同一种 `node_key` 在不同类型下是不同节点（任务编码和数据源
-/// 编码可以重名）。节点本身不存在这里 —— 画布每次从任务 / 来源 / 数据源三张表
+/// 编码可以重名）。节点本身不存在这里 —— 画布每次从任务 / 数据抽取 / 数据源三张表
 /// 现拼，坐标表里多出来的行按「孤儿」丢弃。
 ///
 /// 数值从 1 起，0 留空：老数据的默认值不该悄悄等于某个真类型。
@@ -14,7 +14,7 @@ use strum::{AsRefStr, Display, EnumString};
 pub enum CanvasNodeType {
     /// 数据源：`node_key` 是 `syn_datasource.code`
     Datasource = 1,
-    /// 取数来源：`node_key` 是 `syn_source.code`
+    /// 数据抽取：`node_key` 是 `syn_source.code`
     Source = 2,
     /// 主题：`node_key` 是 topic 名（CDC topic 或 `source:{code}`）
     Topic = 3,

@@ -229,8 +229,8 @@ struct JobxGroupRouter;
 
 | 表 | 有没有 `code` | 理由 |
 |---|---|---|
-| `syn_source` | 有（`code`，AK 唯一） | 任务用 `from: { source: dtw_region }` 按名字引用它；日志与排障也报来源名 |
-| `syn_datasource` | 有（`code`，AK 唯一） | 来源/任务用 `datasource: "dtw_pg"` 引用；连接串不在名字里 |
+| `syn_source` | 有（`code`，AK 唯一） | 任务用 `from: { source: dtw_region }` 按名字引用它；日志与排障也报数据抽取名 |
+| `syn_datasource` | 有（`code`，AK 唯一） | 数据抽取/任务用 `datasource: "dtw_pg"` 引用；连接串不在名字里 |
 | `syn_task` | **没有** | 任务只被 `id` 引用（`syn_delivery.task_id` / `syn_idem.task_id` / 画布 `node_key`），人读用 `name`；`name` 可改，改完不需要同步任何地方 |
 
 `syn_task` 早期有过 `code` + `AK_CODE_SYN_TASK`，2026-11 删掉：它既没参与任何引用，又被迫人工维护唯一性，与 `name` 的职责重叠。新增配置表时先按上表判一遍，再决定要不要加 `code`。
@@ -442,7 +442,7 @@ mo    ── 表结构映射（SeaORM 实体，由 sea-orm-codegen 生成后手�
 | 资源 | 不能用宏的原因 |
 |---|---|
 | `syn_task` | `topic` / `sort_order` / `enabled` / `exclusive` 是 `spec`（JSONB）的投影，接口只收 `{ name, spec, remark }`。`#[crud_dto]` 按表形状生成会逼调用方把同一件事填两遍，两边不一致时行为取决于读取顺序。 |
-| `syn_source` | 表形状，但 `spec` 是 JSONB，`#[crud_dto]` 会把它塞进 `QueryDto` 当等值条件 —— 没人按「取数定义」查数据源。 |
+| `syn_source` | 表形状，但 `spec` 是 JSONB，`#[crud_dto]` 会把它塞进 `QueryDto` 当等值条件 —— 没人按「抽取定义」查数据抽取。 |
 | `syn_delivery` / `syn_idem` / `syn_overview` | 不是一张表的镜像：投递记录是 `syn_idem` 的投影，台账要关联任务带出 `code`，总览是聚合结果。`#[vo]` 的 `From<Model>` 只能搬同名字段，拿不到这些。 |
 
 照旧用宏的部分：`#[dao]`（五个实体，含 `unique_keys` / `like_columns`）、`#[dic]`（两个字典枚举）、`#[router]`（routes 清单）、`#[log_call]`。`api_doc` 是手写清单，**每个方法逐个列全**；漏一个不报错，只是 swagger 里查不到。
@@ -617,9 +617,9 @@ feat(syn): 五段规则与记录转发
 8. **一轮拉取不因一条坏数据整体失败**。`SynSourcePullVo` 同时给 `rows` / `success` / `skip` / `fatal` / `retriable` / `position` / `stalled`：游标只推进到第一条非 success/skip 之前，`stalled` 说明卡在哪。界面必须把 `stalled` 显示出来，否则「没数据」和「被卡住」看起来一样。
 9. **`target.kind: db` 只换最后一步**。匹配 / 映射 / 校验 / 判定四段与 HTTP 目标完全共用，直写发生在动作段之后；`insert ... on conflict` 的 `c` / `r` / `u` 与按冲突键删除的 `d` 由 `db_sink.rs` 负责。表名与列名**不信任配置**：启动时从 `information_schema.columns` 读列白名单，拼 SQL 前再校验一次标识符合法，值一律绑参数。
 10. **`syn_idem` 只记终态，不记逐次投递**。一个 `(task_id, idem_key)` 只有一行，重投命中直接返回上次结论并刷新 `update_ms`；没有「命中次数」「耗时」「中间轨迹」这几列。控制台的「投递记录」是这张表的投影，`op` / `detail` 恒为 `null`、`latency_ms` / `p95_ms` 恒为 `0`。要看逐次轨迹得先改 LDM 建明细表，**不要凭空编一列**。
-11. **总览的口径是「记账行数」**。没带 `X-Idempotency-Key` 的投递不记账，因此 `total` / 各结论计数 / 失败 Top 恒为 0 —— 这是事实，不是「没命中」。任务数、来源数是配置表的实时值，与窗口无关，两者别混在一个图例里。
+11. **总览的口径是「记账行数」**。没带 `X-Idempotency-Key` 的投递不记账，因此 `total` / 各结论计数 / 失败 Top 恒为 0 —— 这是事实，不是「没命中」。任务数、数据抽取数是配置表的实时值，与窗口无关，两者别混在一个图例里。
 12. **总览小时桶必须含当前小时**。`from = now - N 小时`，两端整点化后正好相差 N 个桶，所以曲线要 **N+1** 个点；只给 N 个点时刚发生的记账会落在数组之外，尾部恒为 0（真库联调才看得见，单测锁在 `syn_overview_svc::hour_buckets`）。窗口合计与曲线各桶之和必须相等，§15 的脚本把这条写成了断言。
-13. **连接串进 `syn_datasource` 表，控制台可维护**（本条 2026-11 修订，推翻了早期「连接串只留 consul / toml」的做法）。任务与来源只存 `datasource` 这个名字，名字对应表里的 `code`；连接串、连接池上限、中文名、备注、启停都在控制台「数据源」页维护。改这条是因为「改个密码要动 consul KV」在实践中更容易出错 —— KV 里的值没有变更审计、没有引用反查，改错一处要重启才发现。
+13. **连接串进 `syn_datasource` 表，控制台可维护**（本条 2026-11 修订，推翻了早期「连接串只留 consul / toml」的做法）。任务与数据抽取只存 `datasource` 这个名字，名字对应表里的 `code`；连接串、连接池上限、中文名、备注、启停都在控制台「数据源」页维护。改这条是因为「改个密码要动 consul KV」在实践中更容易出错 —— KV 里的值没有变更审计、没有引用反查，改错一处要重启才发现。
 
     用三条约束把风险兜住：
 
@@ -628,18 +628,19 @@ feat(syn): 五段规则与记录转发
     - **改完必须让各副本失效**：连接池是进程内缓存，写完发 `refresh.syn.datasource`，各副本收到清空连接池与列白名单（`db_sink::setup_datasource_refresh`）。不发这条信号，3 个副本会各连各的旧库，现象是「改了连接串，有的副本写新库、有的还写旧库」。
 
     `[syn.datasources.*]` 配置**降级为兜底**：表里没有这个名字时才回退配置（给联调与「表还没初始化」的环境留路）；表里有但 `enabled = false` 直接判 `DATASOURCE_DISABLED`，**不回退** —— 停用是运维的显式动作，不能悄悄变成「继续用配置里的旧连接串」。**升级注意**：`GET /syn/datasource/list` 现在读表，原先只配在 KV/toml 的数据源不会自动出现，要在控制台登记一遍；运行时不登记也能跑（走兜底），只是下拉里选不到。
-14. **`kind=http` 全量分页只能用于「首次同步」，不能和 dbz 并行写同一张表**。SQL 增量安全是因为游标只取「比水位新」的行，天然不会把旧值写回去；全量重扫没有这个性质，与 dbz 增量叠加会出四类问题：
+14. **全量（`kind=http` 或 `kind=sql, mode=snapshot`）只能用于「首次同步」，不能和 dbz 并行写同一张表**。SQL 增量安全是因为游标只取「比水位新」的行，天然不会把旧值写回去；全量重扫没有这个性质，与 dbz 增量叠加会出四类问题：
     - **旧快照覆盖新值**（最致命）：扫描进行到第 3 页时，dbz 已把某行从 v1 更新到 v2；第 5 页读到的若仍是扫描开始前的 v1，后到的 upsert 就把 v2 顶掉，且没有任何字段能判出「这是回退」。
     - **删除语义打架**：全量里「没扫到这行」推不出「该删」—— 可能是分页期间新增/删除，也可能是快照隔离。`where not exists` 式的对账删除会误删 dbz 刚写入的行。
     - **幂等键空间重叠**：两边若用同一个 `(task_id, idem_key)`，全量 upsert 会命中 dbz 写下的终态被判 `skip`；若各用各的键，同一行就有两条写入路径，出问题无法归因。
     - **口径失真**：全量轮没有「水位」概念，`rows_synced` 会按整表翻倍累计，总览的「卡住」判断与累计行数都失去意义。
 
-    代码这边能保证的（`poll_http` / `SourceSpec`）：
+    代码这边能保证的（`poll.rs` / `SourceSpec`）：
 
     - **只 upsert，从不按「缺失」删行**：全量轮不做 `where not exists` 的对账删除，删除语义整体留给 dbz 或源端软删标记。
-    - **一轮一页、翻到底停下**：`cursor_value` 是这个源自己的 JSON 状态（`{"http":{"next":"3","rows":600}}` → `{"http":{"done":true,"rows":1200}}`），做完永久跳过；要重跑必须显式 `pull?reset=true`。
-    - **`rows_synced` 只增不减地记本次全量投递数**，不参与增量口径的比较（sql 源的水位是另一个形态，两者不会混）。
-    - **http 源不能带 sql 字段**：`datasource` / `select` / `cursor_column` 出现在 http 源的 spec 里直接报 `Conflict`，避免「复制 sql 配置改成 http」这种半成品被静默接受。
+    - **http 一轮一页、翻到底停下**：`cursor_value` 是这个源自己的 JSON 状态（`{"http":{"next":"3","rows":600}}` → `{"http":{"done":true,"rows":1200}}`），做完永久跳过；要重跑必须显式 `pull?reset=true`。
+    - **sql 快照一轮拉完**：分批模式在调用内循环翻页，拉完写 `{"snapshot":{"done":true,"rows":n}}` 后永久跳过；`pull?reset=true` 重跑。
+    - **`rows_synced` 只增不减地记本次全量投递数**，不参与增量口径的比较（游标增量的水位是另一个形态，两者不会混）。
+    - **http 源不能带库表字段**：`datasource` / `table` / `cursor_field` / `tie_field` 出现在 http 源的 spec 里直接报 `Conflict`，避免「复制 sql 配置改成 http」这种半成品被静默接受。
 
     靠部署纪律保证的两条（代码不拦，也没法拦）：① **同一张表只允许一个写者** —— 要么 dbz 直写、要么 syn 落地；② **全量期间 dbz 不写这张表**，等 `full_done` 之后再放增量。想并行，就得先给下游加版本列并在 upsert 上带
     `where excluded.<ver> >= <目标>.<ver>` 守卫，而 syn 现在**没有**这个能力，别假设它有。
@@ -704,13 +705,13 @@ feat(syn): 五段规则与记录转发
 | `syn-api/src/mo`（七个实体） | ✅ | 与 PDM 逐列对齐，`store.rs` 已改走 `dao` |
 | `dto` / `vo` / `dic`（`SyncVerdict`、`SourceKind`） | ✅ | 全部手写，理由见 §6.2；字典列是 `INT2` + `@enum` |
 | `dao` / `svc` / `ctrl` / `router` / `api_doc` 五件套 | ✅ | 五个资源共 7+8+1+1+1+1 个手写接口（数据源多一个 `POST /syn/datasource/test`），`api_doc` 逐个列全 |
-| `POST /syn/source/{id}/pull`（poll 入口，`kind=sql`） | ✅ | 复合游标 + 5 秒重叠窗口 + 批量 + `wrap`；jobx 与运维按钮共用一条实现，进程内无调度器，见 §11.7 |
+| `POST /syn/source/{id}/pull`（poll 入口，`kind=sql`） | ✅ | 两种模式：`mode=cursor` 复合游标 + 5 秒重叠窗口；`mode=snapshot` 全表快照（单次 / 分批）。SQL 按表名 + 游标字段生成，jobx 与运维按钮共用一条实现，进程内无调度器，见 §11.7 |
 | poll 的 `kind=http` 全量分页取数 | ✅ | 一轮推一页，空页/无 next 即收尾，翻到底写 `{"http":{"done":true}}`、此后调度跳过；`pull?reset=true` 重跑。页模式与 token 模式都验过，见 §15.8 |
 | `syn_idem` 记账 / `target.kind: db` 直写 | ✅ | `X-Idempotency-Key` 只记终态；DB sink 有 `information_schema` 列白名单，见 §11.9 / §11.10 |
-| `syn-web`（控制台） | ✅ | 总览 / 任务（五段编辑器，含 `http`↔`db` 目标切换）/ 来源 / 试跑 / 投递 / 幂等；演示数据可独立运行 |
+| `syn-web`（控制台） | ✅ | 总览 / 任务（五段编辑器，含 `http`↔`db` 目标切换）/ 数据抽取 / 试跑 / 投递 / 幂等；演示数据可独立运行 |
 | `syn-web` 的 `lib/spec`（五段本地预演） | ✅ | `syn-core` 的 TS 同构实现，含 JSONPath / 变换 / WKB→WKT / 判定 |
 | `syn-web` 的实时模式适配层 | ✅ | `live.ts` 统一处理 `Ro.extra` / `PageRx` / camelCase VO / `U64` 字符串 / 字典整数；`live.test.ts` 16 个 wire 契约用例 + `validate-source.test.ts` 7 个校验用例 |
-| 来源的新增 / 编辑 / 删除入口 | ✅ | 后端五件套齐全（`code` 不可改）；前端 `SourceEditorDrawer` + `lib/spec/validate-source.ts` 本地预校验，错误定位到字段 |
+| 数据抽取的新增 / 编辑 / 删除入口 | ✅ | 后端五件套齐全（`code` 不可改）；前端 `SourceEditorDrawer` + `lib/spec/validate-source.ts` 本地预校验，错误定位到字段；SQL 按表名 + 游标字段自动生成 |
 | 数据源管理（`syn_datasource` 表 + 八个接口） | ✅ | 控制台可增删改（连接串 / 池上限 / 启停 / 备注）；明文只写不回显，读接口一律脱敏；改完发 `refresh.syn.datasource` 让各副本重建连接池；`[syn.datasources.*]` 降级为兜底，见 §11 第 13 条。第八个接口是 `POST /syn/datasource/test`（传 `url` 或 `id`），失败也走 200，见 §14.7 第 7 条 |
 | `GET /syn/registry/services`（http 目标服务名候选） | ✅ | 走 `robotech::micro_svc::list_services`（Consul 取 `/v1/catalog/services`，etcd/nacos 默认返回空）；**失败降级为空数组不报错**，表单手输照常能存，见 §14.2 |
 | 控制面板（原「同步拓扑」，`GET/PUT /syn/canvas/layout` + `syn_canvas_layout`） | ✅ | 图不落库：节点来自三张业务表、连线来自引用，坐标独存一张表；保存是按 `(node_type, node_key)` 的 upsert（多人摆位不互抹）；卡片骨架照 dbz 控制面板（右上角启停、下面状态栏、最下操作行），属性栏与窗体里不放操作；投递是任务卡第六段画在卡内，不单独建节点，点段只在属性栏看详情，见 §14.7 |
@@ -796,11 +797,16 @@ syn-web/
 入口，用户在窗体里关掉、在卡片上又打开，谁也不知道最后哪次生效。窗体的底部状态栏与
 右侧按钮留给这一页真正需要的东西（校验问题、以及数据源窗体的「测试」）。
 
-来源的编辑窗体（`SourceEditorDrawer`）是同一套做法的小号版本：`kind`、`code` / `name` /
+数据抽取的编辑窗体（`SourceEditorDrawer`）是同一套做法的小号版本：`kind`、`code` / `name` /
 `interval` / `batch` 加上 `spec` 的公共字段，保存前跑 `lib/spec/validate-source.ts`。
 那份校验是后端 `SourceSpec::validate` 的镜像，**两边改必须同时改**：空编码、编码字符集、
-`interval_duration >= 1s`、`kind=sql` 必须有 `datasource` / `cursor_column`，这几条
-在前后端各有一份，缺一份就会出现「前端放过去、后端 400」或者反过来的假通过。
+`interval_duration >= 1s`、`kind=sql` 必须有 `datasource` / `table`（游标增量还要
+`cursor_field` + `tie_field`，且两者不能相同），这几条在前后端各有一份，缺一份就会出现
+「前端放过去、后端 400」或者反过来的假通过。
+`kind=sql` 的表名与游标字段填好后，取数 SQL 由 `lib/spec/source-sql.ts` 自动生成并只读展示；
+也可以切到「手写 SQL」，写单条 `select` / `with`（忽略结尾分号，内部不允许再出现分号），
+执行器把它当子查询再套游标条件、排序与 LIMIT —— 所以**手写结果必须输出主游标字段与决胜字段**。
+后端 `poll.rs` 按同一模板拼 SQL，两边改模板必须一起改。
 编辑态下 `code` 只读（后端也拒绝改），别做成可编辑再靠报错兜。
 `datasource` 用 `GET /syn/datasource/list` 的下拉（候选取自 `syn_datasource` 表），
 **不填连接串**（§11 第 13 条）。
@@ -874,12 +880,12 @@ cd syn-web && pnpm typecheck && pnpm test && pnpm build
 
 页面名 / 侧栏名统一叫「控制面板」，**路由 path 仍是 `/topology`**（书签与 `Topbar`
 从 `NAV` 取标题都依赖它，改名不改路径）。布局是「左侧组件栏 88px → 画布 → 右侧属性栏
-292px」，一张图看清「数据从哪来、投到哪去」：数据源 → 取数来源 → 主题 → 任务四列，
+292px」，一张图看清「数据从哪来、投到哪去」：数据源 → 数据抽取 → 主题 → 任务四列，
 方向即数据流。七条设计决策，改这块之前先读一遍：
 
 1. **图不落库**。节点来自三张业务表、连线来自它们之间的引用（`spec.datasource` /
    `source.topic` / `task.topic`），库里只存节点坐标（`syn_canvas_layout`）。
-   所以图永远和配置一致 —— 反过来，**画布上不能改引用关系**：改「来源用哪个数据源」
+   所以图永远和配置一致 —— 反过来，**画布上不能改引用关系**：改「数据抽取用哪个数据源」
    要回表单。单击卡片在右侧属性栏看属性，改配置点卡片操作行的「编辑」。
 2. **属性栏只读图节点**（`graph.nodes.find(n => n.id === selectedId)`），不另发请求、
    不另存一份选中实体。点卡片**始终选中**（不是 toggle），点空白才取消 —— 否则连点
@@ -1003,7 +1009,7 @@ warn。端口 19007（单进程联调，显式写死好让脚本连），jobx �
    `UNCLASSIFIED`。
 9. **启停真的落库**（§6.3 那个坑的回归网）：`PUT .../enabled` 的响应值 → 再查一次的
    值 → `spec.enabled` 是否同步 → `page?enabled=true` 是否筛掉 → 改回来又出现。
-   任务与取数来源各一遍。只断言响应是**不够的**，那一步原本就是绿的。
+   任务与数据抽取各一遍。只断言响应是**不够的**，那一步原本就是绿的。
 10. **数据源连接测试**：连得上 `200` + `ok:true` + `server` 是字符串；连不上**仍是**
     `200` + `ok:false`，且两份响应的 JSON 全文都不含 `postgres:postgres`
    （连 `Configuration` 类错误的连接串泄露都锁住）；再按 `id` 测库里已存的连接串
@@ -1020,11 +1026,11 @@ warn。端口 19007（单进程联调，显式写死好让脚本连），jobx �
   「查错字段」误判成缺陷。
 - **一个请求里两种命名风格**：外层 `SynSourceSaveDto` 是 camelCase
   （`intervalDuration` / `batchSize`），`spec` JSONB 里的 `SourceSpec` 是 snake_case
-  （`cursor_column` / `cursor_type`）。写用例时别顺手统一。
+  （`cursor_field` / `cursor_type` / `tie_field` / `tie_type`）。写用例时别顺手统一。
 - **改配置的响应也要补水印（已修）**：`update` / `set_enabled` 走的是「写配置」，
   一开始没带 `with_cursor(...)`，库里水位是 4、`PUT` 却回 `cursor: null`。凡是返回
   `SynSourceVo` 的写接口都要补，否则界面改完一次名字就把水位显示成「还没跑过」。
-- **来源的 `code` 是地址，不是标签**：虚拟 topic `source:{code}` 与游标都按它指代，
+- **数据抽取的 `code` 是地址，不是标签**：虚拟 topic `source:{code}` 与游标都按它指代，
   改名会让水位与投递记录找不到主人。所以 `update` 里 `code` 变了直接 400，改
   `name` / `interval` / `batch` 不动水位 —— 这两条 §15 的脚本都断言了。
 - **启停「不生效」是后端没写那一列，不是前端乐观更新出错（已修）**：`into_active_model()`
@@ -1072,7 +1078,7 @@ tests/env/run.sh --cleanup  # 只清联调数据，不启动服务
 
 **不改任何已有业务表**，也不动 consul 的其它键。断言分 10 组、共 50 条：
 数据源清单接口可达（§11 第 13 条改成读 `syn_datasource` 表之后，表为空时返回空数组，
-断言只认 200；`adm` / `dtw` 在 KV 里只用于验证运行时兜底）→ 来源 CRUD 与编码保护
+断言只认 200；`adm` / `dtw` 在 KV 里只用于验证运行时兜底）→ 数据抽取 CRUD 与编码保护
 → 任务与 reload 快照 → poll 三轮（含 `on conflict` 覆盖脏行）→ 幂等台账四条 →
 控制台六类接口 → 小时桶末桶。
 
@@ -1218,7 +1224,7 @@ tests/env/http-full.sh      # 起 mock 假接口 + syn，跑完自动停
   再翻页只会拿到同一批。
 - **页码模式有上限**：接口若忽略 `{cursor}`，页码会一直「有数据」，`MAX_PAGES=100000`
   处直接报错，不跑到天亮。
-- **两种取数不能混字段**：http 源的 spec 里出现 `datasource` / `select` / `cursor_column`
+- **两种取数不能混字段**：http 源的 spec 里出现 `datasource` / `table` / `cursor_field` / `tie_field`
   直接报 `Conflict` —— 多半是从 sql 配置复制过来的半成品，按 http 跑会静默忽略这些字段。
 
 #### 这一轮暴露的坑

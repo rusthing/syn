@@ -207,9 +207,9 @@ export function OverviewPage() {
             </Panel>
 
             <Panel>
-              <PanelHeader title="链路" subtitle="取数来源与最终结论的分布" icon={<Radio className="size-3.5" />} />
+              <PanelHeader title="链路" subtitle="数据抽取与最终结论的分布" icon={<Radio className="size-3.5" />} />
               <div className="grid grid-cols-3 gap-2 border-b border-line/70 px-3 py-2.5">
-                <MiniStat label="来源" value={`${(sources ?? []).filter((s) => s.enabled).length}/${(sources ?? []).length}`} icon={<DatabaseZap className="size-3" />} />
+                <MiniStat label="抽取" value={`${(sources ?? []).filter((s) => s.enabled).length}/${(sources ?? []).length}`} icon={<DatabaseZap className="size-3" />} />
                 <MiniStat label="启用任务" value={`${data.enabled_tasks}/${data.tasks}`} icon={<Workflow className="size-3" />} />
                 <MiniStat label="P95" value={`${data.p95_ms}ms`} icon={<Activity className="size-3" />} />
               </div>

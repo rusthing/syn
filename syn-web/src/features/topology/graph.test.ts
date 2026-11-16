@@ -2,7 +2,7 @@
  * 拓扑建图的单测。
  *
  * 这一层是纯函数，值得锁死的只有三件事：
- * 1. 连线的方向和归属（数据源 → 来源 → 主题 → 任务）—— 画错了图就是错的；
+ * 1. 连线的方向和归属（数据源 → 数据抽取 → 主题 → 任务）—— 画错了图就是错的；
  * 2. 状态与问题的判定口径（停用、拉取失败、目标服务未注册、配置不完整）；
  * 3. 默认布局与持久化坐标的合并规则（孤儿坐标必须丢掉，否则换库后节点会飞到画布外）。
  *
@@ -39,13 +39,21 @@ function src(code: string, topic: string, over: Partial<SyncSource> = {}): SyncS
   return {
     id: code,
     code,
-    name: `${code} 来源`,
+    name: `${code} 抽取`,
     kind: "sql",
     topic,
     enabled: true,
     interval_duration: "60s",
     batch_size: 500,
-    spec: { datasource: "iot", select: "select * from region", cursor_column: "updated_at" },
+    spec: {
+      datasource: "iot",
+      mode: "cursor",
+      table: "region",
+      cursor_field: "updated_at",
+      cursor_type: "timestamptz",
+      tie_field: "id",
+      tie_type: "bigint",
+    },
     remark: null,
     cursor: null,
     last_run_ms: "1763000000000",
@@ -95,7 +103,7 @@ function task(code: string, topic: string, over: Partial<SyncTask> = {}, specOve
 }
 
 describe("buildGraph", () => {
-  it("按数据流连出 数据源 → 取数来源 → 主题 → 任务", () => {
+  it("按数据流连出 数据源 → 数据抽取 → 主题 → 任务", () => {
     const graph = buildGraph({
       datasources: [ds("iot")],
       sources: [src("region_incr", "source:region_incr")],
@@ -131,7 +139,7 @@ describe("buildGraph", () => {
     expect(topic.tone).toBe("ok");
   });
 
-  it("来源和任务引用同一个主题时只生成一个主题节点", () => {
+  it("数据抽取和任务引用同一个主题时只生成一个主题节点", () => {
     const graph = buildGraph({
       datasources: [ds("iot")],
       sources: [src("a", "dtw.region"), src("b", "dtw.region")],
@@ -144,7 +152,7 @@ describe("buildGraph", () => {
     expect(topics[0].consumers).toBe(2);
   });
 
-  it("停在停用来源上的连线画成虚线，节点判为 muted", () => {
+  it("停在停用数据抽取上的连线画成虚线，节点判为 muted", () => {
     const graph = buildGraph({
       datasources: [ds("iot")],
       sources: [src("region_incr", "source:region_incr", { enabled: false })],
@@ -156,7 +164,7 @@ describe("buildGraph", () => {
     expect(graph.edges.every((e) => e.to.startsWith("source:") ? e.muted : true)).toBe(true);
   });
 
-  it("拉取失败的来源判为 bad，并把原因写进 issues", () => {
+  it("拉取失败的数据抽取判为 bad，并把原因写进 issues", () => {
     const graph = buildGraph({
       datasources: [ds("iot")],
       sources: [src("region_incr", "source:x", { last_error: "connection refused" })],
@@ -177,7 +185,7 @@ describe("buildGraph", () => {
     });
     const node = graph.nodes.find((n) => n.kind === "source")!;
     expect(node.issues.join()).toContain("iot");
-    expect(graph.edges).toHaveLength(1); // 只剩 来源 → 主题
+    expect(graph.edges).toHaveLength(1); // 只剩 数据抽取 → 主题
   });
 
   it("目标服务不在注册中心时判为待修正；注册中心没数据时不冤枉人", () => {

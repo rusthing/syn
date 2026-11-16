@@ -17,9 +17,9 @@ use crate::dic::CanvasNodeType;
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct SynCanvasNodePosDto {
-    /// 节点类型：数据源 / 取数来源 / 主题 / 任务
+    /// 节点类型：数据源 / 数据抽取 / 主题 / 任务
     pub node_type: CanvasNodeType,
-    /// 节点标识：数据源 / 来源 / 任务填 code，主题填 topic 名
+    /// 节点标识：数据源 / 数据抽取 / 任务填 code，主题填 topic 名
     #[validate(length(min = 1, max = 128, message = "节点标识长度需在 1..=128 之间"))]
     pub node_key: String,
     /// 画布横坐标（世界坐标，与缩放无关）

@@ -36,7 +36,7 @@
 |---|---|---|---|---|
 | A 自建 CDC | 自己解析 binlog / WAL | 实时、无侵入 | offset、DDL 变更、类型映射、快照切换，等于重做 Debezium | **否决** |
 | B 复用 Debezium + sink | 现状（push） | 已跑通，实时，删改都捕获得到 | 依赖源库开 binlog、依赖 Kafka 链路 | **保留** |
-| C SQL 轮询 | `where cursor > ? order by cursor limit N` | 一条 SQL 就够；能补历史；能跨 MySQL/PG；不要求源库开 binlog | 非实时（秒~分钟）；捕获不到删除；要求可靠单调列 | **推荐** |
+| C SQL 轮询 | `where (cursor, tie) > ? order by cursor, tie limit N` | 一条 SQL 就够；能补历史；能跨 MySQL/PG；不要求源库开 binlog | 非实时（秒~分钟）；捕获不到删除；要求可靠单调列 + 唯一决胜列 | **推荐** |
 | D HTTP 分页 | 调上游接口按 page/token 翻页 | 第三方数据只能这样 | 对方接口质量决定一切；限流要自己扛 | 支持（次要） |
 
 ### 2.1 为什么 C 值得做
@@ -56,6 +56,11 @@ CDC 做不好的两件事，正好是轮询擅长的：
    这是轮询的固有缺陷，不能假装没有。
 3. **多副本必须选主**。两个实例同时拉 = 重复投递 + 游标互相覆盖。
 4. **游标存 syn 库，不存源库**。不污染业务库，也不受源库权限限制。
+5. **全量快照只用于初始化**。SQL 轮询除了「游标增量」，还支持「全量快照」：填表名即可，
+   系统生成 `SELECT *`，拉完写 `{"snapshot":{"done":true,"rows":n}}` 后停止。
+   它和 CDC 增量不能并行写同一张表，理由与 http 全量相同（见 `syn-开发规范.md` §11 第 14 条）。
+6. **表名不够用时可手写 SQL**。`spec.sql` 填一条 `select` / `with` 就替代表名，执行器把它当
+   子查询再套游标条件与 `LIMIT`；因此输出的列里必须带主游标字段与决胜字段（别名要对得上）。
 
 ### 2.3 调度归属
 
@@ -167,8 +172,8 @@ target:
 |---|---|
 | `syn_task` | 五段规则 + topic/sort_order/enabled |
 | `syn_task_version` | 不可变版本快照，回滚只是指回去 |
-| `syn_source` | 自拉数据源定义（kind/topic/interval/batch/spec） |
-| `syn_cursor` | 每个 source 的水位 + 最近一次错误 |
+| `syn_source` | 数据抽取定义（kind/mode/topic/interval/batch/spec，spec 内可含手写 sql） |
+| `syn_cursor` | 每个数据抽取的水位 + 最近一次错误 |
 | `syn_idem` | 幂等记账（task_id + idem_key） |
 
 `syn_source.topic` = `source:{id}`，任务照常按 topic 关联，五段不用改。

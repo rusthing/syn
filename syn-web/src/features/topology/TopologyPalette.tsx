@@ -2,10 +2,10 @@
  * # 组件栏
  *
  * 参照 dbz 控制面板：画布左边一列可添加的组件，点一下就在本页开窗体新建，
- * 不用先跑到数据源 / 取数来源 / 任务的维护页。保存成功后节点按默认位置上图
+ * 不用先跑到数据源 / 数据抽取 / 任务的维护页。保存成功后节点按默认位置上图
  * （坐标落在本类列的第一个空位，之后可拖）。
  *
- * 主题不放进来：它是虚拟节点，由取数来源写入、被任务消费，没有「新建」可言 ——
+ * 主题不放进来：它是虚拟节点，由数据抽取写入、被任务消费，没有「新建」可言 ——
  * 但仍列出来置灰，告诉用户图里那列灰色药丸是什么。
  */
 
@@ -23,10 +23,10 @@ const ADDABLE = [
   },
   {
     kind: "source" as const,
-    label: "取数来源",
+    label: "数据抽取",
     icon: Radio,
     accent: "text-violet",
-    hint: "从业务库周期取数的来源：选数据源、表与游标列。 CDC 源在取数来源页登记。",
+    hint: "从业务库周期取数的抽取定义：选数据源、表与游标字段。CDC 源在数据抽取页登记。",
   },
   {
     kind: "task" as const,
@@ -73,7 +73,7 @@ export function TopologyPalette({
       {/* 主题不是「被禁用的按钮」：它压根没有新建动作，用虚线说明块表达，
           键盘不必 Tab 到一个永远点不动的 disabled button 上 */}
       <div
-        title="主题是虚拟节点：由取数来源写入、被任务消费，图上自动生成，不需要手动添加"
+        title="主题是虚拟节点：由数据抽取写入、被任务消费，图上自动生成，不需要手动添加"
         className="flex flex-col items-center gap-1 rounded-lg border border-dashed border-line px-1 py-2.5 text-[11.5px] text-muted"
       >
         <Layers className="size-4" />

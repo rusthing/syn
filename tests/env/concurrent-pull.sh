@@ -11,7 +11,7 @@
 #   3. 两方都把行投到了下游（**重复投递是设计语义**），靠下游 upsert 吸收，
 #      最终行数 = 前值 + N、无重复主键。
 #
-# 前提：先跑 `tests/env/run.sh`（建隔离表 `syn_it_person` 与来源 `adm_person`；
+# 前提：先跑 `tests/env/run.sh`（建隔离表 `syn_it_person` 与数据抽取 `adm_person`；
 # 用 `--keep` 也行，但要在本脚本之前把它停掉 —— 9007 会被本脚本占用）。
 #
 # 用法：
@@ -84,12 +84,12 @@ q admrs "select 1 from information_schema.tables where table_schema='public' and
 q dtwrs_ui "select 1 from information_schema.tables where table_schema='public' and table_name='syn_it_person'" \
   | grep -q 1 || fail "dtwrs_ui.public.syn_it_person 不存在，先跑 tests/env/run.sh"
 SRC_ID="$(q syn "select id from syn_source where code='adm_person'")"
-[ -n "$SRC_ID" ] || fail "syn 库里没有 code=adm_person 的来源，先跑 tests/env/run.sh"
+[ -n "$SRC_ID" ] || fail "syn 库里没有 code=adm_person 的数据抽取，先跑 tests/env/run.sh"
 BATCH="$(q syn "select batch_size from syn_source where id=$SRC_ID")"
 ID_LO=$(( $(q admrs "select coalesce(max(id), 0) from public.syn_it_person") + 1 ))
 ID_HI=$((ID_LO + ROWS - 1))
 [ "$ROWS" -le "$BATCH" ] || fail "ROWS=${ROWS} 超过源的 batch_size=${BATCH}，一轮取不完就测不出同一批竞争"
-ok "来源 adm_person id=${SRC_ID}，batch_size=${BATCH}，本轮插 ${ROWS} 行（id ${ID_LO}..${ID_HI}）"
+ok "数据抽取 adm_person id=${SRC_ID}，batch_size=${BATCH}，本轮插 ${ROWS} 行（id ${ID_LO}..${ID_HI}）"
 
 say "起两个副本（9007 node=3 / 9008 node=4）"
 # 第二副本必须是另一个文件名：pid 文件按二进制路径生成，同名会被单实例保护挡住

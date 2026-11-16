@@ -3,7 +3,7 @@
 //! 同步服务的**契约层**：只放类型与校验，不放行为，也不认识 SQL 与 HTTP 细节。
 //!
 //! - [`spec`]：五段规则（匹配 / 映射 / 动作 / 判定 / 校验），整体以 JSONB 落库；
-//! - [`source_spec`]：自拉数据源的取数定义（sql 的查询与游标 / http 的分页）；
+//! - [`source_spec`]：数据抽取的抽取定义（sql 的全量快照 / 游标增量 / http 的分页）；
 //! - [`issue`]：保存前的结构校验，错误信息带 `path`，编辑器直接定位到行；
 //! - [`dic`]：字典枚举（`syn_idem.verdict` / `syn_source.kind`）；
 //! - [`dto`]：入参，含 `@len` / `@range` 派生的校验；
@@ -33,7 +33,7 @@ pub use dto::*;
 pub use dto::{SynCanvasLayoutSaveDto, SynCanvasNodePosDto};
 pub use dto::{SynDatasourceEnabledDto, SynDatasourceQueryDto, SynDatasourceSaveDto};
 pub use issue::{SpecIssue, SpecIssueKind};
-pub use source_spec::{CursorType, SourceSpec, WrapMode};
+pub use source_spec::{ExtractMode, FieldType, SourceSpec, WrapMode};
 pub use spec::{
     Action, AllGroup, AnyGroup, Assert, Binding, BodyMode, Branch, CaseArm, Condition, DbTarget,
     Guard, Header, Mapping, MappingRow, Method, NotGroup, OnConflict, OnEmpty, OnError, OnFail, Op,
