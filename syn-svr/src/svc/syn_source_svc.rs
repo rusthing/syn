@@ -12,7 +12,7 @@
 use robotech::api::U64;
 use robotech::db::get_db_conn;
 use robotech::svc::SvcError;
-use sea_orm::{ColumnTrait, Condition, IntoActiveModel};
+use sea_orm::{ColumnTrait, Condition, ConnectionTrait, IntoActiveModel};
 use std::collections::HashMap;
 use syn_api::{
     SourceKind, SourceSpec, SynSourceEnabledDto, SynSourcePullVo, SynSourceQueryDto,
@@ -123,6 +123,8 @@ impl SynSourceSvc {
                 format!("数据源编码 {} 已存在", dto.code.trim()),
             ));
         }
+        // 库里对 topic 有唯一约束，但撞约束只会回一个 500；先查一遍，把冲突对象说清楚
+        ensure_topic_available(&topic, None, db.as_ref()).await?;
         let model = SynSourceDao::insert(build_model(&dto, parsed, topic, None, user), db.as_ref())
             .await?;
         info!("数据源 {} 已创建（id={}）", model.code, model.id);
@@ -158,9 +160,12 @@ impl SynSourceSvc {
         let old_kind = SourceKind::from_i16(existing.kind).unwrap_or_default();
         let new_spec = SourceSpec::parse(&parsed).unwrap_or_default();
         let reset_water_level = cursor_basis_changed(old_kind, &old_spec, dto.kind, &new_spec);
+        // 改 topic 与新建走同一条唯一性规则，排除自己
+        let topic = topic_of(&dto);
+        ensure_topic_available(&topic, Some(existing.id), db.as_ref()).await?;
 
         let model = SynSourceDao::update(
-            build_model(&dto, parsed, topic_of(&dto), Some(existing), user),
+            build_model(&dto, parsed, topic, Some(existing), user),
             db.as_ref(),
         )
         .await?;
@@ -258,6 +263,34 @@ fn parse_spec(dto: &SynSourceSaveDto) -> Result<serde_json::Value, SvcError> {
         return Err(invalid("intervalDuration", "调度间隔不能小于 1s"));
     }
     Ok(dto.spec.clone())
+}
+
+/// # topic 唯一性预检
+///
+/// 库里对 `syn_source.topic` 有唯一约束，但直接撞约束只会回一个笼统的 500。
+/// 这里先查一遍：冲突时把**占用者**（编码 + 名称）写进错误，保存的人才知道该改哪个。
+/// 任务按 topic 精确匹配，两个来源共用一个 topic 会互相串数据，不能只是「允许重复」。
+///
+/// `self_id` 用于修改：同一个来源保持 topic 不变时不算冲突。
+async fn ensure_topic_available<C: ConnectionTrait>(
+    topic: &str,
+    self_id: Option<i64>,
+    db: &C,
+) -> Result<(), SvcError> {
+    let mut cond = Condition::all().add(Column::Topic.eq(topic));
+    if let Some(id) = self_id {
+        cond = cond.add(Column::Id.ne(id));
+    }
+    if let Some(other) = SynSourceDao::get_by_condition::<_, Model>(cond, db).await? {
+        return Err(invalid(
+            "topic",
+            format!(
+                "虚拟 topic {} 已被数据源 {}（{}）占用；任务按 topic 精确匹配，两个来源不能共用一个",
+                topic, other.code, other.name
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// 虚拟 topic：留空由服务端按约定拼
