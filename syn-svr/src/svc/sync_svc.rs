@@ -308,10 +308,18 @@ fn aggregate(executions: Vec<Execution>) -> SyncOutcome {
     }
 }
 
+/// # 结论严重度（fanout 汇总取最大）
+///
+/// - `Fatal > Retriable`：确定失败要压过暂时失败；
+/// - `Retriable > Success`：有任务没送出去就不能报成功；
+/// - `Success > Skip`：`Skip` 只说明「这条记录与某个任务无关」，只要还有任务真正
+///   投递成功，整条记录就是成功。反过来（`Skip` 压过 `Success`）会把「已下发到一个
+///   下游」的响应说成跳过，`detail` 也会停在「没有任务的条件命中」，排查时看不出
+///   数据其实已经到了下游。全部任务都跳过时才轮到 `Skip`。
 fn severity(v: Verdict) -> u8 {
     match v {
-        Verdict::Success => 0,
-        Verdict::Skip => 1,
+        Verdict::Skip => 0,
+        Verdict::Success => 1,
         Verdict::Retriable => 2,
         Verdict::Fatal => 3,
     }
@@ -319,7 +327,8 @@ fn severity(v: Verdict) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::truncate;
+    use super::{severity, truncate};
+    use syn_api::Verdict;
 
     #[test]
     fn truncate_never_splits_a_char() {
@@ -329,5 +338,13 @@ mod tests {
         assert_eq!(truncate("中文字符", 3), "中文…");
         // 极端列宽也不 panic
         assert_eq!(truncate("abc", 0), "");
+    }
+
+    #[test]
+    fn severity_puts_success_above_skip() {
+        // fanout 里「一个跳过、一个成功」必须汇总成成功，不能汇总成跳过
+        assert!(severity(Verdict::Skip) < severity(Verdict::Success));
+        assert!(severity(Verdict::Success) < severity(Verdict::Retriable));
+        assert!(severity(Verdict::Retriable) < severity(Verdict::Fatal));
     }
 }
