@@ -42,6 +42,10 @@ pub struct SynConfig {
     /// 只有想改参数或显式关掉时才写 `[syn.pull-job]`，见 [`PullJobConfig`]。
     #[serde(default)]
     pub pull_job: PullJobConfig,
+    /// 过期数据清理计划。同样**默认就注册**：`syn_idem` 与 `syn_delivery_log`
+    /// 只增不减，不清理就会无限长。保留天数在这里配，见 [`CleanupJobConfig`]。
+    #[serde(default)]
+    pub cleanup_job: CleanupJobConfig,
 }
 
 /// # 取数心跳计划
@@ -91,6 +95,60 @@ pub struct PullJobConfig {
     pub remark: Option<String>,
 }
 
+/// # 过期数据清理计划
+///
+/// **默认就有**，不需要写进配置：
+///
+/// | 项 | 默认值 |
+/// |----|--------|
+/// | `enabled` | `true` |
+/// | `name` | `syn 过期数据清理` |
+/// | `executor-code` | `syn.cleanup` |
+/// | `interval-duration` | `24h` |
+/// | `group-name` | `syn` |
+/// | `task-expire-duration` | `1h` |
+/// | `retention-days` | `7` |
+/// | `batch-size` | `5000` |
+///
+/// 一次执行删两张表里超过保留期的行：`syn_idem`（幂等台账）与
+/// `syn_delivery_log`（失败/重试明细）。保留期按行的 `create_ms` 计算；
+/// 删除按 `batch-size` 分批，避免首次执行一口气删掉大量历史数据。
+///
+/// **不要与 `[syn.pull-job]` 共用 `executor-code`**：一个执行器编码只能绑定一个处理器，
+/// 共用了后注册的那个会覆盖前一个，取数心跳或清理会静默失效。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct CleanupJobConfig {
+    /// 是否注册。默认开；显式 `enabled = false` 可关掉
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 计划名称。同名视为同一个计划，重复启动撞唯一键后只补分组
+    #[serde(default = "default_cleanup_job_name")]
+    pub name: String,
+    /// 执行器编码。**必须与清理处理器一致**，且不能与取数心跳相同
+    #[serde(default = "default_cleanup_job_executor")]
+    pub executor_code: String,
+    /// 清理周期。默认一天一次即可，清理量只跟写入量有关
+    #[serde(default = "default_cleanup_job_interval")]
+    pub interval_duration: String,
+    /// jobx 计划分组名（不存在会自动创建）
+    #[serde(default = "default_pull_job_group")]
+    pub group_name: String,
+    /// 清理任务的执行记录保留时长，避免 jobx_task 自己涨起来
+    #[serde(default = "default_pull_job_expire")]
+    pub task_expire_duration: String,
+    /// 保留天数。超过它的幂等台账与投递明细会被删除；必须 ≥ 1
+    #[serde(default = "default_retention_days")]
+    pub retention_days: u32,
+    /// 单条 DELETE 删除的行数上限。首次执行可能面对大量历史数据，
+    /// 分批删避免长事务与大量锁等待；必须 ≥ 1
+    #[serde(default = "default_cleanup_batch_size")]
+    pub batch_size: u32,
+    /// 备注，只在该计划首次创建时写入
+    #[serde(default)]
+    pub remark: Option<String>,
+}
+
 /// # 一个 DB 直写数据源
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -113,6 +171,7 @@ impl Default for SynConfig {
             load_on_start: true,
             pull_timeout: default_pull_timeout(),
             pull_job: PullJobConfig::default(),
+            cleanup_job: CleanupJobConfig::default(),
         }
     }
 }
@@ -126,6 +185,22 @@ impl Default for PullJobConfig {
             interval_duration: default_pull_job_interval(),
             group_name: default_pull_job_group(),
             task_expire_duration: default_pull_job_expire(),
+            remark: None,
+        }
+    }
+}
+
+impl Default for CleanupJobConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            name: default_cleanup_job_name(),
+            executor_code: default_cleanup_job_executor(),
+            interval_duration: default_cleanup_job_interval(),
+            group_name: default_pull_job_group(),
+            task_expire_duration: default_pull_job_expire(),
+            retention_days: default_retention_days(),
+            batch_size: default_cleanup_batch_size(),
             remark: None,
         }
     }
@@ -162,6 +237,26 @@ fn default_pull_job_group() -> String {
 
 fn default_pull_job_expire() -> String {
     "1h".to_string()
+}
+
+fn default_cleanup_job_name() -> String {
+    "syn 过期数据清理".to_string()
+}
+
+fn default_cleanup_job_executor() -> String {
+    "syn.cleanup".to_string()
+}
+
+fn default_cleanup_job_interval() -> String {
+    "24h".to_string()
+}
+
+fn default_retention_days() -> u32 {
+    7
+}
+
+fn default_cleanup_batch_size() -> u32 {
+    5000
 }
 
 fn default_true() -> bool {

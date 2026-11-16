@@ -119,15 +119,18 @@ pub fn snapshot() -> Arc<Vec<TaskSpec>> {
     SNAPSHOT.load_full()
 }
 
-/// # 启动快照：订阅刷新信号 + 首次加载
+/// # 建立任务快照刷新订阅（不加载快照）
 ///
 /// 先订阅再加载：反过来的话，加载到订阅建立之间的写操作会发出一条没人听的信号，
-/// 本副本就停在旧快照上，直到下一次变更。
+/// 本副本就停在旧快照上，直到下一次变更。因此启动流程是
+/// `subscribe()` → 视 `load-on-start` 决定要不要 `reload()`。
 ///
-/// 没有 `[nats]` 配置时只做首次加载并返回 `false` —— 单副本本地开发/联调用不着广播，
+/// 与首次加载拆开的原因：`load-on-start=false` 只是「启动时先不加载」，订阅仍应建立，
+/// 否则该副本之后改任务不会自动生效，只能手工调 `/syn/task/reload`。
+///
+/// 没有 `[nats]` 配置时返回 `false` —— 单副本本地开发/联调用不着广播，
 /// 多副本部署必须配 nats，否则「别人改了配置我这边不生效」。
-pub async fn setup() -> anyhow::Result<bool> {
-    let mut subscribed = false;
+pub async fn subscribe() -> bool {
     match robotech::refresh::subscribe(&SYN_TASK_REFRESH_SUBJECT, || async {
         match reload().await {
             Ok(n) => info!("收到任务刷新信号，快照重建完成：{n} 个任务"),
@@ -138,16 +141,16 @@ pub async fn setup() -> anyhow::Result<bool> {
     .await
     {
         Ok(_) => {
-            subscribed = true;
             info!("任务快照刷新订阅已建立: {SYN_TASK_REFRESH_SUBJECT}");
+            true
         }
         // 订阅建不起来不影响正确性（本副本仍会在写入口和重载接口上重建），
         // 但多副本下会退化成「只有写的那台生效」，必须留痕
-        Err(e) => warn!("任务快照刷新订阅未建立，多副本下改任务需调 /syn/task/reload: {e}"),
+        Err(e) => {
+            warn!("任务快照刷新订阅未建立，多副本下改任务需调 /syn/task/reload: {e}");
+            false
+        }
     }
-
-    reload().await?;
-    Ok(subscribed)
 }
 
 /// # 发布任务刷新信号

@@ -47,13 +47,22 @@ async fn setup(
 
     // 预加载失败不阻止启动：库刚建好时表是空的，也可能正在导配置。
     // 服务起来后调一次 `/syn/task/reload` 即可，这比让容器起不来好排查。
+    //
+    // 「订阅」与「首次加载」是两件事，这里拆开：订阅始终建立（否则 load-on-start=false
+    // 时本副本只会在手工 reload 前看到旧快照），load-on-start 只决定要不要立刻加载。
+    let subscribed = store::subscribe().await;
     if app_config.syn.load_on_start {
-        // 先订阅刷新信号再首次加载：顺序反了会漏掉「加载到订阅建立之间」的写入
-        if let Err(e) = store::setup().await {
+        if let Err(e) = store::reload().await {
             tracing::warn!("启动加载任务失败，服务继续运行，可调 /syn/task/reload: {e}");
         }
+    } else if subscribed {
+        tracing::warn!(
+            "[syn] load-on-start=false，启动时未加载任务；之后编辑任务会由刷新信号自动加载"
+        );
     } else {
-        tracing::warn!("[syn] load-on-start=false，启动时未加载任务");
+        tracing::warn!(
+            "[syn] load-on-start=false，启动时未加载任务；刷新订阅也未建立，需调 /syn/task/reload"
+        );
     }
 
     setup_web_server(app_config.web.clone(), port, old_pid, changed).await?;
@@ -64,12 +73,23 @@ async fn setup(
     match app_config.redis.clone() {
         Some(redis) => setup_redis_conn(redis, changed).await?,
         None => tracing::warn!(
-            "没有 [redis] 配置，跳过取数心跳：jobx 执行器从 Redis Stream 收任务，\
-             没有 Redis 就收不到；sink 推送与手工 pull 不受影响"
+            "没有 [redis] 配置，跳过 jobx 任务注册（取数心跳与过期清理）：\
+             jobx 执行器从 Redis Stream 收任务，没有 Redis 就收不到；\
+             sink 推送与手工 pull 不受影响"
         ),
     }
     if app_config.redis.is_some() {
         wkr::setup_pull_wkr(&app_config.syn.pull_job, &app_config.api, changed).await?;
+        // 一个执行器编码只能绑一个处理器：共用了会互相覆盖，宁可跳过并留痕
+        if app_config.syn.cleanup_job.executor_code == app_config.syn.pull_job.executor_code {
+            tracing::warn!(
+                "[syn.cleanup-job] executor-code 与 [syn.pull-job] 相同（{}），\
+                 跳过过期数据清理注册：两者必须各用一个执行器",
+                app_config.syn.cleanup_job.executor_code
+            );
+        } else {
+            wkr::setup_cleanup_wkr(&app_config.syn.cleanup_job, &app_config.api, changed).await?;
+        }
     }
     Ok(())
 }
