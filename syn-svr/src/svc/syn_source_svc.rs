@@ -15,7 +15,7 @@ use robotech::svc::SvcError;
 use sea_orm::{ColumnTrait, Condition, IntoActiveModel};
 use std::collections::HashMap;
 use syn_api::{
-    SourceSpec, SynSourceEnabledDto, SynSourcePullVo, SynSourceQueryDto,
+    SourceKind, SourceSpec, SynSourceEnabledDto, SynSourcePullVo, SynSourceQueryDto,
     SynSourceSaveDto, SynSourceVo,
 };
 use tracing::info;
@@ -149,16 +149,36 @@ impl SynSourceSvc {
                 ),
             ));
         }
+        // 水位只对「当初那套取数定义」有意义：定义一换，旧值可能把历史数据整段跳过
+        // （例如游标列从 updated_at 换成 created_at，列数/类型都一样，但含义全变）。
+        // 这里只判「要不要清」，真正清在更新成功之后做，避免保存失败也把水位弄丢。
+        let old_spec = SourceSpec::parse(&existing.spec).unwrap_or_default();
+        let old_kind = SourceKind::from_i16(existing.kind).unwrap_or_default();
+        let new_spec = SourceSpec::parse(&parsed).unwrap_or_default();
+        let reset_water_level = cursor_basis_changed(old_kind, &old_spec, dto.kind, &new_spec);
+
         let model = SynSourceDao::update(
             build_model(&dto, parsed, topic_of(&dto), Some(existing), user),
             db.as_ref(),
         )
         .await?;
         info!("数据源 {} 已更新到 v{}", model.code, model.version);
+        if reset_water_level {
+            let code = model.code.clone();
+            poll::reset_full(id).await?;
+            info!("数据源 {code} 的取数定义变更，水位已清空，下一轮从起点重跑");
+        }
         // 改配置不动水位，但响应里也要把它带上：PUT 返回 `cursor: null` 会让调用方
         // 以为「还没跑过」，与 list / get 的形状不一致。
         let source_id = model.id;
-        Ok(SynSourceVo::from(model).with_cursor(cursor_of(source_id, db.as_ref()).await?))
+        let mut vo = SynSourceVo::from(model).with_cursor(cursor_of(source_id, db.as_ref()).await?);
+        if reset_water_level {
+            vo.notice = Some(
+                "取数定义已变更，水位已自动清空，下一轮将从起点重新同步（重复数据由下游 upsert 吸收）"
+                    .to_string(),
+            );
+        }
+        Ok(vo)
     }
 
     /// # 启停
@@ -295,6 +315,52 @@ fn build_model(
     am
 }
 
+/// # 取数定义里「决定水位含义」的部分是否变了
+///
+/// 变了就必须清空水位：旧值会被直接套到新定义上，可能把历史数据整段跳过。
+/// 典型场景：游标列从 `(updated_at, id)` 换成 `(created_at, id)` —— 列数与类型都一样，
+/// 校验也不会报错，但 `> 旧 updated_at` 对新列毫无意义。
+///
+/// 只比语义相关的字段：改名称、备注、间隔、批量大小都不影响水位。
+fn cursor_basis_changed(
+    old_kind: SourceKind,
+    old: &SourceSpec,
+    new_kind: SourceKind,
+    new: &SourceSpec,
+) -> bool {
+    if old_kind != new_kind {
+        return true;
+    }
+    match new_kind {
+        SourceKind::Sql => {
+            trim_or_empty(&old.datasource) != trim_or_empty(&new.datasource)
+                || normalize_sql(&old.select) != normalize_sql(&new.select)
+                || old.cursor_columns() != new.cursor_columns()
+                || old.cursor_type != new.cursor_type
+        }
+        // 全量的进度是「页码 / token」，由这几个字段定义；换了接口这些值就不再指代同一批数据
+        SourceKind::Http => {
+            trim_or_empty(&old.url) != trim_or_empty(&new.url)
+                || trim_or_empty(&old.next_path) != trim_or_empty(&new.next_path)
+                || old.page_size != new.page_size
+        }
+    }
+}
+
+fn trim_or_empty(v: &Option<String>) -> &str {
+    v.as_deref().map(str::trim).unwrap_or("")
+}
+
+/// 只忽略首尾空白与结尾分号：真正的语义变化仍然算变化
+fn normalize_sql(sql: &Option<String>) -> String {
+    sql.as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .trim_end_matches(';')
+        .trim()
+        .to_string()
+}
+
 /// # 单条水位。`create` 不需要它（新来源还没跑过），`update` / `set_enabled` 需要
 async fn cursor_of<C: sea_orm::ConnectionTrait>(
     source_id: i64,
@@ -336,4 +402,88 @@ pub async fn enabled_sources() -> Result<Vec<Model>, SvcError> {
         db.as_ref(),
     )
     .await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn_api::CursorType;
+
+    fn sql_spec(select: &str, cursor_column: &str) -> SourceSpec {
+        SourceSpec {
+            datasource: Some("dtw".to_string()),
+            select: Some(select.to_string()),
+            cursor_column: Some(cursor_column.to_string()),
+            cursor_type: CursorType::Timestamp,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cursor_basis_ignores_cosmetic_changes() {
+        let old = sql_spec("select * from t", "updated_at, id");
+        let new = sql_spec("  select * from t ; ", "updated_at,id");
+        assert!(!cursor_basis_changed(
+            SourceKind::Sql,
+            &old,
+            SourceKind::Sql,
+            &new
+        ));
+    }
+
+    #[test]
+    fn cursor_basis_tracks_sql_semantics() {
+        let old = sql_spec("select * from t", "updated_at, id");
+        // 列数、类型都可以一样，但换了列之后旧水位不再指代同一批数据
+        let switched = sql_spec("select * from t", "created_at, id");
+        assert!(cursor_basis_changed(
+            SourceKind::Sql,
+            &old,
+            SourceKind::Sql,
+            &switched
+        ));
+        let other_datasource = SourceSpec {
+            datasource: Some("other".to_string()),
+            ..old.clone()
+        };
+        assert!(cursor_basis_changed(
+            SourceKind::Sql,
+            &old,
+            SourceKind::Sql,
+            &other_datasource
+        ));
+    }
+
+    #[test]
+    fn cursor_basis_tracks_kind_and_http_endpoint() {
+        let sql = sql_spec("select * from t", "updated_at, id");
+        let mut http = SourceSpec {
+            url: Some("/api/list".to_string()),
+            ..Default::default()
+        };
+        assert!(cursor_basis_changed(
+            SourceKind::Sql,
+            &sql,
+            SourceKind::Http,
+            &http
+        ));
+        // 同一套 http 定义不动水位
+        assert!(!cursor_basis_changed(
+            SourceKind::Http,
+            &http,
+            SourceKind::Http,
+            &http.clone()
+        ));
+        http.url = Some("/api/v2/list".to_string());
+        let old_http = SourceSpec {
+            url: Some("/api/list".to_string()),
+            ..Default::default()
+        };
+        assert!(cursor_basis_changed(
+            SourceKind::Http,
+            &old_http,
+            SourceKind::Http,
+            &http
+        ));
+    }
 }

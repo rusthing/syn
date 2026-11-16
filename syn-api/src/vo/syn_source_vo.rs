@@ -76,6 +76,9 @@ pub struct SynSourceVo {
     pub updater_id: U64,
     /// 更新时间
     pub update_ms: U64,
+    /// 保存时的提示（例如「取数定义变了，水位已清空」）。只在本次响应里出现，
+    /// 列表/详情不会带
+    pub notice: Option<String>,
 }
 
 impl SynSourceVo {
@@ -105,6 +108,7 @@ impl From<SourceModel> for SynSourceVo {
             create_ms: U64::from(m.create_ms),
             updater_id: U64::from(m.updater_id),
             update_ms: U64::from(m.update_ms),
+            notice: None,
         }
     }
 }

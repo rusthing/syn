@@ -97,7 +97,12 @@ export function SourceEditorDrawer({
     }
     save.mutate(draft, {
       onSuccess: (saved) => {
-        toast.success(source ? "来源已更新" : "来源已创建", `${saved.code} · 游标保留在 ${saved.topic}`);
+        if (saved.notice) {
+          // 取数定义变了，后端已清空水位：用 info 而不是 success，避免被当成普通保存
+          toast.info(source ? "来源已更新" : "来源已创建", saved.notice);
+        } else {
+          toast.success(source ? "来源已更新" : "来源已创建", `${saved.code} · 游标保留在 ${saved.topic}`);
+        }
         onSaved?.();
         onClose();
       },
