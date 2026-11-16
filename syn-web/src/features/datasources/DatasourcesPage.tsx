@@ -14,7 +14,7 @@ import { Switch } from "@/components/ui/Switch";
 import { PageHeader, StatCard } from "@/components/page";
 import { EmptyRow, TableShell, Td, Th } from "@/components/table";
 import { useToast } from "@/components/ui/Toast";
-import { WIDGET_GRID, cn } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { formatRelative } from "@/lib/time";
 import type { DatasourceInfo } from "@/lib/api/types";
 import { useDatasourceMutations, useDatasources } from "@/hooks/use-sources";
@@ -52,7 +52,7 @@ export function DatasourcesPage() {
         }
       />
 
-      <div className={`mb-4 ${WIDGET_GRID}`}>
+      <div className="mb-4 grid gap-3 sm:grid-cols-3">
         <StatCard
           label="数据源总数"
           value={list.length}

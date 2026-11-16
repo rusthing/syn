@@ -6,7 +6,7 @@ import { Panel, PanelHeader, PanelState, Skeleton } from "@/components/ui/Panel"
 import { Switch } from "@/components/ui/Switch";
 import { PageHeader, StatCard } from "@/components/page";
 import { useToast } from "@/components/ui/Toast";
-import { WIDE_WIDGET_GRID, WIDGET_GRID, cn } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { formatRelative } from "@/lib/time";
 import type { SyncSource } from "@/lib/api/types";
 import { buildSourceSql } from "@/lib/spec/source-sql";
@@ -74,7 +74,7 @@ export function SourcesPage() {
         }
       />
 
-      <div className={`mb-4 ${WIDGET_GRID}`}>
+      <div className="mb-4 grid gap-3 sm:grid-cols-3">
         <StatCard label="抽取总数" value={list.length} suffix={`/ ${enabled} 启用`} icon={<Radio className="size-4" />} />
         <StatCard label="累计行数" value={totalRows.toLocaleString()} suffix="行" icon={<DatabaseZap className="size-4" />} />
         <StatCard
@@ -87,7 +87,7 @@ export function SourcesPage() {
       </div>
 
       {isLoading ? (
-        <div className={WIDE_WIDGET_GRID}>
+        <div className="grid gap-3 xl:grid-cols-2">
           {Array.from({ length: 2 }).map((_, i) => (
             <Skeleton key={i} className="h-52 w-full" />
           ))}
@@ -105,7 +105,7 @@ export function SourcesPage() {
           />
         </Panel>
       ) : (
-        <div className={WIDE_WIDGET_GRID}>
+        <div className="grid gap-3 xl:grid-cols-2">
           {list.map((source) => (
             <SourceCard
               key={source.id}

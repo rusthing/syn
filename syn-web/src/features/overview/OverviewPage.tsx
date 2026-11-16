@@ -13,7 +13,7 @@ import {
 import { Badge } from "@/components/ui/Badge";
 import { Panel, PanelHeader, PanelState, Skeleton } from "@/components/ui/Panel";
 import { PageHeader, StatCard } from "@/components/page";
-import { WIDGET_GRID, cn, percent } from "@/lib/utils";
+import { cn, percent } from "@/lib/utils";
 import { formatDateTime, formatTime } from "@/lib/time";
 import { useOverview } from "@/hooks/use-overview";
 import { useAllTasks } from "@/hooks/use-tasks";
@@ -67,7 +67,7 @@ export function OverviewPage() {
       />
 
       {isLoading ? (
-        <div className={WIDGET_GRID}>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
             <Skeleton key={i} className="h-24 w-full" />
           ))}
@@ -90,7 +90,7 @@ export function OverviewPage() {
         </Panel>
       ) : data ? (
         <>
-          <div className={WIDGET_GRID}>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <StatCard
               label="记录总数"
               value={data.total.toLocaleString()}
