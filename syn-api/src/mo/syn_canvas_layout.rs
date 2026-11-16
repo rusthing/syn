@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 /// # 画布布局（节点坐标）
 ///
 /// `x` / `y` 是**世界坐标**，与缩放无关；缩放与平移只存在前端内存里。
-/// 数值上限按 DDL 的 `@range 0..=20000`，超出说明前端算了 NaN 或负值。
+/// 横坐标允许负值（拖到初始画布左侧），范围按 DDL 的 `@range -20000..=20000`；
+/// 纵坐标仍是 `0..=20000`，超出说明前端算了 NaN。
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize, Default)]
 #[sea_orm(table_name = "syn_canvas_layout")]

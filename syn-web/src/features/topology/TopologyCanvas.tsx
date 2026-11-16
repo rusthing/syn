@@ -453,7 +453,8 @@ export function TopologyCanvas({
       const next: DragState = {
         ...d,
         moved: d.moved || Math.abs(e.clientX - d.cx) > 3 || Math.abs(e.clientY - d.cy) > 3,
-        x: Math.max(0, Math.min(WORLD_W, wx - d.dx)),
+        // 允许拖到初始画布左侧（世界坐标负值）：左边界不再是一堵看不见的墙
+        x: Math.max(-WORLD_W, Math.min(WORLD_W, wx - d.dx)),
         y: Math.max(0, Math.min(WORLD_H, wy - d.dy)),
       };
       dragRef.current = next;

@@ -544,8 +544,8 @@ comment on column syn_canvas_layout.node_key is
 
 comment on column syn_canvas_layout.x is
 '画布横坐标
-世界坐标（不是屏幕坐标），与缩放无关
-@range 0..=20000';
+世界坐标（不是屏幕坐标），与缩放无关；允许负值，表示拖到了初始画布左侧
+@range -20000..=20000';
 
 comment on column syn_canvas_layout.y is
 '画布纵坐标

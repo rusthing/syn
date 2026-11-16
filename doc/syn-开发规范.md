@@ -947,7 +947,7 @@ cd syn-web && pnpm typecheck && pnpm test && pnpm build
    各自底色 ≥ 4.5:1 校准（`styles.css` 注释里写了实测值，改色前重算）。
 
 后端只有两个画布接口：`GET /syn/canvas/layout`（全量）、`PUT /syn/canvas/layout`
-（按 `(node_type, node_key)` upsert，校验契约在列注释：`@len 128`、`@range 0..20000`）。
+（按 `(node_type, node_key)` upsert，校验契约在列注释：`@len 128`、`x @range -20000..=20000`、`y @range 0..=20000`）。
 不做删除接口：节点删了残行由画布忽略，`mergePositions` 会丢掉孤儿坐标。
 
 ---

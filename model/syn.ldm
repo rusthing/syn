@@ -3102,8 +3102,8 @@ sql：mode（cursor 游标增量 / snapshot 全量快照）、table、sql（可�
 <a:ModificationDate>1794617410</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>画布横坐标
-世界坐标（不是屏幕坐标），与缩放无关
-@range 0..=20000</a:Comment>
+世界坐标（不是屏幕坐标），与缩放无关；允许负值，表示拖到了初始画布左侧
+@range -20000..=20000</a:Comment>
 <a:DataType>I</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
 <a:GlobalObjectID/>

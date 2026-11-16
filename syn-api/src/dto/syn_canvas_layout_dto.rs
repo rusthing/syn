@@ -23,7 +23,7 @@ pub struct SynCanvasNodePosDto {
     #[validate(length(min = 1, max = 128, message = "节点标识长度需在 1..=128 之间"))]
     pub node_key: String,
     /// 画布横坐标（世界坐标，与缩放无关）
-    #[validate(range(min = 0, max = 20000, message = "横坐标需在 0..=20000 之间"))]
+    #[validate(range(min = -20000, max = 20000, message = "横坐标需在 -20000..=20000 之间"))]
     pub x: i32,
     /// 画布纵坐标（世界坐标，与缩放无关）
     #[validate(range(min = 0, max = 20000, message = "纵坐标需在 0..=20000 之间"))]
