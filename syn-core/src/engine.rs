@@ -271,13 +271,15 @@ fn prepare<'a>(spec: &'a TaskSpec, record: &Value) -> Result<Prepared<'a>, Execu
     };
 
     // 3 校验
+    // 守卫的断言与门槛都能看请求体：`when` 的 scope 显式写 body 时也要生效，
+    // 否则这种配置会被静默跳过（守卫等于没配），排查起来极难
+    let guard_ctx = ctx.with_body(&mapped.body);
     for guard in &spec.guards {
         if let Some(w) = &guard.when
-            && !eval(w, &ctx, Scope::Record)
+            && !eval(w, &guard_ctx, Scope::Record)
         {
             continue;
         }
-        let guard_ctx = ctx.with_body(&mapped.body);
         // 守卫默认看记录，看请求体要显式 scope: body
         if let Some(failed) = guard
             .asserts
@@ -612,6 +614,38 @@ mod tests {
             mock.last.lock().unwrap().is_none(),
             "守卫拦下时不应发出请求"
         );
+    }
+
+    #[tokio::test]
+    async fn guard_when_can_gate_on_mapped_body() {
+        let mut spec = region_spec();
+        // `when` 显式 scope: body 时必须看映射后的请求体；否则这条守卫会被静默跳过
+        spec.guards = vec![syn_api::Guard {
+            when: Some(syn_api::Assert {
+                field: Some("$.tags".to_string()),
+                op: syn_api::Operator::Eq,
+                value: Some(serde_json::json!("|电子围栏|")),
+                scope: Some(Scope::Body),
+            }),
+            asserts: vec![Condition::Assert(syn_api::Assert {
+                field: Some("$.after.missing".to_string()),
+                op: syn_api::Operator::Exists,
+                value: None,
+                scope: None,
+            })],
+            on_fail: syn_api::OnFail {
+                verdict: Verdict::Fatal,
+                code: "BODY_GATE".to_string(),
+                message: None,
+            },
+        }];
+
+        let mock = Mock::new(200, serde_json::json!({}));
+        let ex = execute(&spec, &ok_record(), "http://gw", &mock).await;
+        assert_eq!(ex.verdict, Verdict::Fatal);
+        assert_eq!(ex.code, "BODY_GATE");
+        assert_eq!(ex.stage, Stage::Guard);
+        assert!(mock.last.lock().unwrap().is_none());
     }
 
     #[tokio::test]

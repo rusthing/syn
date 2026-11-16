@@ -512,7 +512,9 @@ export function preview(spec: TaskSpec, record: unknown, options: PreviewOptions
   const guardCtx: Context = { record, body: mapped.body };
   for (let i = 0; i < (spec.guards ?? []).length; i += 1) {
     const guard: Guard = (spec.guards ?? [])[i];
-    if (guard.when && !evalAssert(guard.when, ctx, "record")) {
+    // when 与 assert 用同一份上下文：显式 scope: body 时看映射后的请求体，
+    // 否则会被静默跳过（守卫等于没配）
+    if (guard.when && !evalAssert(guard.when, guardCtx, "record")) {
       steps.push({
         stage: "guard",
         ok: true,

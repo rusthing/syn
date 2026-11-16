@@ -559,7 +559,9 @@ pub struct Header {
 /// 「这条要不要同步」属于匹配，「字段带不带」属于映射，都不在这里重复。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Guard {
-    /// 适用条件，对记录求值；不满足则整条守卫跳过
+    /// 适用条件；不满足则整条守卫跳过
+    ///
+    /// 默认对记录求值，写 `scope: body` 时对本任务的映射后请求体求值（与 `assert` 一致）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<Assert>,
     /// 条件（顶层合取，元素可以是分组）
