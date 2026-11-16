@@ -308,7 +308,7 @@ export function wkbToWkt(raw: string): string {
   }
   if (!parsed) {
     const bytes = decodeBase64(stripped);
-    if (!bytes || bytes.length === 0) {
+    if (bytes.length === 0) {
       throw new TransformError("wkb_to_wkt", "WKB 不是合法的十六进制或 base64");
     }
     parsed = { bytes, wkt: readAll(bytes) };
@@ -337,12 +337,27 @@ function b64Val(c: string): number {
   return -1;
 }
 
-function decodeBase64(text: string): Uint8Array | null {
-  const data: number[] = [];
-  for (const c of text) {
-    if (/[A-Za-z0-9+/_-]/.test(c)) data.push(b64Val(c));
+/**
+ * 标准 / URL 安全字母表都认，`=` padding 只允许在末尾。
+ *
+ * 非法字符必须报错：以前是过滤掉再解，拼错的字符串会被解成另一段字节，
+ * 报出来的却是「解析剩余 N 字节」，与真实原因无关。与 syn-core `wkb.rs` 口径一致。
+ */
+function decodeBase64(text: string): Uint8Array {
+  const body = text.replace(/={1,2}$/, "");
+  const padding = text.length - body.length;
+  if (padding > 2) {
+    throw new TransformError("wkb_to_wkt", `WKB base64 的 \`=\` padding 过多（${padding} 个）`);
   }
-  if (data.length % 4 === 1) return null;
+  const data: number[] = [];
+  for (const c of body) {
+    const v = b64Val(c);
+    if (v < 0) throw new TransformError("wkb_to_wkt", `WKB base64 含非法字符「${c}」`);
+    data.push(v);
+  }
+  if (data.length % 4 === 1) {
+    throw new TransformError("wkb_to_wkt", `WKB base64 长度非法（${data.length + padding} 个字符）`);
+  }
   const out: number[] = [];
   for (let i = 0; i < data.length; i += 4) {
     const chunk = data.slice(i, i + 4);

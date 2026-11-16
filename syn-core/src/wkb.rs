@@ -34,12 +34,10 @@ pub fn to_wkt(raw: &str) -> Result<String, String> {
     {
         return Ok(wkt);
     }
-    if let Some(bytes) = decode_base64(s)
-        && let Ok(wkt) = parse_wkb(&bytes)
-    {
-        return Ok(wkt);
-    }
-    Err("WKB 不是合法的十六进制或 base64".to_string())
+    // 十六进制没命中才落到 base64。这里不能再「过滤掉不认识的字符再解」：
+    // 那样拼错的字符串会被悄悄解成另一段字节，最后报一个与真实原因无关的解析错。
+    let bytes = decode_base64(s)?;
+    parse_wkb(&bytes).map_err(|e| format!("WKB base64 解码后解析失败: {e}"))
 }
 
 /// 把已解码的字节流读成一个 WKT；读到半个几何或尾部有剩余都算失败
@@ -264,20 +262,36 @@ fn hex_val(c: u8) -> Option<u8> {
     }
 }
 
-/// 标准 / URL 安全字母表都认；`=` padding 有无皆可，过滤后按剩余长度收敛
-fn decode_base64(s: &str) -> Option<Vec<u8>> {
-    let data: Vec<u8> = s
-        .bytes()
-        .filter(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' | b'-' | b'_'))
-        .collect();
+/// 标准 / URL 安全字母表都认；`=` padding 只允许出现在末尾，可有可无。
+///
+/// 非法字符**显式报错**：以前是先 `filter` 掉再解码，拼错的字符串会被解成另一段
+/// 字节，最终只在 WKB 解析处报一个与真实原因无关的错，排障时看不出是编码问题。
+fn decode_base64(s: &str) -> Result<Vec<u8>, String> {
+    let body = s.trim_end_matches('=');
+    let padding = s.len() - body.len();
+    if padding > 2 {
+        return Err(format!("WKB base64 的 `=` padding 过多（{padding} 个）"));
+    }
+    for (i, c) in body.chars().enumerate() {
+        if !c.is_ascii() || b64_val(c as u8).is_none() {
+            return Err(format!(
+                "WKB base64 含非法字符 `{c}`（第 {} 个字符）",
+                i + 1
+            ));
+        }
+    }
+    let data = body.as_bytes();
     if data.len() % 4 == 1 {
-        return None;
+        return Err(format!(
+            "WKB base64 长度非法（{} 个字符）",
+            data.len() + padding
+        ));
     }
     let mut out = Vec::with_capacity(data.len() / 4 * 3);
     for chunk in data.chunks(4) {
         let mut acc: u32 = 0;
         for &c in chunk {
-            acc = (acc << 6) | b64_val(c)?;
+            acc = (acc << 6) | b64_val(c).expect("上面已逐字符校验过");
         }
         // 尾块不足 4 字符时补零对齐到 24 位，再按整块取字节
         acc <<= 6 * (4 - chunk.len()) as u32;
@@ -294,10 +308,10 @@ fn decode_base64(s: &str) -> Option<Vec<u8>> {
             2 => {
                 out.push((acc >> 16) as u8);
             }
-            _ => return None,
+            _ => return Err("WKB base64 尾块长度非法".to_string()),
         }
     }
-    Some(out)
+    Ok(out)
 }
 
 fn b64_val(c: u8) -> Option<u32> {
@@ -449,6 +463,26 @@ mod tests {
         let urlsafe = std.replace('+', "-").replace('/', "_");
         assert_eq!(to_wkt(&std).unwrap(), to_wkt(&urlsafe).unwrap());
         assert!(to_wkt(std.trim_end_matches('=')).is_ok());
+    }
+
+    #[test]
+    fn base64_invalid_chars_are_reported_not_dropped() {
+        // 以前 filter 掉 `!` 后会解出一段无关字节，报「解析剩余 N 字节」；
+        // 现在必须直接指出编码里有非法字符
+        let err = to_wkt("AQM!").unwrap_err();
+        assert!(err.contains("非法字符 `!`"), "{err}");
+        // `=` 只允许在末尾：中段的 `=` 不能被悄悄丢掉
+        let err = to_wkt("AQ=M").unwrap_err();
+        assert!(err.contains("非法字符 `=`"), "{err}");
+    }
+
+    #[test]
+    fn base64_with_valid_padding_still_decodes() {
+        let mut v = vec![1u8];
+        v.extend_from_slice(&1u32.to_le_bytes());
+        v.extend_from_slice(&1.5f64.to_le_bytes());
+        v.extend_from_slice(&2.25f64.to_be_bytes());
+        assert!(to_wkt(&base64_encode_std(&v)).is_ok());
     }
 
     /// 只为本测试用的最小编码器（不引入依赖）

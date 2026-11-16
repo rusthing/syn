@@ -26,4 +26,9 @@ describe("wkbToWkt", () => {
     expect(() => wkbToWkt("!!!")).toThrow();
     expect(() => wkbToWkt("0103")).toThrow();
   });
+
+  it("base64 里的非法字符显式报错，不再静默丢弃", () => {
+    expect(() => wkbToWkt("AQM!")).toThrow("非法字符「!」");
+    expect(() => wkbToWkt("AQ=M")).toThrow("非法字符「=」");
+  });
 });
