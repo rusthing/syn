@@ -19,10 +19,9 @@
 /*==============================================================*/
 create table syn_task (
    id                   INT8                 not null,
-   code                 VARCHAR(64)          not null,
    name                 VARCHAR(100)         not null,
    topic                VARCHAR(255)         not null,
-   priority             INT4                 not null default 100,
+   sort_order           INT4                 not null default 100,
    enabled              BOOL                 not null default true,
    exclusive            BOOL                 not null default true,
    spec                 JSONB                not null,
@@ -32,8 +31,7 @@ create table syn_task (
    create_ms            INT8                 not null,
    updater_id           INT8                 not null,
    update_ms            INT8                 not null,
-   constraint PK_SYN_TASK primary key (id),
-   constraint AK_CODE_SYN_TASK unique (code)
+   constraint PK_SYN_TASK primary key (id)
 );
 
 comment on table syn_task is
@@ -43,14 +41,9 @@ comment on column syn_task.id is
 'ID
 由 idworker 生成，全局唯一';
 
-comment on column syn_task.code is
-'任务编码
-人写可读的稳定标识，配置、日志、排障都用它指代一条任务；接口按它查询
-@len 1..=64';
-
 comment on column syn_task.name is
 '名称
-给人看的名字，列表页展示
+给人看的名字，列表页、投递记录与日志都按它指代任务
 @len 1..=100';
 
 comment on column syn_task.topic is
@@ -58,9 +51,9 @@ comment on column syn_task.topic is
 push 入口是 Kafka 的 topic；poll 入口是虚拟 topic（source:{数据源编码}）
 @len 1..=255';
 
-comment on column syn_task.priority is
-'匹配优先级
-升序匹配，同 topic 下按优先级逐个试；数字小的先试
+comment on column syn_task.sort_order is
+'排序值
+同一主题内升序，越小越靠前；匹配与列表都按 (sort_order, id) 升序
 @range 0..=9999';
 
 comment on column syn_task.enabled is
@@ -74,7 +67,7 @@ false 表示这条记录还要继续喂给后面的任务（一分多）';
 comment on column syn_task.spec is
 '五段规则（match / mapping / actions / guards / outcomes）
 嵌套结构，整体被执行器消费，没有任何一列参与检索，所以按 JSONB 存
-topic / priority / enabled / exclusive 以本表的列为准，spec 里的同名字段只是导入来源';
+topic / sort_order / enabled / exclusive 以本表的列为准，spec 里的同名字段只是导入来源';
 
 comment on column syn_task.version is
 '配置版本号
@@ -555,7 +548,7 @@ comment on column syn_canvas_layout.node_type is
 
 comment on column syn_canvas_layout.node_key is
 '节点标识
-数据源 / 取数来源 / 任务填各自的 code，主题填 topic 名
+数据源 / 取数来源填各自的 code，任务填主键 id，主题填 topic 名
 @len 1..=128';
 
 comment on column syn_canvas_layout.x is
@@ -592,6 +585,109 @@ comment on column syn_canvas_layout.update_ms is
 create unique index syn_canvas_layout_PK on syn_canvas_layout (
 id
 );
+
+
+/*==============================================================*/
+/* Table: syn_delivery_log                                      */
+/*==============================================================*/
+create table syn_delivery_log (
+   id                   INT8                 not null,
+   task_id              INT8                 not null,
+   task_name            VARCHAR(100)         not null,
+   topic                VARCHAR(255)         not null,
+   record_key           VARCHAR(255)         null,
+   verdict              INT2                 not null,
+   code                 VARCHAR(64)          not null,
+   stage                VARCHAR(20)          not null,
+   detail               VARCHAR(1000)        null,
+   http_status          INT2                 null,
+   latency_ms           INT4                 not null,
+   creater_id           INT8                 not null,
+   create_ms            INT8                 not null,
+   updater_id           INT8                 not null,
+   update_ms            INT8                 not null,
+   constraint PK_SYN_DELIVERY_LOG primary key (id)
+);
+
+comment on table syn_delivery_log is
+'投递明细：失败 / 重试等非终态的排障记录。成功与跳过仍在 syn_idem（幂等台账只记终态）。';
+
+comment on column syn_delivery_log.id is
+'ID
+由 idworker 生成，全局唯一';
+
+comment on column syn_delivery_log.task_id is
+'任务 ID
+弱引用 syn_task.id，不建外键：任务删除后历史明细仍应可查，也不能反过来阻塞删除';
+
+comment on column syn_delivery_log.task_name is
+'任务名称
+落库时冗余一份，任务改名或删除后仍能看懂这条明细属于谁
+@len 1..=100';
+
+comment on column syn_delivery_log.topic is
+'记录来源 topic（sink 推送的真实 topic，或自拉的 source:{编码}）
+@len 1..=255';
+
+comment on column syn_delivery_log.record_key is
+'幂等键
+sink 传入的 X-Idempotency-Key；自拉链路没有，留空
+@len 0..=255';
+
+comment on column syn_delivery_log.verdict is
+'结论
+只写入失败类结论：fatal / retriable
+@enum SyncVerdict
+  2=Fatal      业务失败（不可重试）
+  3=Retriable  暂时失败（可重试）';
+
+comment on column syn_delivery_log.code is
+'分类码
+如 TRANSPORT_TIMEOUT / WKB_INVALID / DB_CONSTRAINT
+@len 1..=64';
+
+comment on column syn_delivery_log.stage is
+'得出结论的段
+match / mapping / guard / action / transport / verdict
+@len 1..=20';
+
+comment on column syn_delivery_log.detail is
+'失败详情
+守卫消息、传输错误、下游响应片段等，超长会被截断
+@len 0..=1000';
+
+comment on column syn_delivery_log.http_status is
+'下游 HTTP 状态码
+没发出请求或传输失败时为空；DB 直写失败时为空';
+
+comment on column syn_delivery_log.latency_ms is
+'本任务从开始执行到得出结论的耗时
+@unit ms';
+
+comment on column syn_delivery_log.creater_id is
+'创建者ID
+系统写入，固定为 0';
+
+comment on column syn_delivery_log.create_ms is
+'创建时间戳
+清理计划按它计算保留期
+@unit ms';
+
+comment on column syn_delivery_log.updater_id is
+'更新者ID
+明细只增不改，固定为 0';
+
+comment on column syn_delivery_log.update_ms is
+'更新时间戳
+明细只增不改，与 create_ms 相同
+@unit ms';
+
+create unique index syn_delivery_log_PK on syn_delivery_log (
+id
+);
+
+create index idx_syn_delivery_log_create_ms on syn_delivery_log (create_ms);
+create index idx_syn_delivery_log_task_id on syn_delivery_log (task_id);
 
 
 alter table syn_task_version

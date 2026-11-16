@@ -3085,7 +3085,7 @@ sql 的查询、游标列与重叠窗口；http 的地址与分页规则</a:Comm
 <a:ModificationDate>1794617410</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>节点标识
-数据源 / 取数来源 / 任务填各自的 code，主题填 topic 名
+数据源 / 取数来源填各自的 code，任务填主键 id，主题填 topic 名
 @len 1..=128</a:Comment>
 <a:DataType>VA128</a:DataType>
 <a:Length>128</a:Length>
@@ -3175,6 +3175,260 @@ sql 的查询、游标列与重叠窗口；http 的地址与分页规则</a:Comm
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>更新时间戳
 由框架在修改时写入当前时间
+@unit ms</a:Comment>
+<a:DataType>LI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+</c:Attributes>
+</o:Entity>
+<o:Entity Id="o200">
+<a:ObjectID>B3825E07-0D83-4157-A2D9-73B9B192825A</a:ObjectID>
+<a:Name>投递明细</a:Name>
+<a:Code>delivery_log</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>投递明细：失败 / 重试等非终态的排障记录。成功与跳过仍在 syn_idem（幂等台账只记终态）。</a:Comment>
+<a:GlobalObjectID/>
+<c:Identifiers>
+<o:Identifier Id="o201">
+<a:ObjectID>58669418-395B-4AA3-9569-D199BFDC0032</a:ObjectID>
+<a:Name>Identifier_1</a:Name>
+<a:Code>Identifier_1</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<c:Identifier.Attributes>
+<o:EntityAttribute Ref="o202"/>
+</c:Identifier.Attributes>
+</o:Identifier>
+</c:Identifiers>
+<c:PrimaryIdentifier>
+<o:Identifier Ref="o201"/>
+</c:PrimaryIdentifier>
+<c:Attributes>
+<o:EntityAttribute Id="o202">
+<a:ObjectID>93D6F2ED-5D66-4FCE-A674-C485B68BA8EB</a:ObjectID>
+<a:Name>ID</a:Name>
+<a:Code>id</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>ID
+由 idworker 生成，全局唯一</a:Comment>
+<a:DataType>LI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o203">
+<a:ObjectID>DD54BB22-4E90-426B-872E-E0ED470291D2</a:ObjectID>
+<a:Name>任务ID</a:Name>
+<a:Code>task_id</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>任务 ID
+弱引用 syn_task.id，不建外键：任务删除后历史明细仍应可查，也不能反过来阻塞删除</a:Comment>
+<a:DataType>LI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o204">
+<a:ObjectID>F9E56A07-7571-4559-A0BA-ED405240EFDB</a:ObjectID>
+<a:Name>任务名称</a:Name>
+<a:Code>task_name</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>任务名称
+落库时冗余一份，任务改名或删除后仍能看懂这条明细属于谁
+@len 1..=100</a:Comment>
+<a:DataType>VA100</a:DataType>
+<a:Length>100</a:Length>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o205">
+<a:ObjectID>5119511C-5F1F-4356-A70A-35AAB758B3F2</a:ObjectID>
+<a:Name>记录来源主题</a:Name>
+<a:Code>topic</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>记录来源 topic（sink 推送的真实 topic，或自拉的 source:{编码}）
+@len 1..=255</a:Comment>
+<a:DataType>VA255</a:DataType>
+<a:Length>255</a:Length>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o206">
+<a:ObjectID>C30F505B-3D0F-41C5-A32E-8BFD96CB0C8C</a:ObjectID>
+<a:Name>幂等键</a:Name>
+<a:Code>record_key</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>幂等键
+sink 传入的 X-Idempotency-Key；自拉链路没有，留空
+@len 0..=255</a:Comment>
+<a:DataType>VA255</a:DataType>
+<a:Length>255</a:Length>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o207">
+<a:ObjectID>98DF5FD5-12CA-490C-B450-62B1E759FD40</a:ObjectID>
+<a:Name>结论</a:Name>
+<a:Code>verdict</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>结论
+只写入失败类结论：fatal / retriable
+@enum SyncVerdict
+  2=Fatal      业务失败（不可重试）
+  3=Retriable  暂时失败（可重试）</a:Comment>
+<a:DataType>SI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o208">
+<a:ObjectID>46685305-245B-4F65-8D5A-31400658E81C</a:ObjectID>
+<a:Name>分类码</a:Name>
+<a:Code>code</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>分类码
+如 TRANSPORT_TIMEOUT / WKB_INVALID / DB_CONSTRAINT
+@len 1..=64</a:Comment>
+<a:DataType>VA64</a:DataType>
+<a:Length>64</a:Length>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o209">
+<a:ObjectID>DC15E784-D6DD-4983-8ABD-F639F07DA601</a:ObjectID>
+<a:Name>失败阶段</a:Name>
+<a:Code>stage</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>得出结论的段
+match / mapping / guard / action / transport / verdict
+@len 1..=20</a:Comment>
+<a:DataType>VA20</a:DataType>
+<a:Length>20</a:Length>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o210">
+<a:ObjectID>3764372B-A727-4667-9BDE-DE7EDBEBED56</a:ObjectID>
+<a:Name>失败详情</a:Name>
+<a:Code>detail</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>失败详情
+守卫消息、传输错误、下游响应片段等，超长会被截断
+@len 0..=1000</a:Comment>
+<a:DataType>VA1000</a:DataType>
+<a:Length>1000</a:Length>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o211">
+<a:ObjectID>3DE62B34-13EB-414A-BB1C-E6EC37B460FC</a:ObjectID>
+<a:Name>下游状态码</a:Name>
+<a:Code>http_status</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>下游 HTTP 状态码
+没发出请求或传输失败时为空；DB 直写失败时为空</a:Comment>
+<a:DataType>SI</a:DataType>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o212">
+<a:ObjectID>C0106AD6-11A6-4FAB-99AE-50CDD255087E</a:ObjectID>
+<a:Name>耗时</a:Name>
+<a:Code>latency_ms</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>本任务从开始执行到得出结论的耗时
+@unit ms</a:Comment>
+<a:DataType>I</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o213">
+<a:ObjectID>4FF3883F-9EA8-415F-BFF3-B0BE8F5ACBCE</a:ObjectID>
+<a:Name>创建者ID</a:Name>
+<a:Code>creater_id</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>创建者ID
+系统写入，固定为 0</a:Comment>
+<a:DataType>LI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o214">
+<a:ObjectID>CC88CCA1-0D23-4804-A2D8-0408F9CFAE5E</a:ObjectID>
+<a:Name>创建时间戳</a:Name>
+<a:Code>create_ms</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>创建时间戳
+清理计划按它计算保留期
+@unit ms</a:Comment>
+<a:DataType>LI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o215">
+<a:ObjectID>60E190A6-1C23-41A6-B84C-57CD06019309</a:ObjectID>
+<a:Name>更新者ID</a:Name>
+<a:Code>updater_id</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>更新者ID
+明细只增不改，固定为 0</a:Comment>
+<a:DataType>LI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o216">
+<a:ObjectID>9DD55CC9-B920-4F34-A0F2-3CA9267EC520</a:ObjectID>
+<a:Name>更新时间戳</a:Name>
+<a:Code>update_ms</a:Code>
+<a:CreationDate>1794787905</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794787905</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>更新时间戳
+明细只增不改，与 create_ms 相同
 @unit ms</a:Comment>
 <a:DataType>LI</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
