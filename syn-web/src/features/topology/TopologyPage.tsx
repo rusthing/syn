@@ -316,9 +316,10 @@ export function TopologyPage() {
   const loading = (loadingDs || loadingTasks) && graph.nodes.length === 0;
 
   return (
-    // 整页按视口高度收口（顶栏 56 + main 上 20 + 下 48 = 124），画布吃掉剩余高度。
-    // 以前画布写死 calc(100vh-320px) + min-h-440px，小窗口必然整页滚动、卡片被裁。
-    <div className="flex h-[calc(100vh-124px)] min-h-[560px] flex-col">
+    // 控制面板独占 AppShell 剩下的全部宽高：不套 1440 阅读列，底部也不留 48px。
+    // 页面根用 flex-1 吃掉 main 的剩余高度，画布再吃掉页头/警示条之外的高度；
+    // 不再写死 calc(100vh-...)，顶栏或内边距改了也不会留一条没用的空白。
+    <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader
         title="控制面板"
         subtitle="数据源 → 数据抽取 → 主题 → 任务。画布随窗口大小自动适应；点卡片只看属性、不改视角，右下角「全图」可看整张拓扑。"
