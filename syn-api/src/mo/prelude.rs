@@ -4,6 +4,7 @@
 
 pub use super::syn_cursor::Entity as SynCursor;
 pub use super::syn_datasource::Entity as SynDatasource;
+pub use super::syn_delivery_log::Entity as SynDeliveryLog;
 pub use super::syn_idem::Entity as SynIdem;
 pub use super::syn_source::Entity as SynSource;
 pub use super::syn_task::Entity as SynTask;

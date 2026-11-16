@@ -9,6 +9,7 @@
 mod syn_canvas_layout_dao;
 mod syn_cursor_dao;
 mod syn_datasource_dao;
+mod syn_delivery_log_dao;
 mod syn_idem_dao;
 mod syn_source_dao;
 mod syn_task_dao;
@@ -17,6 +18,7 @@ mod syn_task_version_dao;
 pub use syn_canvas_layout_dao::SynCanvasLayoutDao;
 pub use syn_cursor_dao::SynCursorDao;
 pub use syn_datasource_dao::SynDatasourceDao;
+pub use syn_delivery_log_dao::SynDeliveryLogDao;
 pub use syn_idem_dao::SynIdemDao;
 pub use syn_source_dao::SynSourceDao;
 pub use syn_task_dao::SynTaskDao;

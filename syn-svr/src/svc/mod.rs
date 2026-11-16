@@ -11,6 +11,7 @@ mod syn_datasource_svc;
 mod syn_delivery_svc;
 mod syn_idem_svc;
 mod syn_overview_svc;
+mod syn_retention_svc;
 mod syn_service_svc;
 mod syn_source_svc;
 mod syn_task_svc;
@@ -21,6 +22,7 @@ pub use syn_datasource_svc::SynDatasourceSvc;
 pub use syn_delivery_svc::SynDeliverySvc;
 pub use syn_idem_svc::SynIdemSvc;
 pub use syn_overview_svc::SynOverviewSvc;
+pub use syn_retention_svc::SynRetentionSvc;
 pub use syn_service_svc::SynServiceSvc;
 pub use syn_source_svc::{SynSourceSvc, enabled_sources};
 pub use syn_task_svc::SynTaskSvc;
@@ -41,4 +43,12 @@ pub fn invalid(field: impl Into<String>, message: impl Into<String>) -> SvcError
     SvcError::Validation(
         ValidationError::new("invalid").with_message(format!("{field}: {message}").into()),
     )
+}
+
+/// # `DbErr` → `SvcError`
+///
+/// `ConnectionTrait` 直接返回的 `DbErr` 不在 `SvcError` 的 `From` 列表里，统一在这里
+/// 转成 Runtime；DAO 路径走 `DaoError`，不需要这一层。
+pub(crate) fn db_err(e: sea_orm::DbErr) -> SvcError {
+    SvcError::Runtime(anyhow::anyhow!(e.to_string()))
 }

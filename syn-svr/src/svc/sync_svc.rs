@@ -13,6 +13,9 @@
 //! （success / skip）。失败结论不记账，因为重投本来就该再试一次；把 retriable
 //! 记下来再原样返回，等于让这条记录永远不会被重试。
 //!
+//! 失败 / 重试的明细另落 `syn_delivery_log`（见 [`record_failure`]）：那张表只增不改，
+//! 用于回答「在哪一段失败、为什么、下游回了什么、花了多久」，与幂等台账互不干扰。
+//!
 //! ## 两种投递
 //!
 //! `target.kind` 决定最后一步：http 走服务名解析 + `HttpTransport`，db 走 `DbSinks`
@@ -20,13 +23,16 @@
 
 use sea_orm::{ColumnTrait, Condition};
 use serde_json::Value;
+use std::time::Instant;
 use syn_api::{SyncVerdict, TaskSpec, Verdict};
 use syn_core::{Execution, Stage};
 use wheel_rs::time_utils::now_ms;
 
-use crate::dao::SynIdemDao;
+use crate::dao::{SynDeliveryLogDao, SynIdemDao};
 use crate::db_sink::DbSinks;
-use crate::mo::syn_idem::{ActiveModel as IdemActive, Column as IdemColumn};
+use crate::mo::syn_delivery_log::ActiveModel as DeliveryActive;
+use crate::mo::syn_idem::ActiveModel as IdemActive;
+use crate::mo::syn_idem::Column as IdemColumn;
 use crate::mo::syn_idem::Model as IdemModel;
 use crate::store;
 use crate::transport::HttpTransport;
@@ -125,6 +131,7 @@ pub async fn handle(topic: &str, record: &Value, idem_key: Option<&str>) -> Sync
             continue;
         }
 
+        let started = Instant::now();
         let execution = if task.target.is_db() {
             syn_core::execute_db(task, record, &DbSinks).await
         } else {
@@ -133,18 +140,90 @@ pub async fn handle(topic: &str, record: &Value, idem_key: Option<&str>) -> Sync
                 Ok(url) => url,
                 // 部署配置问题，不是数据问题：必须显式失败，不能猜一个地址发出去
                 Err(e) => {
+                    let execution = Execution::stop(
+                        task,
+                        Verdict::Fatal,
+                        "TARGET_UNRESOLVED",
+                        Stage::Action,
+                        e.clone(),
+                    );
+                    record_failure(topic, task, idem_key, &execution, latency_ms(started)).await;
                     return SyncOutcome::fatal("TARGET_UNRESOLVED", Stage::Action, e);
                 }
             };
             syn_core::execute(task, record, &base_url, &HttpTransport).await
         };
+        let elapsed = latency_ms(started);
         if let Some(key) = idem_key {
             remember(task, key, &execution).await;
         }
+        record_failure(topic, task, idem_key, &execution, elapsed).await;
         executions.push(execution);
     }
 
     aggregate(executions)
+}
+
+/// 本任务耗时（毫秒），按 `i32` 落库；超过约 24 天也截到上限，不让一次异常把写入搞失败
+fn latency_ms(started: Instant) -> i32 {
+    started.elapsed().as_millis().min(i32::MAX as u128) as i32
+}
+
+/// # 记一条失败明细
+///
+/// 只记 fatal / retriable：success / skip 已由幂等台账负责，再写一份没有意义。
+/// 写入失败只记 debug —— 排障表不能反过来把已经算出的结论打回重试。
+async fn record_failure(
+    topic: &str,
+    task: &TaskSpec,
+    idem_key: Option<&str>,
+    execution: &Execution,
+    latency_ms: i32,
+) {
+    if !matches!(execution.verdict, Verdict::Fatal | Verdict::Retriable) {
+        return;
+    }
+    let Ok(db) = robotech::db::get_db_conn() else {
+        return;
+    };
+    let now = now_ms() as i64;
+    let mut am = DeliveryActive::default();
+    am.task_id = sea_orm::ActiveValue::Set(task.id);
+    am.task_name = sea_orm::ActiveValue::Set(truncate(&task.name, 100));
+    am.topic = sea_orm::ActiveValue::Set(truncate(topic, 255));
+    am.record_key = sea_orm::ActiveValue::Set(idem_key.map(|k| truncate(k, 255)));
+    am.verdict = sea_orm::ActiveValue::Set(i16::from(SyncVerdict::from(execution.verdict)));
+    am.code = sea_orm::ActiveValue::Set(truncate(&execution.code, 64));
+    am.stage = sea_orm::ActiveValue::Set(truncate(execution.stage.as_str(), 20));
+    am.detail = sea_orm::ActiveValue::Set(execution.detail.as_deref().map(|d| truncate(d, 1000)));
+    // DB 直写失败时没有真实 HTTP 响应，留空；传输失败同样为空
+    am.http_status = sea_orm::ActiveValue::Set(
+        execution
+            .response
+            .as_ref()
+            .and_then(|r| i16::try_from(r.status).ok()),
+    );
+    am.latency_ms = sea_orm::ActiveValue::Set(latency_ms);
+    am.creater_id = sea_orm::ActiveValue::Set(0);
+    am.updater_id = sea_orm::ActiveValue::Set(0);
+    am.create_ms = sea_orm::ActiveValue::Set(now);
+    am.update_ms = sea_orm::ActiveValue::Set(now);
+    if let Err(e) = SynDeliveryLogDao::insert(am, db.as_ref()).await {
+        tracing::debug!("投递明细写入跳过: {e}");
+    }
+}
+
+/// 按字符截断到列宽，超长时用省略号收尾（PostgreSQL 的 varchar 按字符计）
+fn truncate(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max - 1).collect();
+    out.push('…');
+    out
 }
 
 /// # 查幂等台账
@@ -235,5 +314,20 @@ fn severity(v: Verdict) -> u8 {
         Verdict::Skip => 1,
         Verdict::Retriable => 2,
         Verdict::Fatal => 3,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate;
+
+    #[test]
+    fn truncate_never_splits_a_char() {
+        assert_eq!(truncate("abc", 5), "abc");
+        // 中文按字符截断，不能按字节切（会切出半个字符导致写入失败）
+        assert_eq!(truncate("中文字符", 3).chars().count(), 3);
+        assert_eq!(truncate("中文字符", 3), "中文…");
+        // 极端列宽也不 panic
+        assert_eq!(truncate("abc", 0), "");
     }
 }

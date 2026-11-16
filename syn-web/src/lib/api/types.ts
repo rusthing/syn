@@ -404,18 +404,23 @@ export interface SyncSource extends Audit {
   last_run_ms: string | null;
   last_rows: number;
   last_error: string | null;
+  /** 保存响应里的提示（如「取数定义变更，水位已清空」），列表/详情不带 */
+  notice?: string | null;
 }
 
 /** 一次投递（执行记录） */
 export interface Delivery {
   id: string;
+  /** 数据来源：`idem` = 幂等台账（成功/跳过）；`log` = 投递明细（失败/重试） */
+  source: "idem" | "log";
   task_name: string;
   topic: string;
   op: Op | null;
   verdict: Verdict;
   code: string;
-  stage: "match" | "mapping" | "guard" | "action" | "verdict";
-  record_key: string;
+  stage: "match" | "mapping" | "guard" | "action" | "transport" | "verdict";
+  /** 记录键；自拉链路的失败明细没有 */
+  record_key: string | null;
   latency_ms: number;
   http_status: number | null;
   create_ms: string;

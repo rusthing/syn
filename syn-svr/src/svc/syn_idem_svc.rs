@@ -96,31 +96,3 @@ pub(crate) async fn task_names<C: ConnectionTrait>(
     .await?;
     Ok(tasks.into_iter().map(|m| (m.id, m.name)).collect())
 }
-
-/// # 批量取 `task_id → (名称, topic)`
-///
-/// 投递记录页要显示任务订阅的 topic，台账里只有 ID。
-pub(crate) async fn task_names_and_topics<C: ConnectionTrait>(
-    rows: &[IdemModel],
-    db: &C,
-) -> Result<HashMap<i64, (String, String)>, SvcError> {
-    let ids: Vec<i64> = rows
-        .iter()
-        .map(|r| r.task_id)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    if ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    let tasks = SynTaskDao::list_by_condition::<_, TaskModel>(
-        Condition::all().add(TaskColumn::Id.is_in(ids)),
-        &None,
-        db,
-    )
-    .await?;
-    Ok(tasks
-        .into_iter()
-        .map(|m| (m.id, (m.name, m.topic)))
-        .collect())
-}

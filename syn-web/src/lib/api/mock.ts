@@ -507,6 +507,8 @@ function buildDeliveries(): Delivery[] {
     const id = 8000 + Math.floor(rand() * 2000);
     out.push({
       id: `dlv-${String(i).padStart(5, "0")}`,
+      // 成功/跳过在幂等台账，失败/重试在投递明细 —— 与后端两张表的来源一致
+      source: verdict === "success" || verdict === "skip" ? "idem" : "log",
       task_name: t.name,
       topic: t.topic,
       op,
@@ -1004,7 +1006,7 @@ export const mockDeliveries = {
       if (query.verdict && d.verdict !== query.verdict) return false;
       if (!keyword) return true;
       return (
-        d.record_key.toLowerCase().includes(keyword) ||
+        (d.record_key ?? "").toLowerCase().includes(keyword) ||
         d.code.toLowerCase().includes(keyword) ||
         d.task_name.toLowerCase().includes(keyword)
       );

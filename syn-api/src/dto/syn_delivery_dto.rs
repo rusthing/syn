@@ -1,7 +1,7 @@
 //! # 投递记录查询
 //!
-//! 只读，且数据源是 `syn_idem`（幂等台账），不是一张独立的投递明细表 ——
-//! 见 `dto/mod.rs` 与 `vo/syn_delivery_vo.rs` 的说明。
+//! 只读。列表是 `syn_idem`（成功/跳过的幂等台账）与 `syn_delivery_log`
+//! （失败/重试的投递明细）的并集，见 `vo/syn_delivery_vo.rs` 的口径表。
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -10,7 +10,7 @@ use utoipa::ToSchema;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SynDeliveryQueryDto {
-    /// 关键字，匹配 `idem_key` / 分类码
+    /// 关键字，匹配记录键 / 分类码（两张表都匹配）
     pub keyword: Option<String>,
     /// 按任务名称精确筛
     pub task_name: Option<String>,

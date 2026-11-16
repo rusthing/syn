@@ -21,6 +21,8 @@ use crate::dao::SynTaskDao;
 use crate::mo::syn_task::{Column as TaskColumn, Model as TaskModel};
 use sea_orm::{ColumnTrait, Condition};
 
+use super::db_err;
+
 /// # 总览服务
 pub struct SynOverviewSvc;
 
@@ -230,12 +232,6 @@ fn hour_buckets(from: i64, window_ms: i64) -> Vec<i64> {
 
 fn get_i64(row: &sea_orm::QueryResult, col: &str) -> i64 {
     row.try_get("", col).unwrap_or(0)
-}
-
-/// `ConnectionTrait` 直接返回的 `DbErr` 不在 `SvcError` 的 `From` 列表里，
-/// 统一在这里转成 Runtime（DAO 路径走 `DaoError`，不需要这一层）
-fn db_err(e: sea_orm::DbErr) -> SvcError {
-    SvcError::Runtime(anyhow::anyhow!(e.to_string()))
 }
 
 #[cfg(test)]

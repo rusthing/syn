@@ -51,7 +51,7 @@ export function DeliveriesPage() {
     <>
       <PageHeader
         title="投递记录"
-        subtitle="每条记录一次结论。结论 → 状态码：成功/跳过 200、失败 400、重试 503 —— sink 只看状态码决定提交还是进死信。"
+        subtitle="成功/跳过来自幂等台账（sink 带幂等键），失败/重试来自投递明细（自拉链路也记录）。结论 → 状态码：成功/跳过 200、失败 400、重试 503 —— sink 只看状态码决定提交还是进死信。"
       />
 
       <Panel>
@@ -148,12 +148,12 @@ export function DeliveriesPage() {
             <tbody>
               {(data?.list ?? []).length === 0 && <EmptyRow colSpan={10}>没有符合条件的投递记录。</EmptyRow>}
               {(data?.list ?? []).map((d) => (
-                <tr key={d.id} className="hover:bg-sunken/50">
+                <tr key={`${d.source}-${d.id}`} className="hover:bg-sunken/50">
                   <Td mono className="whitespace-nowrap text-[11px] text-muted">
                     {formatCompact(d.create_ms)}
                   </Td>
                   <Td mono className="text-[11px]">
-                    {d.task_name}
+                    {d.task_name || "—"}
                   </Td>
                   <Td align="center" mono className="text-[11px] uppercase text-muted">
                     {d.op ?? "—"}
@@ -168,7 +168,7 @@ export function DeliveriesPage() {
                     <StageBadge stage={d.stage} />
                   </Td>
                   <Td mono className="max-w-[210px] truncate text-[10.5px] text-muted" >
-                    <span title={d.record_key}>{d.record_key}</span>
+                    <span title={d.record_key ?? ""}>{d.record_key ?? "—"}</span>
                   </Td>
                   <Td align="right" mono className="text-[11px] text-muted">
                     {d.http_status ?? "—"}

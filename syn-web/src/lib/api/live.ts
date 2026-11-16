@@ -98,6 +98,8 @@ interface WireSource {
   createMs: string;
   updaterId: string;
   updateMs: string;
+  /** 保存时后端给的提示，列表/详情没有 */
+  notice?: string | null;
 }
 
 /**
@@ -159,15 +161,17 @@ interface WirePull {
 
 interface WireDelivery {
   id: string;
+  /** `idem` = 幂等台账；`log` = 投递明细。旧响应没有这个字段时按台账处理 */
+  source?: string;
   taskName: string;
   topic?: string | null;
   op?: string | null;
   verdict: Verdict;
   code: string;
   stage: string;
-  recordKey: string;
+  recordKey?: string | null;
   latencyMs: number;
-  httpStatus: number;
+  httpStatus?: number | null;
   createMs: string;
   detail?: string | null;
 }
@@ -295,6 +299,7 @@ function toSource(v: WireSource): SyncSource {
     create_ms: v.createMs,
     updater_id: v.updaterId,
     update_ms: v.updateMs,
+    notice: v.notice ?? null,
   };
 }
 
@@ -360,13 +365,14 @@ function toSourceSaveBody(input: SourceSaveInput) {
 function toDelivery(v: WireDelivery): Delivery {
   return {
     id: v.id,
+    source: v.source === "log" ? "log" : "idem",
     task_name: v.taskName,
     topic: v.topic ?? "",
     op: (v.op ?? null) as Op | null,
     verdict: v.verdict,
     code: v.code,
     stage: v.stage as Delivery["stage"],
-    record_key: v.recordKey,
+    record_key: v.recordKey ?? null,
     latency_ms: v.latencyMs,
     http_status: v.httpStatus ?? null,
     create_ms: v.createMs,
