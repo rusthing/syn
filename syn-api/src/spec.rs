@@ -925,11 +925,37 @@ impl TaskSpec {
                     "常量行不需要变换：变换链会让常量失去「常量」的意义",
                 ));
             }
+            // 常量是字面量，不解析 JSONPath：把 `$.after.xxx` 填进 const 会被原样发给下游，
+            // 数字/布尔字段直接反序列化失败。拦住这种 from/const 串位的配置。
+            if let Some(c) = &row.const_value
+                && let Some(s) = c.as_str()
+                && s.trim_start().starts_with("$.")
+            {
+                issues.push(SpecIssue::new(
+                    &at,
+                    SpecIssueKind::Conflict,
+                    "常量值写成了取值路径（$.…）：常量是字面量、不会解析路径，请改用 from 取值",
+                ));
+            }
             if row.on_null == OnNull::Fallback && row.default.is_none() {
                 issues.push(SpecIssue::new(
                     &at,
                     SpecIssueKind::Missing,
                     "on_null=fallback 时必须填 default 兜底值",
+                ));
+            }
+            // `default` 是字面量兜底，不走变换链。把变换名（如 now_ms）填进来会被当成
+            // 字符串原样下发，数字字段反序列化失败。时间戳兜底传数字 0：下游 DAO 把 0
+            // 视同未设置并补当前时间；变换名属于 fn 链，不放在这里。
+            if row.on_null == OnNull::Fallback
+                && let Some(d) = &row.default
+                && let Some(s) = d.as_str()
+                && TRANSFORMS.contains(&s.split('(').next().unwrap_or("").trim())
+            {
+                issues.push(SpecIssue::new(
+                    &at,
+                    SpecIssueKind::Invalid,
+                    "兜底值是字面量，不能填变换名；时间戳兜底传数字 0（下游服务端补当前时间），变换名放到 fn 链",
                 ));
             }
             for (k, t) in row.transforms.iter().enumerate() {
@@ -1824,6 +1850,53 @@ mod tests {
             err.iter().any(|i| i.path == "rules[0].on"),
             "switch 的判别字段也要落在 affected 上：{err:?}"
         );
+    }
+
+    #[test]
+    fn const_path_string_is_rejected_as_misplaced_from() {
+        // createrId 行误把 `$.after.CREATOR_ID` 填进 const：常量不解析路径，
+        // 路径串会被原样发给数字字段，下游 U64 反序列化 422。
+        let mut v = base_spec();
+        v["mapping"] = json!({"rows": [
+            {"to": "createrId", "const": "$.after.CREATOR_ID"}
+        ]});
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.iter().any(|i| i.message.contains("取值路径")),
+            "const 误填路径串必须被拦下：{err:?}"
+        );
+    }
+
+    #[test]
+    fn fallback_default_transform_name_is_rejected() {
+        // 时间戳兜底把变换名 now_ms 填进 default：default 是字面量、不走变换链，
+        // 字符串 "now_ms" 下发给 U64 字段同样 422；正确做法是兜底数字 0。
+        let mut v = base_spec();
+        v["mapping"] = json!({"rows": [
+            {"to": "createMs", "from": "$.after.CREATE_TIMESTAMP",
+             "default": "now_ms", "on_null": "fallback"}
+        ]});
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.iter().any(|i| i.message.contains("变换名")),
+            "default 误用变换名必须被拦下：{err:?}"
+        );
+    }
+
+    #[test]
+    fn fallback_zero_literal_is_accepted() {
+        let mut v = base_spec();
+        v["mapping"] = json!({"rows": [
+            {"to": "createMs", "from": "$.after.CREATE_TIMESTAMP",
+             "default": 0, "on_null": "fallback"}
+        ]});
+        v["outcomes"] = json!([
+            {"scope": "status", "assert": [{"op": "in", "value": [200]}], "verdict": "success"}
+        ]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        assert!(spec.validate().is_ok(), "{:?}", spec.validate().unwrap_err());
     }
 
     #[test]
