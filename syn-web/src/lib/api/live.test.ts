@@ -323,6 +323,8 @@ describe("liveDatasources", () => {
     expect(rows[0]).toEqual({
       id: "18446744073709551615", // U64 不被 Number 截断
       code: "dtw",
+      // 后端 VO 没带 engine 时按 postgres 兜底（多驱动之前的数据源都是 PG）
+      engine: "postgres",
       name: "定位库",
       target: "pgsql:5432/dtwrs_ui",
       maxConnections: 4,
@@ -338,6 +340,7 @@ describe("liveDatasources", () => {
     expect(rows[1]).toEqual({
       id: "42",
       code: "adm",
+      engine: "postgres",
       name: "人员库",
       target: null,
       maxConnections: 8,
