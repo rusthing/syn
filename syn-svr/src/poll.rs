@@ -155,10 +155,10 @@ async fn pull_sql(
     let rows = fetched;
     deliver(&source.topic, &rows, &mut out).await;
 
-    // 只有连续成功的行能推进水位：水位取**本批最后一条已投递行自己的位置**。
-    // 不能用「整批最后一行的位置」——deliver 遇到第一条 fatal/retriable 就停，
+    // 水位取**本批最后一条已越过行自己的位置**。
+    // 不能用「整批最后一行的位置」——deliver 遇到第一条 retriable 就停，
     // 那之后的行还没投递，水位跳过去就再也不会重跑了（静默丢数据）。
-    // 停在上一个成功行，下一轮重跑失败行及其后所有行（重复由下游 upsert 吸收）。
+    // fatal 行已进死信、越过不回头；retriable 行停在上一个已越过行，下一轮重跑它及其后所有行。
     let advanced = out.rows;
     let new_position = last_delivered_position(&rows, advanced);
     let error = out.stalled.clone();
@@ -239,7 +239,7 @@ async fn pull_snapshot(
 
         let stalled = out.stalled.clone();
         if let Some(reason) = stalled {
-            // 快照没有逐行水位：被卡住就整轮作废，下一轮从第 1 批重拉
+            // 快照没有逐行水位：遇到暂时失败就整轮作废，下一轮从第 1 批重拉（fatal 已越过）
             save_error(cursor, run_ms, Some(reason.as_str())).await?;
             out.full_done = Some(false);
             out.duration_ms = started.elapsed().as_millis() as u64;
@@ -332,7 +332,7 @@ async fn pull_http(
 
     deliver(&source.topic, &page.rows, &mut out).await;
 
-    // 有行被卡住：水位不动，下一轮重拉同一页（重复由下游 upsert 吸收）
+    // 有暂时失败的行：水位不动，下一轮重拉同一页（重复由下游 upsert 吸收；fatal 已越过）
     if out.stalled.is_some() {
         save_error(cursor, run_ms, out.stalled.as_deref()).await?;
         out.full_done = Some(false);
@@ -380,8 +380,13 @@ async fn pull_http(
 
 /// # 逐行走投递链路
 ///
-/// 与 sink 推送完全同一条链路（`svc::handle`）。遇到第一条 fatal / retriable 就停，
-/// 把原因记进 `stalled`；调用方据此决定「水位不动」。
+/// 与 sink 推送完全同一条链路（`svc::handle`）。
+///
+/// 结论分两类处置：
+/// - **Retriable（暂时失败）**：中断本批，把原因记进 `stalled`，水位停在已推进前缀，
+///   下一轮重跑这行及其后所有行（重复由下游 upsert 吸收）。
+/// - **Fatal（永久失败）**：明细已在 `record_failure` 进死信台账，重试多少次结果都一样；
+///   越过这行继续投下一行，水位随之推进，不让一条脏行堵死整队干净数据。
 async fn deliver(topic: &str, rows: &[FetchedRow], out: &mut SynSourcePullVo) {
     for row in rows {
         let outcome = handle(topic, &row.record, None).await;
@@ -391,7 +396,8 @@ async fn deliver(topic: &str, rows: &[FetchedRow], out: &mut SynSourcePullVo) {
             Verdict::Fatal => out.fatal += 1,
             Verdict::Retriable => out.retriable += 1,
         }
-        if matches!(outcome.verdict, Verdict::Fatal | Verdict::Retriable) {
+        let (break_batch, advance) = disposition(outcome.verdict);
+        if break_batch {
             out.stalled = Some(format!(
                 "{} / {}: {}",
                 outcome.code,
@@ -400,7 +406,24 @@ async fn deliver(topic: &str, rows: &[FetchedRow], out: &mut SynSourcePullVo) {
             ));
             break;
         }
-        out.rows += 1;
+        if advance {
+            // Success / Skip / Fatal 都越过本批游标：Fatal 已进死信，不再回头重跑
+            out.rows += 1;
+        }
+    }
+}
+
+/// # 投递结论 → 本批处置
+///
+/// 返回 `(是否中断本批, 是否把水位越过这行)`。
+/// - Retriable：中断且不越过——暂时失败，下一轮重跑这行及其后。
+/// - Fatal：不中断、越过——永久失败已进死信，继续投后续干净行。
+/// - Success / Skip：不中断、越过。
+fn disposition(verdict: Verdict) -> (bool, bool) {
+    match verdict {
+        Verdict::Retriable => (true, false),
+        Verdict::Fatal => (false, true),
+        Verdict::Success | Verdict::Skip => (false, true),
     }
 }
 
@@ -417,10 +440,10 @@ struct FetchedRow {
     position: Option<String>,
 }
 
-/// 本批已投递前缀里最后一行的水位。
+/// 本批已越过前缀里最后一行的水位。
 ///
-/// `delivered` 是 `deliver` 累计的成功/跳过行数，它只会是一个连续前缀：
-/// 遇到第一条 fatal/retriable 就停，后面的行还没投递。水位必须停在**这一行**，
+/// `delivered` 是 `deliver` 累计的成功/跳过/致命失败行数，它只会是一个连续前缀：
+/// 遇到第一条 retriable 就停，后面的行还没投递。水位必须停在**这一行**，
 /// 否则下一轮会跳过未投递的行。
 fn last_delivered_position(rows: &[FetchedRow], delivered: u64) -> Option<String> {
     let delivered = usize::try_from(delivered).ok()?;
@@ -1282,5 +1305,14 @@ mod tests {
         );
         // 防御：投递数超出批大小时不 panic
         assert_eq!(last_delivered_position(&rows, 99), None);
+    }
+
+    #[test]
+    fn disposition_breaks_only_on_retriable() {
+        // 永久失败（fatal）不中断队列、水位越过；只有暂时失败（retriable）中断并持水位
+        assert_eq!(disposition(Verdict::Success), (false, true));
+        assert_eq!(disposition(Verdict::Skip), (false, true));
+        assert_eq!(disposition(Verdict::Fatal), (false, true));
+        assert_eq!(disposition(Verdict::Retriable), (true, false));
     }
 }
