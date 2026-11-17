@@ -684,13 +684,16 @@ fn quote_col(alias: &str, raw: &str, dialect: Dialect) -> Result<String, String>
 /// # SELECT 列表
 ///
 /// 整行取法按方言分叉，`extra` 是附加列（游标 k0/k1）：
-/// - PG：`to_jsonb(s) as row`，整行转 jsonb，上层按 JSON 解析；
+/// - PG：`to_jsonb(s)::text as row`，整行转 jsonb 再转文本，上层按 JSON 解析；
 /// - MySQL 5.7：没有整行转 JSON 的函数（无 `to_json`、也不能展开行别名），取裸列
 ///   `s.*`，由 `row_from_row` 按列名拼装对象（与 SQLite 同一兜底）；
 /// - SQLite：直出结果集，走别名兜底。
 fn build_select_list(dialect: Dialect, alias: &str, extra: &[String]) -> String {
     let head = match dialect {
-        Dialect::Postgres => format!("to_jsonb({alias}) as row"),
+        // 整行转 jsonb 后再 ::text：sqlx 的 Any driver 不识别 PG 的 jsonb 类型，
+        // 直接取 jsonb 列会在解码阶段报 "Any driver does not support the Postgres type"；
+        // 转成文本后由 row_from_row 按 JSON 字符串解析，跨驱动一致。
+        Dialect::Postgres => format!("to_jsonb({alias})::text as row"),
         Dialect::Mysql => format!("{alias}.*"),
         Dialect::Sqlite => format!("{alias} as row"),
     };
@@ -1193,7 +1196,7 @@ mod tests {
         let extra = vec!["s.\"ID\" as k1".to_string()];
         assert_eq!(
             build_select_list(Dialect::Postgres, "s", &extra),
-            "to_jsonb(s) as row, s.\"ID\" as k1"
+            "to_jsonb(s)::text as row, s.\"ID\" as k1"
         );
         // MySQL 5.7 没有整行转 JSON 的函数：取裸列，由 row_from_row 按列名拼装
         assert_eq!(
