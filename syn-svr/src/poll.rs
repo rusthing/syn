@@ -457,10 +457,12 @@ async fn fetch_sql(
         .map(|p| serde_json::from_str(p).unwrap_or_else(|_| vec![p.to_string()]))
         .filter(|v| v.len() == 2);
 
-    let col_list = row_json_cols(spec, dialect, "s")?;
-    let mut sql = format!(
-        "select {col_list} as row, {c} as k0, {t} as k1 from {from} s"
-    );
+    let extra = vec![
+        format!("{c} as k0"),
+        format!("{t} as k1"),
+    ];
+    let select_list = build_select_list(dialect, "s", &extra);
+    let mut sql = format!("select {select_list} from {from} s");
     let mut conds: Vec<String> = Vec::new();
     if let Some(_values) = values.as_ref() {
         let c0 = dialect.cast_expr("$1", spec.cursor_type);
@@ -528,14 +530,14 @@ async fn fetch_snapshot_page(
         .map_err(|e| format!("{}: {}", e.code, e.detail))?;
     let dialect = dialect_of(engine);
     let from = row_source(spec, dialect)?;
-    let col_list = row_json_cols(spec, dialect, "s")?;
+    let select_list = build_select_list(dialect, "s", &[]);
     let sql = if spec.snapshot_batched {
         format!(
-            "select {col_list} as row from {from} s limit {} offset {offset}",
+            "select {select_list} from {from} s limit {} offset {offset}",
             source.batch_size.max(1)
         )
     } else {
-        format!("select {col_list} as row from {from} s")
+        format!("select {select_list} from {from} s")
     };
 
     let rows = fetch_rows(datasource, &sql, None).await?;
@@ -654,17 +656,22 @@ fn quote_col(alias: &str, raw: &str, dialect: Dialect) -> Result<String, String>
     Ok(format!("{}.{}", alias, dialect.quote_ident(raw)))
 }
 
-/// # 整行包成 JSON 的表达式
+/// # SELECT 列表
 ///
-/// 表来源（非手写 SQL）按整行 JSON 函数包裹；手写 SQL 由用户语句自己产出结果集，
-/// 这里只把整行原样取回，不再二次包 JSON。
-fn row_json_cols(_spec: &SourceSpec, dialect: Dialect, alias: &str) -> Result<String, String> {
-    match dialect {
-        Dialect::Postgres => Ok(format!("to_jsonb({alias})")),
-        Dialect::Mysql => Ok(format!("to_json({alias})")),
-        // SQLite 没有整行 json 函数：取整行交给上层按列拼装（见 row_from_row）
-        Dialect::Sqlite => Ok(alias.to_string()),
-    }
+/// 整行取法按方言分叉，`extra` 是附加列（游标 k0/k1）：
+/// - PG：`to_jsonb(s) as row`，整行转 jsonb，上层按 JSON 解析；
+/// - MySQL 5.7：没有整行转 JSON 的函数（无 `to_json`、也不能展开行别名），取裸列
+///   `s.*`，由 `row_from_row` 按列名拼装对象（与 SQLite 同一兜底）；
+/// - SQLite：直出结果集，走别名兜底。
+fn build_select_list(dialect: Dialect, alias: &str, extra: &[String]) -> String {
+    let head = match dialect {
+        Dialect::Postgres => format!("to_jsonb({alias}) as row"),
+        Dialect::Mysql => format!("{alias}.*"),
+        Dialect::Sqlite => format!("{alias} as row"),
+    };
+    let mut cols = vec![head];
+    cols.extend(extra.iter().cloned());
+    cols.join(", ")
 }
 
 /// 源库标识符：大小写都收，拼进 SQL 前一律按方言包引号（`quote_table` / `quote_col`），
@@ -1154,6 +1161,21 @@ mod tests {
             "\"CRM\".\"WS_DEVICE\""
         );
         assert_eq!(quote_col("s", "UPDATE_TIME", dialect).unwrap(), "s.\"UPDATE_TIME\"");
+    }
+
+    #[test]
+    fn select_list_wraps_row_per_dialect() {
+        let extra = vec!["s.\"ID\" as k1".to_string()];
+        assert_eq!(
+            build_select_list(Dialect::Postgres, "s", &extra),
+            "to_jsonb(s) as row, s.\"ID\" as k1"
+        );
+        // MySQL 5.7 没有整行转 JSON 的函数：取裸列，由 row_from_row 按列名拼装
+        assert_eq!(
+            build_select_list(Dialect::Mysql, "s", &extra),
+            "s.*, s.\"ID\" as k1"
+        );
+        assert_eq!(build_select_list(Dialect::Sqlite, "s", &[]), "s as row");
     }
 
     #[test]
