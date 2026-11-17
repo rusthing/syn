@@ -550,19 +550,33 @@ async fn fetch_snapshot_page(
     offset: u64,
 ) -> Result<Vec<FetchedRow>, String> {
     let datasource = spec.datasource.as_deref().ok_or("spec.datasource 缺失")?;
-    let (_, engine) = DbSinks::pool_for(datasource)
+    let (pool, engine) = DbSinks::pool_for(datasource)
         .await
         .map_err(|e| format!("{}: {}", e.code, e.detail))?;
     let dialect = dialect_of(engine);
     let from = row_source(spec, dialect)?;
-    let select_list = build_select_list(dialect, "s", &[]);
+    // MySQL 裸列 `s.*` 会让 sqlx Any driver 在解码阶段拒绝 TINYINT 等类型；
+    // 先按 information_schema 核一遍真实列，整行拼成 JSON 文本列 `row`，
+    // 数值/标志位都在 SQL 层转成字符串，解码只认文本，与 PG 的 to_jsonb(s)::text 同口径。
+    let row_expr = match dialect {
+        Dialect::Mysql => {
+            let table = spec.table_or_empty();
+            let cols = DbSinks::columns(datasource, &pool, engine, table)
+                .await
+                .map_err(|e| format!("{}: {}", e.code, e.detail))?;
+            let mut ordered: Vec<&String> = cols.iter().collect();
+            ordered.sort();
+            mysql_row_json(&ordered, dialect)?
+        }
+        _ => build_select_list(dialect, "s", &[]),
+    };
     let sql = if spec.snapshot_batched {
         format!(
-            "select {select_list} from {from} s limit {} offset {offset}",
+            "select {row_expr} from {from} s limit {} offset {offset}",
             source.batch_size.max(1)
         )
     } else {
-        format!("select {select_list} from {from} s")
+        format!("select {row_expr} from {from} s")
     };
 
     let rows = fetch_rows(datasource, &sql, None).await?;
@@ -681,12 +695,44 @@ fn quote_col(alias: &str, raw: &str, dialect: Dialect) -> Result<String, String>
     Ok(format!("{}.{}", alias, dialect.quote_ident(raw)))
 }
 
+/// # MySQL 整行 JSON 文本表达式
+///
+/// sqlx Any driver 只把 `Short/Long/LongLong/Float/Double` 映射成整数/浮点 kind，
+/// 对 `Tiny`（`TINYINT`，含 UNSIGNED）既无整数映射、也不兼容字符串/二进制，
+/// `fetch_all` 在解码阶段就报 "Any driver does not support MySql type"。裸列 `s.*`
+/// 会让整批行都折在这一步，即使上层根本没取这一列。
+///
+/// 与 PG 的 `to_jsonb(s)::text as row` 同口径：在 SQL 层把整行包成一个 JSON 对象，
+/// 每个值先 `CAST(... AS CHAR)` 转成文本（标志位/数值都退化成字符串），外层再
+/// `CAST(... AS CHAR)` 让结果列是普通字符串，解码只走文本分支，不再碰底层数值类型。
+///
+/// 列名来自 `information_schema` 内省结果，逐个过标识符白名单后再拼，不接受配置里
+/// 的原始列名直接进 SQL。
+fn mysql_row_json(cols: &[&String], dialect: Dialect) -> Result<String, String> {
+    let mut pairs = Vec::with_capacity(cols.len());
+    for col in cols {
+        let quoted = quote_col("s", col, dialect)?;
+        // 每列值先转文本：Tiny/数值/时间戳都按字符串进 JSON，空值由 JSON 自己留 null
+        pairs.push(format!(
+            "'{}', CAST({quoted} AS CHAR)",
+            escape_json_key(col)
+        ));
+    }
+    let object = format!("JSON_OBJECT({})", pairs.join(", "));
+    Ok(format!("CAST({object} AS CHAR) AS row"))
+}
+
+/// JSON_OBJECT 键名只收白名单标识符（`[A-Za-z_][A-Za-z0-9_]*`），这里再兜一道转义，
+/// 防止极端列名把单引号带进 SQL。白名单已挡引号，常规列名原样返回。
+fn escape_json_key(raw: &str) -> String {
+    raw.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
 /// # SELECT 列表
 ///
 /// 整行取法按方言分叉，`extra` 是附加列（游标 k0/k1）：
 /// - PG：`to_jsonb(s)::text as row`，整行转 jsonb 再转文本，上层按 JSON 解析；
-/// - MySQL 5.7：没有整行转 JSON 的函数（无 `to_json`、也不能展开行别名），取裸列
-///   `s.*`，由 `row_from_row` 按列名拼装对象（与 SQLite 同一兜底）；
+/// - MySQL 快照：整行 JSON 文本（见 [`mysql_row_json`]），绕开 Tiny 等类型的解码拒绝；
 /// - SQLite：直出结果集，走别名兜底。
 fn build_select_list(dialect: Dialect, alias: &str, extra: &[String]) -> String {
     let head = match dialect {
@@ -694,6 +740,8 @@ fn build_select_list(dialect: Dialect, alias: &str, extra: &[String]) -> String 
         // 直接取 jsonb 列会在解码阶段报 "Any driver does not support the Postgres type"；
         // 转成文本后由 row_from_row 按 JSON 字符串解析，跨驱动一致。
         Dialect::Postgres => format!("to_jsonb({alias})::text as row"),
+        // 游标增量路径：游标列由手写 SQL 自行 CAST，裸列兜底；裸列的 Tiny 解码问题
+        // 只在快照路径暴露，快照已改走 [`mysql_row_json`] 整行 JSON 文本。
         Dialect::Mysql => format!("{alias}.*"),
         Dialect::Sqlite => format!("{alias} as row"),
     };
@@ -1204,6 +1252,24 @@ mod tests {
             "s.*, s.\"ID\" as k1"
         );
         assert_eq!(build_select_list(Dialect::Sqlite, "s", &[]), "s as row");
+    }
+
+    #[test]
+    fn mysql_snapshot_wraps_row_as_json_text() {
+        let cols: Vec<&String> = ["ID", "CODE", "IS_ENABLED"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let expr = mysql_row_json(&cols, Dialect::Mysql).unwrap();
+        // 每列值先 CAST 成文本，整行再 CAST 成 CHAR 结果列，列名固定为 row
+        assert_eq!(
+            expr,
+            "CAST(JSON_OBJECT('ID', CAST(s.`ID` AS CHAR)), 'CODE', CAST(s.`CODE` AS CHAR)), \
+             'IS_ENABLED', CAST(s.`IS_ENABLED` AS CHAR)) AS CHAR) AS row"
+        );
+        // 非白名单标识符拒绝拼接
+        let bad: Vec<&String> = vec!["ID; DROP TABLE x".to_string()].iter().collect();
+        assert!(mysql_row_json(&bad, Dialect::Mysql).is_err());
     }
 
     #[test]

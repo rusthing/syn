@@ -147,8 +147,10 @@ impl DbSinks {
     }
 
     /// 表的列白名单（首次访问时从 information_schema 读一次）
-    async fn columns(
-        &self,
+    ///
+    /// `pub(crate)`：DB 直写与 SQL 快照抽取共用 —— MySQL 快照要按真实列名拼整行
+    /// JSON 表达式，列名同样必须先在内省结果里核过，不能从配置里直接拼进 SQL。
+    pub(crate) async fn columns(
         datasource: &str,
         pool: &AnyPool,
         engine: DbEngine,
@@ -293,8 +295,7 @@ impl DbWriter for DbSinks {
         row: &Map<String, Value>,
     ) -> Result<u64, DbError> {
         let (pool, engine) = Self::pool_for(&target.datasource).await?;
-        let columns = self
-            .columns(&target.datasource, &pool, engine, &target.table)
+        let columns = Self::columns(&target.datasource, &pool, engine, &target.table)
             .await?;
 
         // 映射的每一列都必须真实存在：拼错一个列名，PG 报的是 42703，
