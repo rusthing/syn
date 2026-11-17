@@ -1,9 +1,11 @@
 /**
  * # 泳道画布（学习 uiam 网关配置图的结构）
  *
- * 一张 CSS Grid 泳道：数据源 → 数据抽取 → 主题 → 任务，列固定、行由引用关系决定
- * （见 `lanes.ts`）。节点不再自由拖拽、坐标不再入库 —— 图永远按当前配置自动排布；
- * 唯一可拖的是任务卡上的把手，用来在同一主题泳道内调整匹配顺序（sort_order）。
+ * 一张 CSS Grid 泳道：数据源 → 数据抽取 → 主题 → 任务，列的**顺序**固定、**宽度**可调，
+ * 行由引用关系决定（见 `lanes.ts`）。节点不再自由拖拽、坐标不再入库 —— 图永远按当前
+ * 配置自动排布；唯一可拖的除了任务卡上的把手（同泳道内调匹配顺序 sort_order），就是
+ * 题头右缘的列宽把手：拖自己那列、双击复位，结果写 localStorage（见 `layout-prefs.ts`），
+ * 换机不带走。
  *
  * ## 为什么连线用「测量 + SVG 贝塞尔」而不是 CSS 直线
  *
@@ -49,6 +51,14 @@ import {
   TopicCard,
   type HintHandler,
 } from "./TopologyCards";
+import {
+  clampLaneColumn,
+  DEFAULT_LANE_COLUMNS,
+  LANE_COLUMNS_KEY,
+  normalizeLaneColumns,
+  readPref,
+  writePref,
+} from "./layout-prefs";
 
 const ZOOM_MIN = 0.4;
 const ZOOM_MAX = 1.8;
@@ -154,6 +164,87 @@ export function TopologyCanvas({
   const [scroll, setScroll] = useState({ left: 0, top: 0 });
   const [mapOpen, setMapOpen] = useState(true);
   const [hint, setHint] = useState<Hint | null>(null);
+
+  /* -------------------------------- 列宽 -------------------------------- */
+
+  /**
+   * 四列的宽度。初值读 localStorage（脏值先被 `normalizeLaneColumns` 收一遍），
+   * 拖动题头右侧的把手改，**松手才写回** —— 每帧写一次 localStorage 会拖慢拖拽。
+   * 题头与网格共用同一个 `gridTemplate`，两边才不会错位（它们是两个独立的 grid）。
+   */
+  const [cols, setCols] = useState<number[]>(() =>
+    normalizeLaneColumns(readPref(LANE_COLUMNS_KEY)),
+  );
+  const colsRef = useRef(cols);
+  useEffect(() => {
+    colsRef.current = cols;
+  }, [cols]);
+
+  /** 正在拖的列：起点、起始宽度、整份快照（按 Esc 要能整条退回） */
+  const colDrag = useRef<{ index: number; startX: number; startW: number; snapshot: number[] } | null>(
+    null,
+  );
+  const [resizingCol, setResizingCol] = useState<number | null>(null);
+
+  const gridTemplate = cols.map((w) => `${w}px`).join(" ");
+
+  const startColDrag = (index: number) => (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    colDrag.current = { index, startX: event.clientX, startW: cols[index], snapshot: cols };
+    setResizingCol(index);
+  };
+
+  /** 双击把手：这一列回到默认宽度，其它列不动 */
+  const resetCol = (index: number) => (event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const next = cols.map((w, i) => (i === index ? DEFAULT_LANE_COLUMNS[index] : w));
+    setCols(next);
+    writePref(LANE_COLUMNS_KEY, next);
+  };
+
+  useEffect(() => {
+    if (resizingCol === null) return;
+    const drag = colDrag.current;
+    if (!drag) return;
+
+    // 画布是布局级 zoom：指针走 N 个屏幕像素，网格只该长 N / zoom 个 CSS 像素
+    const move = (event: PointerEvent) => {
+      const width = clampLaneColumn(drag.index, drag.startW + (event.clientX - drag.startX) / zoomRef.current);
+      setCols((prev) =>
+        prev[drag.index] === width ? prev : prev.map((w, i) => (i === drag.index ? width : w)),
+      );
+    };
+    const finish = (commit: boolean) => {
+      colDrag.current = null;
+      setResizingCol(null);
+      if (commit) writePref(LANE_COLUMNS_KEY, colsRef.current);
+      else setCols(drag.snapshot);
+    };
+    const up = () => finish(true);
+    const cancel = () => finish(false);
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") finish(false);
+    };
+    // 拖列时整页都是「列宽光标」：否则指针一划过卡片就变 pointer，看着像拖不动
+    const prevCursor = document.body.style.cursor;
+    const prevSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", key);
+    return () => {
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevSelect;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("keydown", key);
+    };
+  }, [resizingCol]);
 
   /* -------------------------------- 悬停说明 -------------------------------- */
 
@@ -400,6 +491,43 @@ export function TopologyCanvas({
 
   const isEmpty = graph.nodes.length === 0;
 
+  /**
+   * 题头：文字截断 + 可选的新建按钮 + 右缘的列宽把手。
+   * 把手挂在**自己这一列的右缘**，拖它就改自己——不牵连相邻列，四列各有一条，
+   * 位置彼此不重叠（都落在 40px 的列间距里）。
+   */
+  const columnHead = (
+    index: number,
+    label: string,
+    name: string,
+    addKind?: "datasource" | "source" | "task",
+  ) => (
+    <div className="tl-h">
+      <span className="tl-h-text">{label}</span>
+      {onAdd && addKind && (
+        <button
+          type="button"
+          className="tl-h-add"
+          title={`新建${NODE_KIND_LABEL[addKind]}`}
+          aria-label={`新建${NODE_KIND_LABEL[addKind]}`}
+          onClick={() => onAdd(addKind)}
+        >
+          <Plus size={11} />
+        </button>
+      )}
+      <button
+        type="button"
+        className={cn("tl-colgrip", resizingCol === index && "on")}
+        title={`${name}列宽 ${cols[index]}px · 拖动调整，双击复位`}
+        aria-label={`拖动调整「${name}」列宽，双击复位`}
+        onPointerDown={startColDrag(index)}
+        onDoubleClick={resetCol(index)}
+        // 点把手别把画布的「点空白清选中」带出来：拖完还会补一个 click
+        onClick={(event) => event.stopPropagation()}
+      />
+    </div>
+  );
+
   /* -------------------------------- 渲染 -------------------------------- */
 
   const cell = (
@@ -516,32 +644,11 @@ export function TopologyCanvas({
         className="tl-scroll"
       >
         <div className="tl-stage" style={{ zoom, width: view.w || undefined }}>
-          <div className="tl-head">
-            <div className="tl-h">
-              <span>数据源</span>
-              {onAdd && (
-                <button type="button" className="tl-h-add" title="新建数据源" aria-label="新建数据源" onClick={() => onAdd("datasource")}>
-                  <Plus size={11} />
-                </button>
-              )}
-            </div>
-            <div className="tl-h">
-              <span>数据抽取 · 拉到主题</span>
-              {onAdd && (
-                <button type="button" className="tl-h-add" title="新建数据抽取" aria-label="新建数据抽取" onClick={() => onAdd("source")}>
-                  <Plus size={11} />
-                </button>
-              )}
-            </div>
-            <div className="tl-h"><span>主题 · 数据总线</span></div>
-            <div className="tl-h">
-              <span>任务 · 按匹配顺序，命中即停（可拖动排序）</span>
-              {onAdd && (
-                <button type="button" className="tl-h-add" title="新建任务" aria-label="新建任务" onClick={() => onAdd("task")}>
-                  <Plus size={11} />
-                </button>
-              )}
-            </div>
+          <div className="tl-head" style={{ gridTemplateColumns: gridTemplate }}>
+            {columnHead(0, "数据源", "数据源", "datasource")}
+            {columnHead(1, "数据抽取 · 拉到主题", "数据抽取", "source")}
+            {columnHead(2, "主题 · 数据总线", "主题")}
+            {columnHead(3, "任务 · 按匹配顺序，命中即停（可拖动排序）", "任务", "task")}
           </div>
 
           <div className={cn("tl-wrap", drag && "dragging")} ref={wrapRef}>
@@ -580,7 +687,10 @@ export function TopologyCanvas({
               <div className="tl-dropline" style={{ left: dropLine.x, top: dropLine.y, width: dropLine.w }} aria-hidden />
             )}
 
-            <div className="tl-grid" style={{ gridTemplateRows: `repeat(${model.rows}, auto)` }}>
+            <div
+              className="tl-grid"
+              style={{ gridTemplateColumns: gridTemplate, gridTemplateRows: `repeat(${model.rows}, auto)` }}
+            >
               {model.lanes.map((lane, laneIndex) => (
                 <Fragment key={lane.key}>
                   {/* 数据源：全局去重，落在第一条引用它的抽取那一行 */}

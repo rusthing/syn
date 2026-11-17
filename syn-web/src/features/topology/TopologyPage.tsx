@@ -478,7 +478,7 @@ export function TopologyPage() {
     <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader
         title="控制面板"
-        subtitle="一个主题一条泳道：数据源 → 数据抽取 → 主题 → 任务。图按引用关系自动排布；拖动任务把手改匹配顺序，双击卡片进编辑。"
+        subtitle="一个主题一条泳道：数据源 → 数据抽取 → 主题 → 任务。图按引用关系自动排布；题头右缘拖动可调列宽（本机记住、双击复位），拖动任务把手改匹配顺序，双击卡片进编辑。"
         actions={
           <>
             <Button

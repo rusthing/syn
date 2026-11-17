@@ -14,8 +14,15 @@
  * 所以属性栏不可能和画布不一致。
  */
 
-import type { ReactNode } from "react";
-import { ArrowLeft, MousePointerClick, TriangleAlert, X } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  ArrowLeft,
+  MousePointerClick,
+  PanelRightClose,
+  PanelRightOpen,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { IconButton } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
@@ -25,6 +32,14 @@ import { conditionText, ruleSummary, verdictRules } from "@/lib/spec/rules";
 import { analyzeRules } from "@/lib/spec/analyze";
 import { verdictMeta } from "@/lib/spec/defaults";
 import { targetDetail, targetSummary, type GraphNode, type TaskSegment, type TaskStage } from "./graph";
+import {
+  clampInspectorWidth,
+  DEFAULT_INSPECTOR_WIDTH,
+  INSPECTOR_KEY,
+  normalizeInspectorPrefs,
+  readPref,
+  writePref,
+} from "./layout-prefs";
 
 const KIND_LABEL: Record<GraphNode["kind"], string> = {
   datasource: "数据源",
@@ -379,33 +394,145 @@ interface Props {
 export function TopologyInspector({ node, stage, onSelectStage, onClose, test, summary }: Props) {
   const detail = node?.task && stage ? stage : null;
 
+  /* --------------------------- 宽度与收起 / 展开 --------------------------- */
+
+  /**
+   * 宽度和「收起」都是本机习惯，只写 localStorage（见 `layout-prefs.ts`）：
+   * 概览在 292px 里够用，一条长连接串或六段条件就不够；想临时把画布铺满时又要能收掉。
+   */
+  const [prefs, setPrefs] = useState(() => normalizeInspectorPrefs(readPref(INSPECTOR_KEY)));
+  const prefsRef = useRef(prefs);
+  useEffect(() => {
+    prefsRef.current = prefs;
+  }, [prefs]);
+
+  const [dragging, setDragging] = useState(false);
+  /** 起点、起始宽度、原始宽度（按 Esc 退回） */
+  const drag = useRef<{ startX: number; startW: number; snapshot: number } | null>(null);
+
+  /** 一次改两件（宽度 / 收起）都得落盘，写在一个入口里免得漏 */
+  const persist = (next: typeof prefs) => {
+    setPrefs(next);
+    writePref(INSPECTOR_KEY, next);
+  };
+
+  const toggleCollapsed = () => persist({ ...prefs, collapsed: !prefs.collapsed });
+
+  /** 双击左缘把手：宽度回默认，收起状态不动 */
+  const resetWidth = () => persist({ ...prefs, width: DEFAULT_INSPECTOR_WIDTH });
+
+  const startResize = (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    drag.current = { startX: event.clientX, startW: prefs.width, snapshot: prefs.width };
+    setDragging(true);
+  };
+
+  useEffect(() => {
+    if (!dragging) return;
+    const start = drag.current;
+    if (!start) return;
+
+    // 往左拖 = 变宽（属性栏在右边，抓的是它的左缘）
+    const move = (event: PointerEvent) => {
+      const width = clampInspectorWidth(start.startW + (start.startX - event.clientX));
+      setPrefs((prev) => (prev.width === width ? prev : { ...prev, width }));
+    };
+    const finish = (commit: boolean) => {
+      drag.current = null;
+      setDragging(false);
+      if (commit) writePref(INSPECTOR_KEY, prefsRef.current);
+      else setPrefs((prev) => ({ ...prev, width: start.snapshot }));
+    };
+    const up = () => finish(true);
+    const cancel = () => finish(false);
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") finish(false);
+    };
+    // 拖动期间整页锁定成列宽光标，否则光标一进内容区就变 pointer
+    const prevCursor = document.body.style.cursor;
+    const prevSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", key);
+    return () => {
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevSelect;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("keydown", key);
+    };
+  }, [dragging]);
+
+  /**
+   * 收起时留一条窄轨，而不是整块消失：消失之后没人知道它去哪了。
+   * 窄轨本身就是重新展开的按钮，收起状态也记在 localStorage。
+   */
+  if (prefs.collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={toggleCollapsed}
+        title="展开属性栏"
+        aria-label="展开属性栏"
+        className="flex w-8 shrink-0 flex-col items-center justify-center gap-2.5 rounded-[14px] border border-line bg-surface text-muted transition-colors hover:border-line-strong hover:text-accent"
+      >
+        <PanelRightOpen className="size-3.5" />
+        <span className="text-[11.5px] tracking-wide [writing-mode:vertical-rl]">属性</span>
+      </button>
+    );
+  }
+
   return (
-    <aside className="flex min-h-0 w-[248px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-surface xl:w-[292px]">
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-3 py-2.5">
-        <div className="flex min-w-0 items-center gap-1.5">
-          {detail ? (
-            <button
-              type="button"
-              onClick={() => onSelectStage(null)}
-              className="flex items-center gap-1 rounded-md px-1 py-0.5 text-[12.5px] font-medium text-ink-soft hover:bg-sunken hover:text-ink"
-            >
-              <ArrowLeft className="size-3.5" />
-              返回
-            </button>
-          ) : (
-            <MousePointerClick className="size-3.5 text-accent" />
-          )}
-          <span className="truncate text-[12.5px] font-semibold text-ink">
-            {detail ? `${STAGE_TITLE[detail]} · 详情` : "属性"}
-          </span>
-          {node && !detail && <span className="text-[11.5px] text-muted">· {KIND_LABEL[node.kind]}</span>}
-        </div>
-        {node && (
-          <IconButton label="关闭属性栏" onClick={onClose}>
-            <X className="size-3.5" />
-          </IconButton>
-        )}
-      </header>
+    <div className="relative flex min-h-0 shrink-0">
+      {/* 左缘把手坐在 10px 的列间距里，不压画布内容 */}
+      <button
+        type="button"
+        className={cn("tl-panel-grip", dragging && "on")}
+        title={`拖动调整属性栏宽度（当前 ${prefs.width}px，双击复位）`}
+        aria-label="拖动调整属性栏宽度，双击复位"
+        onPointerDown={startResize}
+        onDoubleClick={resetWidth}
+        onClick={(event) => event.stopPropagation()}
+      />
+      <aside
+        style={{ width: prefs.width }}
+        className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[14px] border border-line bg-surface"
+      >
+        <header className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-3 py-2.5">
+          <div className="flex min-w-0 items-center gap-1.5">
+            {detail ? (
+              <button
+                type="button"
+                onClick={() => onSelectStage(null)}
+                className="flex items-center gap-1 rounded-md px-1 py-0.5 text-[12.5px] font-medium text-ink-soft hover:bg-sunken hover:text-ink"
+              >
+                <ArrowLeft className="size-3.5" />
+                返回
+              </button>
+            ) : (
+              <MousePointerClick className="size-3.5 text-accent" />
+            )}
+            <span className="truncate text-[12.5px] font-semibold text-ink">
+              {detail ? `${STAGE_TITLE[detail]} · 详情` : "属性"}
+            </span>
+            {node && !detail && <span className="text-[11.5px] text-muted">· {KIND_LABEL[node.kind]}</span>}
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <IconButton label="收起属性栏" onClick={toggleCollapsed}>
+              <PanelRightClose className="size-3.5" />
+            </IconButton>
+            {node && (
+              <IconButton label="关闭属性栏" onClick={onClose}>
+                <X className="size-3.5" />
+              </IconButton>
+            )}
+          </div>
+        </header>
 
       {!node ? (
         <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
@@ -426,6 +553,7 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test, s
                 "卡片右上角的开关：启用 / 停用，改完下一拍生效。",
                 "卡片最下面的操作行：编辑、测试连接 / 试跑、删除。",
                 "任务卡的六段：点一段，这里换成那一段的只读详情。",
+                "这一栏左缘可拖宽窄；标题栏右侧的收起按钮把它收成窄轨，点窄轨再展开 —— 宽窄和收起都记在本机。",
                 "右下角「全图」看整张拓扑；窗口变化会自动重排，滚轮或点百分比放大看细节。",
               ].map((text, i) => (
                 <li key={text} className="flex items-start gap-2">
@@ -658,6 +786,7 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test, s
           )}
         </div>
       )}
-    </aside>
+      </aside>
+    </div>
   );
 }

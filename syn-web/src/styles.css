@@ -208,10 +208,11 @@
     min-width: min-content;
   }
 
+  /* 列宽由拖拽决定（内联 gridTemplateColumns，见 layout-prefs.ts），这里只管间距：
+     题头与网格是两个独立 grid，靠同一个内联模板对齐 */
   .tl-head,
   .tl-grid {
     display: grid;
-    grid-template-columns: 268px 292px 220px 620px;
     column-gap: 40px;
   }
 
@@ -224,7 +225,9 @@
     border-bottom: 1px solid var(--color-line);
   }
 
+  /* overflow 必须给 visible：把手探在列间距里，藏在 overflow 里就拖不到 */
   .tl-h {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -232,12 +235,48 @@
     font-size: 11px;
     font-weight: 500;
     color: var(--color-muted);
-    white-space: nowrap;
+  }
+
+  .tl-h-text {
+    flex: 1 1 auto;
+    min-width: 0;
     overflow: hidden;
+    white-space: nowrap;
     text-overflow: ellipsis;
   }
 
+  /* 列宽把手：落在列间距正中的一条细线，hover / 拖动时才染成主色 */
+  .tl-colgrip {
+    position: absolute;
+    top: -8px;
+    bottom: -8px;
+    right: -25px;
+    z-index: 4;
+    width: 11px;
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .tl-colgrip::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    background: transparent;
+    transition: background 0.12s ease;
+  }
+  .tl-colgrip:hover::after,
+  .tl-colgrip.on::after,
+  .tl-colgrip:focus-visible::after {
+    background: var(--color-accent);
+  }
+
   .tl-h-add {
+    flex: none;
     display: grid;
     place-items: center;
     width: 18px;
@@ -331,6 +370,36 @@
   }
   .tl-spacer {
     height: 14px;
+  }
+
+  /* 属性栏左缘的拖拽条：坐在 10px 的列间距里，往左拖变宽、往右拖变窄 */
+  .tl-panel-grip {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -10px;
+    z-index: 4;
+    width: 14px;
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .tl-panel-grip::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    background: transparent;
+    transition: background 0.12s ease;
+  }
+  .tl-panel-grip:hover::after,
+  .tl-panel-grip.on::after,
+  .tl-panel-grip:focus-visible::after {
+    background: var(--color-accent);
   }
 
   /* 插入线：拖到哪一格就画在目标卡上方，松手才落库 */
