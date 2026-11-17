@@ -11,35 +11,16 @@ pub mod dialect;
 
 use std::sync::{OnceLock, RwLock};
 
-use sqlx::mysql::any::DRIVER as MYSQL_DRIVER;
-use sqlx::postgres::any::DRIVER as POSTGRES_DRIVER;
-use sqlx::sqlite::any::DRIVER as SQLITE_DRIVER;
-use sqlx_core::any::{AnyPool, AnyPoolOptions, driver::AnyDriver};
+use sqlx_core::any::{AnyPool, AnyPoolOptions};
 use syn_api::DbEngine;
 
 use dialect::Dialect;
-
-/// 已注册的驱动清单；`install_drivers` 只能调一次，重复调会报错，这里用 `OnceLock` 兜住
-static DRIVERS_INSTALLED: OnceLock<Result<(), String>> = OnceLock::new();
 
 /// 进程级连接池：`数据源 code → 池`。引擎与连接串绑定在池上，换库必须重建池
 static POOLS: OnceLock<RwLock<std::collections::HashMap<String, AnyPool>>> = OnceLock::new();
 
 fn pools() -> &'static RwLock<std::collections::HashMap<String, AnyPool>> {
     POOLS.get_or_init(|| RwLock::new(std::collections::HashMap::new()))
-}
-
-/// # 注册三种数据库驱动
-///
-/// 必须在第一次建池之前调用；重复调用是幂等的（第二次直接返回首次结果）。
-pub fn install_drivers() -> Result<(), String> {
-    DRIVERS_INSTALLED
-        .get_or_init(|| {
-            let drivers: &'static [AnyDriver] = &[POSTGRES_DRIVER, MYSQL_DRIVER, SQLITE_DRIVER];
-            sqlx::any::install_drivers(drivers)
-                .map_err(|e| format!("注册数据库驱动失败: {e}"))
-        })
-        .clone()
 }
 
 /// # 按引擎与连接串建池

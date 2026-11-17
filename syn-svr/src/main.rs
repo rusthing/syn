@@ -15,7 +15,6 @@ use robotech::web::setup_web_server;
 use std::collections::HashMap;
 use std::sync::Arc;
 use syn_svr::config::{AppConfig, setup_app_config};
-use syn_svr::db;
 use syn_svr::{db_sink, store, wkr};
 
 bootstrap!(AppConfig);
@@ -28,10 +27,9 @@ async fn setup(
     old_pid: Option<u32>,
 ) -> Result<(), anyhow::Error> {
     let db_url = app_config.db.get_url();
+    // 宏内部已调 `install_default_drivers()` 注册 PG/MySQL/SQLite；sqlx 全局驱动表
+    // 只能写一次，这里不再重复注册（重复 set 会报 `drivers already installed`）。
     db_migrate!(db_url);
-
-    // 外部库多驱动：PG / MySQL / SQLite 一次注册，运行时按连接串 scheme 选驱动
-    db::install_drivers().map_err(anyhow::Error::msg)?;
 
     setup_app_config(app_config.as_ref().clone(), changed);
     setup_id_worker(app_config.id_worker.clone(), changed).await?;
