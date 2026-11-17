@@ -612,10 +612,10 @@ feat(syn): 五段规则与记录转发
 3. **不做 `syn-api-client`**。没有 Rust 调用方（见 §1）。
 4. **运行时表（`syn_idem` / `syn_cursor`）也带审计四列**。不是为了让它们「像配置表」，而是 `#[crud_dto]` / `#[dao]` 假定存在；少列编译不过。
 5. **游标独立成 `syn_cursor`**。它每轮都在写，`syn_source` 是低频配置；混在一张表里会让「读配置」和「推水位」争同一行。
-6. **`syn` 的迁移只有 `pgsql`**。`mysql` / `sqlite` 目录留着占位，真的要多库时再补 PDM 与迁移，不提前造。
+6. **`syn` 自己的元数据库（`syn_*` 五张表）迁移只有 `pgsql`**。`mysql` / `sqlite` 目录留占位。注意这与「外部数据源」不是一回事：被抽取 / 被直写的业务库可以是 PostgreSQL / MySQL / SQLite（sqlx `any` 驱动，见 `db/dialect.rs`），它们的表结构由下游自己负责，不进 `syn` 迁移。
 7. **自拉调度不放在进程里**。`POST /syn/source/{id}/pull` 是 jobx 计划任务与运维按钮**同一个**入口：定时跑的和手动跑的不存在两套实现，单写者、执行历史、失败可见都由 jobx 给。进程内不再有调度器，也没有开它的开关（曾经有 `self-schedule`，开了又部署多副本会互相把游标推乱，已于 §5.1 一并删除）；进程内只留每副本的任务快照缓存与一把防连点的锁（`store.rs` / `poll.rs`）。
 8. **一轮拉取不因一条坏数据整体失败**。`SynSourcePullVo` 同时给 `rows` / `success` / `skip` / `fatal` / `retriable` / `position` / `stalled`：游标只推进到第一条非 success/skip 之前，`stalled` 说明卡在哪。界面必须把 `stalled` 显示出来，否则「没数据」和「被卡住」看起来一样。
-9. **`target.kind: db` 只换最后一步**。匹配 / 映射 / 校验 / 判定四段与 HTTP 目标完全共用，直写发生在动作段之后；`insert ... on conflict` 的 `c` / `r` / `u` 与按冲突键删除的 `d` 由 `db_sink.rs` 负责。表名与列名**不信任配置**：启动时从 `information_schema.columns` 读列白名单，拼 SQL 前再校验一次标识符合法，值一律绑参数。
+9. **`target.kind: db` 只换最后一步**。匹配 / 映射 / 校验 / 判定四段与 HTTP 目标完全共用，直写发生在动作段之后；`insert ... upsert` 的 `c` / `r` / `u` 与按冲突键删除的 `d` 由 `db_sink.rs` 负责。表名与列名**不信任配置**：启动时读列白名单（PG/MySQL 走 `information_schema.columns`，SQLite 走 `pragma_table_info`），拼 SQL 前再校验一次标识符合法，值一律绑参数。方言差异（引号、占位符、upsert 语法、类型转换）收敛在 `db/dialect.rs`。
 10. **`syn_idem` 只记终态，不记逐次投递**。一个 `(task_id, idem_key)` 只有一行，重投命中直接返回上次结论并刷新 `update_ms`；没有「命中次数」「耗时」「中间轨迹」这几列。控制台的「投递记录」是这张表的投影，`op` / `detail` 恒为 `null`、`latency_ms` / `p95_ms` 恒为 `0`。要看逐次轨迹得先改 LDM 建明细表，**不要凭空编一列**。
 11. **总览的口径是「记账行数」**。没带 `X-Idempotency-Key` 的投递不记账，因此 `total` / 各结论计数 / 失败 Top 恒为 0 —— 这是事实，不是「没命中」。任务数、数据抽取数是配置表的实时值，与窗口无关，两者别混在一个图例里。
 12. **总览小时桶必须含当前小时**。`from = now - N 小时`，两端整点化后正好相差 N 个桶，所以曲线要 **N+1** 个点；只给 N 个点时刚发生的记账会落在数组之外，尾部恒为 0（真库联调才看得见，单测锁在 `syn_overview_svc::hour_buckets`）。窗口合计与曲线各桶之和必须相等，§15 的脚本把这条写成了断言。

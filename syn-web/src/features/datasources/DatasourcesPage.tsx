@@ -136,7 +136,12 @@ export function DatasourcesPage() {
                     </span>
                   </Td>
                   <Td mono className="text-[11px]">
-                    {d.target ?? <span className="text-muted">—</span>}
+                    <span className="flex items-center gap-1.5">
+                      <span className="shrink-0 rounded bg-ink/[0.05] px-1 font-mono text-[10px] text-muted">
+                        {d.engine === "mysql" ? "MySQL" : d.engine === "sqlite" ? "SQLite" : "PG"}
+                      </span>
+                      {d.target ?? <span className="text-muted">—</span>}
+                    </span>
                   </Td>
                   <Td align="right" mono>
                     {d.maxConnections}

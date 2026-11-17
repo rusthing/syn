@@ -24,6 +24,7 @@ import { request } from "./http";
 import type {
   CanvasNodeKind,
   CanvasNodePos,
+  DbEngine,
   DatasourceInfo,
   DatasourceQuery,
   DatasourceSaveInput,
@@ -114,6 +115,7 @@ interface WireDatasource {
   id: string;
   code: string;
   name: string;
+  engine?: DbEngine;
   target?: string | null;
   maxConnections: number | string;
   enabled: boolean;
@@ -309,6 +311,7 @@ function toDatasource(v: WireDatasource): DatasourceInfo {
     id: v.id,
     code: v.code,
     name: v.name,
+    engine: v.engine ?? "postgres",
     target: v.target ?? null,
     maxConnections: num(v.maxConnections),
     enabled: v.enabled ?? false,

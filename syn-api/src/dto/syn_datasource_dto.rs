@@ -7,6 +7,7 @@
 
 use robotech::api::U64;
 use serde::{Deserialize, Serialize};
+use crate::DbEngine;
 use utoipa::ToSchema;
 use validator::Validate;
 
@@ -23,6 +24,9 @@ pub struct SynDatasourceSaveDto {
     /// 名称
     #[validate(length(min = 1, max = 100, message = "名称长度需在 1..=100 之间"))]
     pub name: String,
+    /// 数据库引擎：`postgres` / `mysql` / `sqlite`；缺省按连接串 scheme 推断
+    #[serde(default)]
+    pub engine: Option<DbEngine>,
     /// 连接串（含账号密码）。新增必填；修改留空/None 表示保持原值
     #[validate(length(min = 1, max = 500, message = "连接串长度需在 1..=500 之间"))]
     pub url: Option<String>,
@@ -58,6 +62,9 @@ pub struct SynDatasourceTestDto {
     pub id: Option<U64>,
     /// 草稿连接串；非空时优先用它
     pub url: Option<String>,
+    /// 草稿引擎；与 `url` 一起给时用于显式指定驱动，缺省按 scheme 推断
+    #[serde(default)]
+    pub engine: Option<DbEngine>,
 }
 
 /// # 数据源列表查询

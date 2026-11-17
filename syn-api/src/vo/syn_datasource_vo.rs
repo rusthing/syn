@@ -8,6 +8,7 @@
 use robotech::api::U64;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
+use crate::DbEngine;
 use utoipa::ToSchema;
 
 /// # 一个已配置的 DB 数据源
@@ -21,6 +22,8 @@ pub struct SynDatasourceVo {
     pub code: String,
     /// 名称
     pub name: String,
+    /// 数据库引擎
+    pub engine: DbEngine,
     /// 脱敏后的目标（host:port/db）；解析不出来时为 null
     pub target: Option<String>,
     /// 连接池上限
@@ -46,8 +49,8 @@ pub struct SynDatasourceVo {
 /// 测试失败**不是接口错误**：连通与否是数据，200 也要能表达「连不上」。
 /// 状态栏要同时显示成败与耗时，所以这里给 `ok` 而不是靠 HTTP 状态码区分。
 ///
-/// `server` 是 `select current_setting('server_version')` 的结果（例如
-/// `PostgreSQL 16.4`），用来确认连到的确实是目标库；连不上时为 `None`。
+/// `server` 是探活 SQL 的结果（例如 `PostgreSQL 16.4` / `8.0.36` / `3.46.0`），
+/// 用来确认连到的确实是目标库；连不上时为 `None`。
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

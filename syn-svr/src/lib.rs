@@ -20,6 +20,7 @@
 
 pub mod config;
 pub mod dao;
+pub mod db;
 pub mod db_sink;
 pub mod poll;
 pub mod registry;

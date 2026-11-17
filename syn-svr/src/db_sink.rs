@@ -1,12 +1,13 @@
 //! # DB 直写（`target.kind = db`）
 //!
-//! 五段产出「一行字段」，这里把那一行写成 `insert ... on conflict`。三条硬约束：
+//! 五段产出「一行字段」，这里把那一行写成 `insert ... upsert`。三条硬约束：
 //!
-//! 1. **值一律绑参数**：整行作为 `$1::jsonb` 传入，由 `jsonb_populate_record` 按目标
-//!    表的列类型解析。不做字符串拼接，也就不存在转义问题，顺带把「JSON → int/timestamp/
-//!    numeric」的类型适配交给 PG 自己。
+//! 1. **值一律绑参数**：每列按占位符绑定，不做字符串拼接，也就不存在转义问题；
+//!    类型适配交给目标库自己。方言差异（引号、upsert 语法、占位符形态）收敛在
+//!    [`crate::db::dialect`]。
 //! 2. **表名与列名走白名单**：只接受 `[a-z_][a-z0-9_]*`（`schema.table` 两段），并且
-//!    真的去 `information_schema.columns` 核一遍再拼 SQL。配置能改，所以拼接点必须有闸。
+//!    真的去 `information_schema.columns`（SQLite 走 `pragma_table_info`）核一遍再拼 SQL。
+//!    配置能改，所以拼接点必须有闸。
 //! 3. **一个数据源一个账号**：连接串以 `syn_datasource` 表为准，任务配置里只有
 //!    数据源名。共用高权账号等于「改一条任务就能写任何库」。
 //!
@@ -23,24 +24,26 @@
 //!
 //! ## 已知边界
 //!
-//! `jsonb_populate_record` 靠列类型的输入函数做转换，因此**几何 / 二进制列不能直接写**
-//! （PostGIS 的 `geometry` 没有从 WKT 文本的隐式输入）。这类字段走 HTTP 接口，或者在
-//! 下游建一个带 `st_geomfromtext` 的视图 —— 不要在映射里塞 `::geometry` 这类片段，
+//! 绑定值按字符串 / 数值 / 布尔 / JSON 文本传入，**几何 / 二进制列不能直接写**
+//! （PostGIS 的 `geometry` 没有从文本的隐式输入）。这类字段走 HTTP 接口，或者在
+//! 下游建一个把 WKT 转成 geometry 的视图 —— 不要在映射里塞 `::geometry` 这类片段，
 //! 那等于把 SQL 拼接重新引进来。
 
 use async_trait::async_trait;
 use sea_orm::{ColumnTrait, Condition};
 use serde_json::{Map, Value};
-use sqlx::{PgPool, Row};
+use sqlx::Row;
+use sqlx_core::any::AnyPool;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
-use syn_api::{DbTarget, OnConflict, Op};
+use syn_api::{DbEngine, DbTarget, OnConflict, Op};
 use syn_core::{DbError, DbWriter};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use crate::config::get_app_config;
 use crate::dao::SynDatasourceDao;
+use crate::db::{self, dialect_of};
 use crate::mo::syn_datasource::{Column as DsColumn, Model as DsModel};
 use robotech::db::get_db_conn;
 use robotech::refresh::RefreshSubject;
@@ -50,7 +53,7 @@ pub const SYN_DATASOURCE_REFRESH_SUBJECT: RefreshSubject =
     robotech::refresh_subject!("syn", "datasource");
 
 /// 数据源名 → 连接池。懒建立：只有真的用到这个下游才连
-static POOLS: LazyLock<Mutex<HashMap<String, PgPool>>> =
+static POOLS: LazyLock<Mutex<HashMap<String, AnyPool>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 /// `数据源|表` → 列名白名单。表结构变了要重启（或等它自己失效，见下）
 static COLUMNS: LazyLock<Mutex<HashMap<String, HashSet<String>>>> =
@@ -62,26 +65,44 @@ static COLUMNS: LazyLock<Mutex<HashMap<String, HashSet<String>>>> =
 pub struct DbSinks;
 
 impl DbSinks {
-    /// 取（必要时建立）数据源连接池
+    /// 取（必要时建立）数据源连接池，连同引擎一起返回
     ///
     /// `db_sink` 和 `poll` 共用这一份缓存：同一个数据源名在两个地方各建一个池，
     /// 连接数会翻倍，而下游库的 `max_connections` 是全局的。
-    pub(crate) async fn pool_for(name: &str) -> Result<PgPool, DbError> {
+    pub(crate) async fn pool_for(name: &str) -> Result<(AnyPool, DbEngine), DbError> {
         if let Some(p) = POOLS.lock().await.get(name) {
-            return Ok(p.clone());
+            let engine = Self::engine_of(name).await;
+            return Ok((p.clone(), engine));
         }
-        let (url, max_connections) = Self::resolve(name).await?;
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(max_connections)
-            .connect(&url)
+        let (engine, url, max_connections) = Self::resolve(name).await?;
+        let pool = db::build_pool(engine, &url, max_connections)
             .await
             .map_err(|e| {
                 // 建池失败是可重试的：下游库可能在重启，或者网络抖动
                 DbError::retriable("DB_CONNECT", format!("连接数据源 {name} 失败: {e}"))
             })?;
-        debug!("数据源 {name} 连接池已建立");
+        debug!("数据源 {name} 连接池已建立（{}）", engine.label());
         POOLS.lock().await.insert(name.to_string(), pool.clone());
-        Ok(pool)
+        Ok((pool, engine))
+    }
+
+    /// 数据源当前引擎：池缓存里不带引擎，以表 / 配置解析结果为准
+    ///
+    /// 与 [`resolve`](Self::resolve) 走同一份解析；读库不可用时不阻断在途写入，
+    /// 方言回退默认 PG。
+    async fn engine_of(name: &str) -> DbEngine {
+        match lookup_table(name).await {
+            Ok(Some(row)) => DbEngine::from(row.engine),
+            _ => match get_app_config() {
+                Ok(c) => c
+                    .syn
+                    .datasources
+                    .get(name)
+                    .and_then(|ds| ds.engine)
+                    .unwrap_or_default(),
+                Err(_) => DbEngine::default(),
+            },
+        }
     }
 
     /// 解析数据源的连接参数：**表优先，配置兜底**
@@ -92,10 +113,11 @@ impl DbSinks {
     ///
     /// 读表失败（连不上 syn 自己的库）也回退配置并告警：这时按配置把这一条投递
     /// 处理掉，比整条链路停摆更划算。
-    async fn resolve(name: &str) -> Result<(String, u32), DbError> {
+    async fn resolve(name: &str) -> Result<(DbEngine, String, u32), DbError> {
         match lookup_table(name).await {
             Ok(Some(row)) if row.enabled => {
-                return Ok((row.url, row.max_connections.max(1) as u32));
+                let engine = DbEngine::from(row.engine);
+                return Ok((engine, row.url, row.max_connections.max(1) as u32));
             }
             Ok(Some(_)) => {
                 return Err(DbError::fatal(
@@ -116,14 +138,19 @@ impl DbSinks {
                 ),
             )
         })?;
-        Ok((ds.url.clone(), ds.max_connections))
+        let engine = ds
+            .engine
+            .or_else(|| DbEngine::from_url(&ds.url))
+            .unwrap_or_default();
+        Ok((engine, ds.url.clone(), ds.max_connections))
     }
 
     /// 表的列白名单（首次访问时从 information_schema 读一次）
     async fn columns(
         &self,
         datasource: &str,
-        pool: &PgPool,
+        pool: &AnyPool,
+        engine: DbEngine,
         table: &str,
     ) -> Result<HashSet<String>, DbError> {
         let cache_key = format!("{datasource}|{table}");
@@ -132,16 +159,44 @@ impl DbSinks {
         }
         let (schema, name) = match table.split_once('.') {
             Some((s, t)) => (s.to_string(), t.to_string()),
-            None => ("public".to_string(), table.to_string()),
+            None => default_schema(engine, table),
         };
-        let rows = sqlx::query(
-            "select column_name from information_schema.columns
-             where table_schema = $1 and table_name = $2",
-        )
-        .bind(&schema)
-        .bind(&name)
-        .fetch_all(pool)
-        .await
+        let rows = match engine {
+            // MySQL / SQLite 的 information_schema 口径与 PG 不同，走各自的内省 SQL
+            DbEngine::Mysql => {
+                // 未指定 schema 时按当前库兜底：`table_schema = database()`
+                let sql = if schema == "NULL" {
+                    "select column_name from information_schema.columns
+                     where table_schema = database() and table_name = ?"
+                } else {
+                    "select column_name from information_schema.columns
+                     where table_schema = ? and table_name = ?"
+                };
+                let mut q = sqlx::query(sql);
+                if schema != "NULL" {
+                    q = q.bind(&schema);
+                }
+                q.bind(&name).fetch_all(pool).await
+            }
+            DbEngine::Sqlite => {
+                sqlx::query(
+                    "select name as column_name from pragma_table_info($1)",
+                )
+                .bind(&name)
+                .fetch_all(pool)
+                .await
+            }
+            DbEngine::Postgres => {
+                sqlx::query(
+                    "select column_name from information_schema.columns
+                     where table_schema = $1 and table_name = $2",
+                )
+                .bind(&schema)
+                .bind(&name)
+                .fetch_all(pool)
+                .await
+            }
+        }
         .map_err(|e| DbError::fatal("DB_SCHEMA", format!("读列信息失败: {e}")))?;
 
         if rows.is_empty() {
@@ -166,13 +221,14 @@ impl DbSinks {
     /// # 丢弃全部连接池与列白名单
     ///
     /// 连接串一改，池子和「表有哪些列」的缓存都作废：换库之后列集合可能完全不同，
-    /// 留着旧白名单会把合法列判成 `DB_UNKNOWN_COLUMN`。正在用池的调用持有 `PgPool`
+    /// 留着旧白名单会把合法列判成 `DB_UNKNOWN_COLUMN`。正在用池的调用持有 `AnyPool`
     /// 的克隆，这里清掉 map 只是不再复用，不会打断在途写入。
     pub async fn forget_pools() {
         let mut pools = POOLS.lock().await;
         let n = pools.len();
         pools.clear();
         COLUMNS.lock().await.clear();
+        db::drop_pool(None);
         if n > 0 {
             info!("数据源连接池已失效，{n} 个池待重建");
         }
@@ -235,9 +291,9 @@ impl DbWriter for DbSinks {
         op: Op,
         row: &Map<String, Value>,
     ) -> Result<u64, DbError> {
-        let pool = Self::pool_for(&target.datasource).await?;
+        let (pool, engine) = Self::pool_for(&target.datasource).await?;
         let columns = self
-            .columns(&target.datasource, &pool, &target.table)
+            .columns(&target.datasource, &pool, engine, &target.table)
             .await?;
 
         // 映射的每一列都必须真实存在：拼错一个列名，PG 报的是 42703，
@@ -262,13 +318,16 @@ impl DbWriter for DbSinks {
             }
         }
 
-        let sql = build_sql(target, op, row)?;
+        let mut cols: Vec<&String> = row.keys().collect();
+        cols.sort();
+        let sql = build_sql(target, op, row, engine)?;
         debug!("db sink: {sql}");
-        let payload = Value::Object(row.clone());
-        let result = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
-            .bind(payload)
-            .execute(&pool)
-            .await
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
+        for col in &cols {
+            let value = row.get(*col).cloned().unwrap_or(Value::Null);
+            query = query.bind(json_to_bind(value));
+        }
+        let result = query.execute(&pool).await
             .map_err(|e| {
                 let mapped = classify(&e);
                 if !mapped.retriable {
@@ -283,62 +342,138 @@ impl DbWriter for DbSinks {
 /// # 拼 SQL
 ///
 /// 标识符在这里再校验一次（`DbTarget` 已经筛过，但 SQL 是不可回滚的副作用，
-/// 多一道闸比少一道好），然后加双引号。**值不参与拼接**。
-fn build_sql(target: &DbTarget, op: Op, row: &Map<String, Value>) -> Result<String, DbError> {
+/// 多一道闸比少一道好），引号按方言包。**值不参与拼接**：每行的值按列绑占位符，
+/// 不再走 PG 的 `jsonb_populate_record` 单行 JSON 构造（MySQL / SQLite 没有等价物）。
+fn build_sql(
+    target: &DbTarget,
+    op: Op,
+    row: &Map<String, Value>,
+    engine: DbEngine,
+) -> Result<String, DbError> {
+    let dialect = dialect_of(engine);
     // 列顺序固定，日志与 explain 才好对比
     let mut cols: Vec<&String> = row.keys().collect();
     cols.sort();
-    let quoted = |c: &str| format!("\"{c}\"");
-    let col_list = cols
-        .iter()
-        .map(|c| quoted(c))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let table = target.table.as_str();
+    let quote = |c: &str| dialect.quote_ident(c);
+    let col_list = cols.iter().map(|c| quote(c)).collect::<Vec<_>>().join(", ");
+    let table = dialect.quote_table(target.table.as_str());
     let keys = target
         .key
         .iter()
-        .map(|k| quoted(k))
+        .map(|k| quote(k.as_str()))
         .collect::<Vec<_>>()
         .join(", ");
 
     if op == Op::D {
-        // 删除用 populate_record 生成一张「一行的表」，按主键 join 后再删：
-        // 这样键的类型由目标表决定，不需要在 Rust 侧猜它是不是 int8
+        // 按冲突键逐条等值删除：键值由参数绑定，类型由目标表上下文决定
         let on = target
             .key
             .iter()
-            .map(|k| format!("t.{q} = j.{q}", q = quoted(k)))
+            .zip(1..)
+            .map(|(k, i)| format!("{q} = ${i}", q = quote(k)))
             .collect::<Vec<_>>()
             .join(" and ");
-        return Ok(format!(
-            "delete from {table} t using jsonb_populate_record(null::{table}, $1::jsonb) j where {on}"
-        ));
+        return Ok(format!("delete from {table} where {on}"));
     }
+
+    // 占位符：PG / SQLite 用 $n，MySQL 用 ?
+    let placeholders = (1..=cols.len())
+        .map(|i| param_placeholder(engine, i))
+        .collect::<Vec<_>>()
+        .join(", ");
 
     let conflict = match target.on_conflict {
         OnConflict::Error => String::new(),
-        OnConflict::Nothing => format!("on conflict ({keys}) do nothing"),
+        OnConflict::Nothing => {
+            if dialect.supports_on_conflict() {
+                format!("on conflict ({keys}) do nothing")
+            } else {
+                // MySQL 没有 on conflict：重复键默认忽略（客户端不感知重复）
+                "on duplicate key update ".to_string()
+                    + &target
+                        .key
+                        .iter()
+                        .map(|k| format!("{q} = {q}", q = quote(k.as_str())))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+            }
+        }
         OnConflict::Update => {
             let updates = cols
                 .iter()
                 .filter(|c| !target.key.iter().any(|k| k.as_str() == c.as_str()))
-                .map(|c| format!("{q} = excluded.{q}", q = quoted(c)))
-                .collect::<Vec<_>>()
-                .join(", ");
-            // 全是键列时没有可更新的列，退化成 do nothing（否则 PG 报语法错）
-            if updates.is_empty() {
-                format!("on conflict ({keys}) do nothing")
+                .collect::<Vec<_>>();
+            if dialect.supports_on_conflict() {
+                let set = updates
+                    .iter()
+                    .map(|c| format!("{q} = excluded.{q}", q = quote(c)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                // 全是键列时没有可更新的列，退化成 do nothing（否则 PG 报语法错）
+                if set.is_empty() {
+                    "on conflict (...) do nothing".to_string()
+                } else {
+                    format!("on conflict ({keys}) do update set {set}")
+                }
             } else {
-                format!("on conflict ({keys}) do update set {updates}")
+                // MySQL：on duplicate key update 非键列 = values(列)
+                let set = updates
+                    .iter()
+                    .map(|c| format!("{q} = values({q})", q = quote(c)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if set.is_empty() {
+                    "on duplicate key update ".to_string()
+                        + &target
+                            .key
+                            .iter()
+                            .map(|k| format!("{q} = {q}", q = quote(k)))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                } else {
+                    format!("on duplicate key update {set}")
+                }
             }
         }
     };
 
     Ok(format!(
-        "insert into {table} ({col_list}) \
-         select {col_list} from jsonb_populate_record(null::{table}, $1::jsonb) {conflict}"
+        "insert into {table} ({col_list}) values ({placeholders}) {conflict}"
     ))
+}
+
+/// # 占位符形态
+///
+/// PG / SQLite 用 `$n`，MySQL 用 `?`（序号在拼接时按列顺序对应绑定顺序）
+fn param_placeholder(engine: DbEngine, n: usize) -> String {
+    match engine {
+        DbEngine::Mysql => "?".to_string(),
+        _ => format!("${n}"),
+    }
+}
+
+/// # 未带 schema 时的默认 schema
+fn default_schema(engine: DbEngine, table: &str) -> (String, String) {
+    let schema = match engine {
+        DbEngine::Mysql => "NULL".to_string(), // MySQL 由当前库兜底，内省条件见 SQL
+        DbEngine::Sqlite => "main".to_string(),
+        DbEngine::Postgres => "public".to_string(),
+    };
+    (schema, table.to_string())
+}
+
+/// # JSON 值 → sqlx 绑定值
+///
+/// 标量直接绑；对象 / 数组序列化成 JSON 文本绑（目标列若是 JSON 类型由驱动/库解析，
+/// 若是文本列则原样落字符串）；`Null` 绑 `None::<String>`。
+fn json_to_bind(value: Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(s) => Some(s),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(if b { "1".to_string() } else { "0".to_string() }),
+        other => Some(other.to_string()),
+    }
 }
 
 /// # 把 sqlx 错误翻译成「能不能重试」
@@ -408,11 +543,12 @@ mod tests {
 
     #[test]
     fn upsert_updates_non_key_columns() {
-        let sql = build_sql(&t(&["id"], OnConflict::Update), Op::U, &row()).unwrap();
+        let sql = build_sql(&t(&["id"], OnConflict::Update), Op::U, &row(), DbEngine::Postgres).unwrap();
         assert!(
-            sql.starts_with("insert into public.dtw_person (\"id\", \"name\", \"updated_at\")")
+            sql.starts_with("insert into \"public\".\"dtw_person\" (\"id\", \"name\", \"updated_at\")")
         );
-        assert!(sql.contains("select \"id\", \"name\", \"updated_at\" from jsonb_populate_record"));
+        // 逐列占位符绑定，不再走 jsonb_populate_record 整行 JSON
+        assert!(sql.contains("values ($1, $2, $3)"));
         // 键列不参与 set
         assert!(sql.contains(
             "do update set \"name\" = excluded.\"name\", \"updated_at\" = excluded.\"updated_at\""
@@ -422,9 +558,9 @@ mod tests {
 
     #[test]
     fn nothing_and_error_differ() {
-        let nothing = build_sql(&t(&["id"], OnConflict::Nothing), Op::C, &row()).unwrap();
+        let nothing = build_sql(&t(&["id"], OnConflict::Nothing), Op::C, &row(), DbEngine::Postgres).unwrap();
         assert!(nothing.ends_with("do nothing"));
-        let error = build_sql(&t(&["id"], OnConflict::Error), Op::C, &row()).unwrap();
+        let error = build_sql(&t(&["id"], OnConflict::Error), Op::C, &row(), DbEngine::Postgres).unwrap();
         assert!(!error.contains("on conflict"));
     }
 
@@ -433,16 +569,16 @@ mod tests {
         // 映射里只有键列时没有可更新的列，不能拼出 `do update set` 空子句
         let mut m = Map::new();
         m.insert("id".into(), serde_json::json!(1));
-        let sql = build_sql(&t(&["id"], OnConflict::Update), Op::C, &m).unwrap();
+        let sql = build_sql(&t(&["id"], OnConflict::Update), Op::C, &m, DbEngine::Postgres).unwrap();
         assert!(sql.ends_with("do nothing"));
     }
 
     #[test]
-    fn delete_uses_using_clause() {
-        let sql = build_sql(&t(&["id"], OnConflict::Update), Op::D, &row()).unwrap();
+    fn delete_uses_key_placeholders() {
+        let sql = build_sql(&t(&["id"], OnConflict::Update), Op::D, &row(), DbEngine::Postgres).unwrap();
         assert_eq!(
             sql,
-            "delete from public.dtw_person t using jsonb_populate_record(null::public.dtw_person, $1::jsonb) j where t.\"id\" = j.\"id\""
+            "delete from \"public\".\"dtw_person\" where \"id\" = $1"
         );
     }
 
@@ -451,7 +587,14 @@ mod tests {
         let mut m = Map::new();
         m.insert("a".into(), serde_json::json!(1));
         m.insert("b".into(), serde_json::json!(2));
-        let sql = build_sql(&t(&["a", "b"], OnConflict::Update), Op::D, &m).unwrap();
-        assert!(sql.contains("t.\"a\" = j.\"a\" and t.\"b\" = j.\"b\""));
+        let sql = build_sql(&t(&["a", "b"], OnConflict::Update), Op::D, &m, DbEngine::Postgres).unwrap();
+        assert!(sql.contains("\"a\" = $1 and \"b\" = $2"));
+    }
+
+    #[test]
+    fn mysql_uses_question_placeholders_and_duplicate_key() {
+        let sql = build_sql(&t(&["id"], OnConflict::Update), Op::U, &row(), DbEngine::Mysql).unwrap();
+        assert!(sql.contains("values (?, ?, ?)"));
+        assert!(sql.contains("on duplicate key update `name` = values(`name`), `updated_at` = values(`updated_at`)"));
     }
 }

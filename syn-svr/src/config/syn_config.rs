@@ -153,6 +153,9 @@ pub struct CleanupJobConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct DataSourceConfig {
+    /// 数据库引擎：`postgres` / `mysql` / `sqlite`；缺省按连接串 scheme 推断
+    #[serde(default)]
+    pub engine: Option<syn_api::DbEngine>,
     /// 连接串
     pub url: String,
     /// 连接池上限。DB 直写是同步链路，池子开太大只会把下游库的连接数吃满

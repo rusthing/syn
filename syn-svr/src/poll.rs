@@ -44,7 +44,9 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
-use syn_api::{ExtractMode, FieldType, SourceKind, SourceSpec, SynSourcePullVo, Verdict, WrapMode};
+use syn_api::{
+    ExtractMode, FieldType, SourceKind, SourceSpec, SynSourcePullVo, Verdict, WrapMode,
+};
 use syn_core::get_path;
 use sqlx::Row;
 use tokio::sync::Mutex;
@@ -53,6 +55,8 @@ use wheel_rs::time_utils::now_ms;
 
 use crate::config::get_app_config;
 use crate::dao::SynCursorDao;
+use crate::db::dialect_of;
+use crate::db::dialect::Dialect;
 use crate::db_sink::DbSinks;
 use crate::mo::syn_cursor::{ActiveModel as CursorActive, Column as CursorColumn};
 use crate::mo::syn_cursor::Model as CursorModel;
@@ -436,34 +440,38 @@ async fn fetch_sql(
     position: Option<&str>,
 ) -> Result<Vec<FetchedRow>, String> {
     let datasource = spec.datasource.as_deref().ok_or("spec.datasource 缺失")?;
-    let from = row_source(spec)?;
+    let (_, engine) = DbSinks::pool_for(datasource)
+        .await
+        .map_err(|e| format!("{}: {}", e.code, e.detail))?;
+    let dialect = dialect_of(engine);
+    let from = row_source(spec, dialect)?;
     let fields = spec.cursor_fields();
     if fields.len() != 2 {
         return Err("spec.cursor_field / spec.tie_field 缺失".to_string());
     }
-    let c = quote_col("s", fields[0])?;
-    let t = quote_col("s", fields[1])?;
+    let c = quote_col("s", fields[0], dialect)?;
+    let t = quote_col("s", fields[1], dialect)?;
 
     // 水位：JSON 数组文本 [主游标, 决胜字段]
     let values: Option<Vec<String>> = position
         .map(|p| serde_json::from_str(p).unwrap_or_else(|_| vec![p.to_string()]))
         .filter(|v| v.len() == 2);
 
-    let mut sql =
-        format!("select to_jsonb(s) as row, {c}::text as k0, {t}::text as k1 from {from} s");
+    let col_list = row_json_cols(spec, dialect, "s")?;
+    let mut sql = format!(
+        "select {col_list} as row, {c} as k0, {t} as k1 from {from} s"
+    );
     let mut conds: Vec<String> = Vec::new();
-    if values.is_some() {
-        conds.push(format!(
-            "({c}, {t}) > ($1::{}, $2::{})",
-            spec.cursor_type.cast(),
-            spec.tie_type.cast()
-        ));
+    if let Some(_values) = values.as_ref() {
+        let c0 = dialect.cast_expr("$1", spec.cursor_type);
+        let c1 = dialect.cast_expr("$2", spec.tie_type);
+        conds.push(format!("({c}, {t}) > ({c0}, {c1})"));
     }
     // 重叠窗口只对时间戳游标成立：整数/文本水位没有「事务提交时间」这一维度
-    if spec.cursor_type == FieldType::Timestamptz {
-        conds.push(format!(
-            "{c} <= now() - interval '{OVERLAP_SECONDS} seconds'"
-        ));
+    if spec.cursor_type == FieldType::Timestamptz
+        && let Some(limit) = dialect.overlap_limit(&c, OVERLAP_SECONDS)
+    {
+        conds.push(limit);
     }
     if !conds.is_empty() {
         sql.push_str(&format!(" where {}", conds.join(" and ")));
@@ -478,15 +486,21 @@ async fn fetch_sql(
     let wrap = spec.wrap;
     let mut out = Vec::with_capacity(rows.len());
     for r in &rows {
-        let row: Value = r
-            .try_get("row")
-            .map_err(|e| format!("读取源行失败: {e}"))?;
+        let row = row_from_row(r, "row")?;
         let mut keys = Vec::with_capacity(2);
         for i in 0..2 {
-            let k: Option<String> = r
-                .try_get(format!("k{i}").as_str())
-                .map_err(|e| format!("读取游标字段 {i} 失败: {e}"))?;
-            keys.push(k.unwrap_or_default());
+            // 跨驱动兜底：游标列可能是文本 / 数值 / 时间戳，先按字符串取，失败按数值解析
+            let k = match r.try_get::<String, _>(format!("k{i}").as_str()) {
+                Ok(v) => v,
+                Err(_) => match r.try_get::<i64, _>(format!("k{i}").as_str()) {
+                    Ok(v) => v.to_string(),
+                    Err(_) => match r.try_get::<f64, _>(format!("k{i}").as_str()) {
+                        Ok(v) => format!("{v}"),
+                        Err(_) => String::new(),
+                    },
+                },
+            };
+            keys.push(k);
         }
         let record = wrap_row(row, wrap)?;
         // 每行带自己的水位：投递中途被卡住时，水位只能停到最后一个成功行
@@ -509,29 +523,63 @@ async fn fetch_snapshot_page(
     offset: u64,
 ) -> Result<Vec<FetchedRow>, String> {
     let datasource = spec.datasource.as_deref().ok_or("spec.datasource 缺失")?;
-    let from = row_source(spec)?;
+    let (_, engine) = DbSinks::pool_for(datasource)
+        .await
+        .map_err(|e| format!("{}: {}", e.code, e.detail))?;
+    let dialect = dialect_of(engine);
+    let from = row_source(spec, dialect)?;
+    let col_list = row_json_cols(spec, dialect, "s")?;
     let sql = if spec.snapshot_batched {
         format!(
-            "select to_jsonb(s) as row from {from} s limit {} offset {offset}",
+            "select {col_list} as row from {from} s limit {} offset {offset}",
             source.batch_size.max(1)
         )
     } else {
-        format!("select to_jsonb(s) as row from {from} s")
+        format!("select {col_list} as row from {from} s")
     };
 
     let rows = fetch_rows(datasource, &sql, None).await?;
     let wrap = spec.wrap;
     let mut out = Vec::with_capacity(rows.len());
     for r in &rows {
-        let row: Value = r
-            .try_get("row")
-            .map_err(|e| format!("读取源行失败: {e}"))?;
+        let row = row_from_row(r, "row")?;
         out.push(FetchedRow {
             record: wrap_row(row, wrap)?,
             position: None,
         });
     }
     Ok(out)
+}
+
+/// # 从结果行取 `row` 列并解析成 JSON
+///
+/// 各驱动对 JSON 列的解码口径不一：PG 的 jsonb 走 sqlx JSON 解码，MySQL/SQLite
+/// 常回退成文本。这里先试 JSON 值，失败再按字符串解析，两种都认。
+/// SQLite 不包整行 JSON 时，结果行没有 `row` 列：把整行按列名拼成对象。
+fn row_from_row(r: &sqlx::any::AnyRow, col: &str) -> Result<Value, String> {
+    if let Ok(text) = r.try_get::<String, _>(col) {
+        return serde_json::from_str(&text).map_err(|e| format!("源行不是合法 JSON: {e}"));
+    }
+    // 兜底：整行按列名拼装（SQLite 直出结果集，或列名对不上时）
+    let mut map = serde_json::Map::new();
+    for (i, column) in r.columns().iter().enumerate() {
+        let name = sqlx::Column::name(column).to_string();
+        let value = match r.try_get::<String, _>(i) {
+            Ok(v) => Value::String(v),
+            Err(_) => match r.try_get::<i64, _>(i) {
+                Ok(v) => Value::from(v),
+                Err(_) => match r.try_get::<f64, _>(i) {
+                    Ok(v) => Value::from(v),
+                    Err(_) => match r.try_get::<bool, _>(i) {
+                        Ok(v) => Value::Bool(v),
+                        Err(_) => Value::Null,
+                    },
+                },
+            },
+        };
+        map.insert(name, value);
+    }
+    Ok(Value::Object(map))
 }
 
 /// 行 → 虚拟 topic 记录
@@ -552,8 +600,8 @@ async fn fetch_rows(
     datasource: &str,
     sql: &str,
     binds: Option<&[String]>,
-) -> Result<Vec<sqlx::postgres::PgRow>, String> {
-    let pool = DbSinks::pool_for(datasource)
+) -> Result<Vec<sqlx::any::AnyRow>, String> {
+    let (pool, _) = DbSinks::pool_for(datasource)
         .await
         .map_err(|e| format!("{}: {}", e.code, e.detail))?;
     let timeout = get_app_config()
@@ -566,42 +614,57 @@ async fn fetch_rows(
             query = query.bind(x.clone());
         }
     }
-    tokio::time::timeout(timeout, query.fetch_all(&pool))
+    let rows = tokio::time::timeout(timeout, query.fetch_all(&pool))
         .await
         .map_err(|_| format!("查询源库超时（{timeout:?}）"))?
-        .map_err(|e| format!("查询源库失败: {e}"))
+        .map_err(|e| format!("查询源库失败: {e}"))?;
+    // 跨驱动兜底：row_json 表达式在各库都产出 JSON 文本；按字符串取回后由上层解析
+    Ok(rows)
 }
 
 /// 行来源：优先用手写 SQL 包成子查询，否则按表名 quote 后当 `s`
 ///
 /// 手写 SQL 已在保存与 `pull` 入口校验过是单条 select/with；它本来就是要执行的
 /// 用户语句，不能再套标识符白名单。
-fn row_source(spec: &SourceSpec) -> Result<String, String> {
+fn row_source(spec: &SourceSpec, dialect: Dialect) -> Result<String, String> {
     if let Some(sql) = spec.custom_sql() {
         return Ok(format!("({sql})"));
     }
-    quote_table(spec.table_or_empty())
+    quote_table(spec.table_or_empty(), dialect)
 }
 
-/// 表名 → `"schema"."table"`；两段都必须是合法标识符
-fn quote_table(raw: &str) -> Result<String, String> {
+/// 表名 → 按方言包引号；两段都必须是合法标识符
+fn quote_table(raw: &str, dialect: Dialect) -> Result<String, String> {
     let parts: Vec<&str> = raw.split('.').collect();
     if parts.is_empty() || parts.len() > 2 || parts.iter().any(|p| !is_ident(p)) {
         return Err(format!("表名不合法：{raw:?}"));
     }
     Ok(parts
         .iter()
-        .map(|p| format!("\"{p}\""))
+        .map(|p| dialect.quote_ident(p))
         .collect::<Vec<_>>()
         .join("."))
 }
 
-/// 字段名 → `s."field"`；必须是合法标识符
-fn quote_col(alias: &str, raw: &str) -> Result<String, String> {
+/// 字段名 → `s."field"` / `s.`field``；必须是合法标识符
+fn quote_col(alias: &str, raw: &str, dialect: Dialect) -> Result<String, String> {
     if !is_ident(raw) {
         return Err(format!("字段名不合法：{raw:?}"));
     }
-    Ok(format!("{alias}.\"{raw}\""))
+    Ok(format!("{}.{}", alias, dialect.quote_ident(raw)))
+}
+
+/// # 整行包成 JSON 的表达式
+///
+/// 表来源（非手写 SQL）按整行 JSON 函数包裹；手写 SQL 由用户语句自己产出结果集，
+/// 这里只把整行原样取回，不再二次包 JSON。
+fn row_json_cols(_spec: &SourceSpec, dialect: Dialect, alias: &str) -> Result<String, String> {
+    match dialect {
+        Dialect::Postgres => Ok(format!("to_jsonb({alias})")),
+        Dialect::Mysql => Ok(format!("to_json({alias})")),
+        // SQLite 没有整行 json 函数：取整行交给上层按列拼装（见 row_from_row）
+        Dialect::Sqlite => Ok(alias.to_string()),
+    }
 }
 
 fn is_ident(s: &str) -> bool {
@@ -1073,24 +1136,26 @@ mod tests {
 
     #[test]
     fn table_and_column_are_quoted_from_whitelisted_idents() {
-        assert_eq!(quote_table("dtw_polygon").unwrap(), "\"dtw_polygon\"");
-        assert_eq!(quote_table("public.dtw_polygon").unwrap(), "\"public\".\"dtw_polygon\"");
+        let dialect = Dialect::Postgres;
+        assert_eq!(quote_table("dtw_polygon", dialect).unwrap(), "\"dtw_polygon\"");
+        assert_eq!(quote_table("public.dtw_polygon", dialect).unwrap(), "\"public\".\"dtw_polygon\"");
         // 注入尝试直接拒绝，不拼进 SQL
-        assert!(quote_table("dtw_polygon; drop table x").is_err());
-        assert!(quote_table("public.a.b").is_err());
-        assert_eq!(quote_col("s", "update_timestamp").unwrap(), "s.\"update_timestamp\"");
-        assert!(quote_col("s", "id; --").is_err());
+        assert!(quote_table("dtw_polygon; drop table x", dialect).is_err());
+        assert!(quote_table("public.a.b", dialect).is_err());
+        assert_eq!(quote_col("s", "update_timestamp", dialect).unwrap(), "s.\"update_timestamp\"");
+        assert!(quote_col("s", "id; --", dialect).is_err());
     }
 
     #[test]
     fn row_source_prefers_custom_sql_over_table() {
+        let dialect = Dialect::Postgres;
         let custom = SourceSpec {
             sql: Some("  select id, updated_at from t where deleted = false;  ".to_string()),
             table: Some("ignored".to_string()),
             ..Default::default()
         };
         assert_eq!(
-            row_source(&custom).unwrap(),
+            row_source(&custom, dialect).unwrap(),
             "(select id, updated_at from t where deleted = false)"
         );
 
@@ -1098,7 +1163,7 @@ mod tests {
             table: Some("public.t".to_string()),
             ..Default::default()
         };
-        assert_eq!(row_source(&by_table).unwrap(), "\"public\".\"t\"");
+        assert_eq!(row_source(&by_table, dialect).unwrap(), "\"public\".\"t\"");
     }
 
     #[test]

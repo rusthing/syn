@@ -23,6 +23,8 @@ pub struct Model {
     pub code: String,
     /// 名称
     pub name: String,
+    /// 数据库引擎：0 PostgreSQL / 1 MySQL / 2 SQLite（见 `DbEngine`）
+    pub engine: i16,
     /// 连接串（含账号密码）；明文只写不回显
     pub url: String,
     /// 连接池上限

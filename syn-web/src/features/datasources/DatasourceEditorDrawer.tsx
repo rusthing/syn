@@ -19,7 +19,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Modal } from "@/components/ui/Drawer";
 import { Field, Input, Textarea } from "@/components/ui/Field";
 import { useToast } from "@/components/ui/Toast";
-import type { DatasourceInfo, DatasourceSaveInput, DatasourceTestResult } from "@/lib/api/types";
+import type { DbEngine, DatasourceInfo, DatasourceSaveInput, DatasourceTestResult } from "@/lib/api/types";
 import { useDatasourceMutations } from "@/hooks/use-sources";
 
 interface Issue {
@@ -31,6 +31,7 @@ function newDatasource(): DatasourceSaveInput {
   return {
     code: "",
     name: "",
+    engine: "postgres",
     url: "",
     maxConnections: 4,
     enabled: true,
@@ -43,12 +44,20 @@ function fromDatasource(d: DatasourceInfo): DatasourceSaveInput {
   return {
     code: d.code,
     name: d.name,
+    engine: d.engine,
     url: "",
     maxConnections: d.maxConnections,
     enabled: d.enabled,
     remark: d.remark ?? "",
   };
 }
+
+/** 各引擎的连接串占位符 */
+const ENGINE_URL_PLACEHOLDER: Record<DbEngine, string> = {
+  postgres: "postgres://user:password@host:5432/db",
+  mysql: "mysql://user:password@host:3306/db",
+  sqlite: "sqlite:///path/to/db.sqlite",
+};
 
 function validateDraft(d: DatasourceSaveInput, isEdit: boolean): Issue[] {
   const issues: Issue[] = [];
@@ -106,7 +115,7 @@ export function DatasourceEditorDrawer({
       return;
     }
     test.mutate(
-      { id, url: url || undefined },
+      { id, url: url || undefined, engine: draft.engine },
       {
         onSuccess: (result) => {
           setTested(result);
@@ -253,6 +262,21 @@ export function DatasourceEditorDrawer({
             title="连接串"
             hint="含账号密码，只在写入口收；读接口一律返回脱敏后的 host:port/db"
           />
+          <Field label="数据库引擎" required error={err("engine")}>
+            <div className="flex gap-2">
+              {(["postgres", "mysql", "sqlite"] as DbEngine[]).map((eng) => (
+                <Button
+                  key={eng}
+                  type="button"
+                  variant={draft.engine === eng ? "primary" : "ghost"}
+                  size="sm"
+                  onClick={() => patch({ engine: eng })}
+                >
+                  {eng === "postgres" ? "PostgreSQL" : eng === "mysql" ? "MySQL" : "SQLite"}
+                </Button>
+              ))}
+            </div>
+          </Field>
           {isEdit && (
             <div className="flex items-start gap-2 rounded-lg bg-sunken/70 px-3 py-2 text-[11.5px] leading-snug text-muted">
               <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-success" />
@@ -270,12 +294,16 @@ export function DatasourceEditorDrawer({
             hint={
               isEdit
                 ? "留空表示不修改连接串；填写则覆盖原值"
-                : "postgres://user:password@host:5432/db；只在保存时提交"
+                : `${ENGINE_URL_PLACEHOLDER[draft.engine ?? "postgres"]}；只在保存时提交`
             }
           >
             <Input
               value={draft.url ?? ""}
-              placeholder={isEdit ? "留空表示不修改" : "postgres://user:password@host:5432/db"}
+              placeholder={
+                isEdit
+                  ? "留空表示不修改"
+                  : ENGINE_URL_PLACEHOLDER[draft.engine ?? "postgres"]
+              }
               spellCheck={false}
               autoComplete="off"
               className="font-mono text-[12.5px]"

@@ -51,7 +51,9 @@ port = 9007
 # 一个下游一个账号（权限最小）。不要共用高权账号：syn 的配置本身能被改，
 # 共用账号等于「改一条任务配置就能写任何库任何表」。
 #
+# engine 可选：postgres / mysql / sqlite；缺省按 url scheme 推断
 # [syn.datasources.dtw]
+# engine = "postgres"
 # url = "postgresql://syn_dtw:xxxxxxxx@10.0.0.12:5432/dtw"
 # max-connections = 4
 

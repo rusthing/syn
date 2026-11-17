@@ -437,6 +437,7 @@ create table syn_datasource (
    id                   INT8                 not null,
    code                 VARCHAR(64)          not null,
    name                 VARCHAR(100)         not null,
+   engine               INT2                 not null default 0,
    url                  VARCHAR(500)         not null,
    max_connections      INT4                 not null default 4,
    enabled              BOOL                 not null default true,
@@ -465,6 +466,9 @@ comment on column syn_datasource.code is
 comment on column syn_datasource.name is
 '名称
 @len 1..=100';
+
+comment on column syn_datasource.engine is
+'数据库引擎：0 PostgreSQL / 1 MySQL / 2 SQLite';
 
 comment on column syn_datasource.url is
 '连接串

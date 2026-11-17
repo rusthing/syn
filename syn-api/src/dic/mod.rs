@@ -11,9 +11,11 @@
 //! `"retriable"` 比 `3` 更难写错。
 
 mod canvas_node_type;
+mod db_engine;
 mod source_kind;
 mod sync_verdict;
 
 pub use canvas_node_type::CanvasNodeType;
+pub use db_engine::{parse_engine, DbEngine};
 pub use source_kind::SourceKind;
 pub use sync_verdict::SyncVerdict;

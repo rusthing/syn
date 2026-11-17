@@ -15,6 +15,7 @@ use robotech::web::setup_web_server;
 use std::collections::HashMap;
 use std::sync::Arc;
 use syn_svr::config::{AppConfig, setup_app_config};
+use syn_svr::db;
 use syn_svr::{db_sink, store, wkr};
 
 bootstrap!(AppConfig);
@@ -28,6 +29,9 @@ async fn setup(
 ) -> Result<(), anyhow::Error> {
     let db_url = app_config.db.get_url();
     db_migrate!(db_url);
+
+    // 外部库多驱动：PG / MySQL / SQLite 一次注册，运行时按连接串 scheme 选驱动
+    db::install_drivers().map_err(anyhow::Error::msg)?;
 
     setup_app_config(app_config.as_ref().clone(), changed);
     setup_id_worker(app_config.id_worker.clone(), changed).await?;

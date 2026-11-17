@@ -22,12 +22,14 @@ port = 19007
 # 调度归 jobx：联调脚本自己打 pull 端点；没有 jobx/redis 时取数心跳会自动跳过
 pull-timeout = "10s"
 
-# 源库：poll 取数
+# 源库：poll 取数；engine 缺省时按连接串 scheme 推断，这里显式标注
 [syn.datasources.src]
+engine = "postgres"
 url = "postgresql://postgres:postgres@localhost:5432/syn_it_src"
 max-connections = 4
 
 # 下游库：DB sink 写数
 [syn.datasources.dst]
+engine = "postgres"
 url = "postgresql://postgres:postgres@localhost:5432/syn_it_dst"
 max-connections = 4

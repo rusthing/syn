@@ -21,6 +21,7 @@ function ds(code: string): DatasourceInfo {
     id: code,
     code,
     name: `${code} 库`,
+    engine: "postgres",
     target: "10.0.0.1:5432/iot",
     maxConnections: 4,
     enabled: true,

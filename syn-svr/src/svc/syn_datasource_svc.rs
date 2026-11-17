@@ -12,12 +12,13 @@ use robotech::api::U64;
 use robotech::db::get_db_conn;
 use robotech::svc::SvcError;
 use sea_orm::{ActiveValue, ColumnTrait, Condition, IntoActiveModel};
-use sqlx::postgres::PgPoolOptions;
 use std::time::{Duration, Instant};
 use syn_api::{
-    SynDatasourceEnabledDto, SynDatasourceQueryDto, SynDatasourceSaveDto, SynDatasourceTestDto,
-    SynDatasourceTestVo, SynDatasourceVo,
+    DbEngine, SynDatasourceEnabledDto, SynDatasourceQueryDto, SynDatasourceSaveDto,
+    SynDatasourceTestDto, SynDatasourceTestVo, SynDatasourceVo,
 };
+
+use crate::db;
 use tokio::time::timeout;
 use validator::Validate;
 use wheel_rs::time_utils::now_ms;
@@ -116,8 +117,11 @@ impl SynDatasourceSvc {
                 format!("数据源编码 {} 已存在", dto.code.trim()),
             ));
         }
-        let model =
-            SynDatasourceDao::insert(build_model(&dto, Some(url), None, user), db.as_ref()).await?;
+        let model = SynDatasourceDao::insert(
+            build_model(&dto, Some(url), None, user),
+            db.as_ref(),
+        )
+        .await?;
         // 新数据源要能被立即取到：各副本清掉「这个 code 查不到」的结论
         on_datasource_changed().await;
         Ok(to_vo(model))
@@ -139,9 +143,11 @@ impl SynDatasourceSvc {
         let existing = SynDatasourceDao::get_by_id::<_, Model>(id, db.as_ref())
             .await?
             .ok_or_else(|| SvcError::NotFound(format!("数据源 {id} 不存在")))?;
-        let model =
-            SynDatasourceDao::update(build_model(&dto, url, Some(existing), user), db.as_ref())
-                .await?;
+        let model = SynDatasourceDao::update(
+            build_model(&dto, url, Some(existing), user),
+            db.as_ref(),
+        )
+        .await?;
         // 连接串可能变了：不发信号的话，各副本会继续用旧池连旧库
         on_datasource_changed().await;
         Ok(to_vo(model))
@@ -172,36 +178,38 @@ impl SynDatasourceSvc {
     /// 只建一条临时连接、跑一声探活查询，**不碰进程级的池缓存**：测试失败不该
     /// 影响正在跑的直写库；测试成功也不该让运维的「测一下」变成正式建池。
     ///
+    /// 引擎优先级：草稿显式 `engine` > 连接串 scheme 推断 > 库里已存那条的引擎。
     /// 连不上不算接口错误：返回 `ok: false` 让状态栏自己描述。失败原因只回
     /// 服务端原话或分类描述 —— `sqlx` 的某些错误（尤其 `Configuration`）会把
     /// 连接串原样带进 `Display`，那里面有密码。
     pub async fn test(dto: SynDatasourceTestDto) -> Result<SynDatasourceTestVo, SvcError> {
+        let db = get_db_conn()?;
+        let saved = match dto.id {
+            Some(id) => SynDatasourceDao::get_by_id::<_, Model>(id, db.as_ref()).await?,
+            None => None,
+        };
         let url = match normalized_url(&dto.url) {
             Some(url) => url,
             None => {
-                let id = dto.id.ok_or_else(|| {
+                let row = saved.as_ref().ok_or_else(|| {
                     invalid("url", "没有可测的连接串：填一个，或指定已保存的数据源")
                 })?;
-                let db = get_db_conn()?;
-                SynDatasourceDao::get_by_id::<_, Model>(id, db.as_ref())
-                    .await?
-                    .ok_or_else(|| SvcError::NotFound(format!("数据源 {id} 不存在")))?
-                    .url
+                row.url.clone()
             }
         };
+        let engine = dto
+            .engine
+            .or_else(|| DbEngine::from_url(&url))
+            .or_else(|| saved.as_ref().map(|m| DbEngine::from(m.engine)))
+            .unwrap_or_default();
 
         let started = Instant::now();
         let attempt = timeout(TEST_TIMEOUT, async {
-            let pool = PgPoolOptions::new()
-                .max_connections(1)
-                .acquire_timeout(TEST_TIMEOUT)
-                .connect(&url)
-                .await?;
+            let pool = db::build_pool(engine, &url, 1).await?;
             // 只 connect 不查询的话，中间件把连接转给后端失败也能"成功"
-            let server: String =
-                sqlx::query_scalar("select current_setting('server_version')")
-                    .fetch_one(&pool)
-                    .await?;
+            let server: String = sqlx::query_scalar(engine.ping_sql())
+                .fetch_one(&pool)
+                .await?;
             pool.close().await;
             Ok::<String, sqlx::Error>(server)
         })
@@ -209,7 +217,11 @@ impl SynDatasourceSvc {
         let elapsed_ms = started.elapsed().as_millis() as u64;
 
         let (ok, server, message) = match attempt {
-            Ok(Ok(server)) => (true, Some(format!("PostgreSQL {server}")), "连接成功".to_string()),
+            Ok(Ok(server)) => (
+                true,
+                Some(format!("{} {server}", engine.label())),
+                "连接成功".to_string(),
+            ),
             Ok(Err(e)) => (false, None, describe_connect_error(&e)),
             Err(_) => (
                 false,
@@ -252,10 +264,10 @@ fn build_model(
 ) -> ActiveModel {
     let uid = user.value() as i64;
     let now = now_ms() as i64;
-    let mut am = match existing {
+    let mut am = match &existing {
         Some(model) => {
             let version = model.version + 1;
-            let mut am = model.into_active_model();
+            let mut am = model.clone().into_active_model();
             am.version = ActiveValue::Set(version);
             am.updater_id = ActiveValue::Set(uid);
             am.update_ms = ActiveValue::Set(now);
@@ -273,6 +285,13 @@ fn build_model(
     };
     am.code = ActiveValue::Set(dto.code.trim().to_string());
     am.name = ActiveValue::Set(dto.name.trim().to_string());
+    // 引擎：显式传了用显式值；否则按连接串 scheme 推断，推断不出沿用原值 / 默认 PG
+    let engine = dto.engine.or_else(|| {
+        url.as_deref()
+            .and_then(DbEngine::from_url)
+            .or(existing.as_ref().map(|m| DbEngine::from(m.engine)))
+    }).unwrap_or_default();
+    am.engine = ActiveValue::Set(i16::from(engine));
     if let Some(u) = url {
         am.url = ActiveValue::Set(u);
     }
@@ -297,6 +316,7 @@ fn to_vo(m: Model) -> SynDatasourceVo {
         id: U64::from(m.id),
         code: m.code,
         name: m.name,
+        engine: DbEngine::from(m.engine),
         target: mask_url(&m.url),
         max_connections: m.max_connections as u32,
         enabled: m.enabled,

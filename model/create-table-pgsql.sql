@@ -427,6 +427,7 @@ create table syn_datasource (
    id                   INT8                 not null,
    code                 VARCHAR(64)          not null,
    name                 VARCHAR(100)         not null,
+   engine               INT2                 not null default 0,
    url                  VARCHAR(500)         not null,
    max_connections      INT4                 not null default 4,
    enabled              BOOL                 not null default true,

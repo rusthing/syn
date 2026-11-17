@@ -341,10 +341,14 @@ export interface SourceSaveInput {
  * - 审计四列走 `Audit`（snake_case），与 `SyncTask` / `SyncSource` 对齐。
  * `id` 是 U64 雪花 ID，前端一律当字符串，不能转 number（会丢精度）。
  */
+/** 数据库引擎：postgres / mysql / sqlite */
+export type DbEngine = "postgres" | "mysql" | "sqlite";
+
 export interface DatasourceInfo extends Audit {
   id: string;
   code: string;
   name: string;
+  engine: DbEngine;
   /** 脱敏后的目标；连接串解析不出来时为 null */
   target?: string | null;
   maxConnections: number;
@@ -361,6 +365,7 @@ export interface DatasourceInfo extends Audit {
 export interface DatasourceSaveInput {
   code: string;
   name: string;
+  engine?: DbEngine;
   url?: string;
   maxConnections: number;
   enabled: boolean;
@@ -384,6 +389,7 @@ export interface DatasourceQuery {
 export interface DatasourceTestInput {
   id?: string;
   url?: string;
+  engine?: DbEngine;
 }
 
 /**

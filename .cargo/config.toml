@@ -1,0 +1,5 @@
+# etcd-client 的 build.rs 需要系统 protoc 编译 proto（本机未装 brew）。
+# protoc 解压在 ~/.local/protoc；cargo 的 [env] 不展开 $HOME，写绝对路径，
+# 避免每次 cargo 命令都要手动 export PROTOC。
+[env]
+PROTOC = "/Users/zbz/.local/protoc/bin/protoc"
