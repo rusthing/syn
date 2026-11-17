@@ -345,14 +345,21 @@ export function TasksPage() {
   );
 }
 
-/** 五段的存在感：有内容的那段点亮，一眼看出哪条规则是空的 */
+/**
+ * 段的存在感：有内容的那段点亮，一眼看出哪条规则是空的。
+ *
+ * 顺序与编辑器的轨道一致（投递在动作前）；db 直写没有动作段，所以那一段不画 ——
+ * 画一个恒为 0 的点，等于让读的人以为「动作没配」。
+ */
 function StageDots({ task }: { task: SyncTask }) {
   const spec = task.spec;
+  const db = spec.target.kind === "db";
   const stages = [
     { key: "匹配", count: spec.match?.length ?? 0, tone: "bg-accent" },
     { key: "映射", count: spec.mapping.rows.length, tone: "bg-info" },
     { key: "校验", count: spec.guards?.length ?? 0, tone: "bg-violet" },
-    { key: "动作", count: spec.actions?.length ?? 0, tone: "bg-warn" },
+    { key: "投递", count: 1, tone: "bg-stage" },
+    ...(db ? [] : [{ key: "动作", count: spec.actions?.length ?? 0, tone: "bg-warn" }]),
     { key: "判定", count: countRules(verdictRules(spec)), tone: "bg-success" },
   ];
   return (

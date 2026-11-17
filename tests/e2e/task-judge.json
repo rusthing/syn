@@ -1,6 +1,6 @@
 {
   "name": "联调-判定语句嵌套",
-  "remark": "e2e: switch 分流 + 臂内 if 两层判定（on conflict do nothing 造出 affected=0/1 两种响应）",
+  "remark": "e2e: switch 分流 + 臂内 if 两层判定（on conflict do nothing 造出 affected=0/1 两种响应；db 只能看 affected）",
   "spec": {
     "topic": "source:it_judge",
     "sort_order": 200,
@@ -22,9 +22,6 @@
         { "to": "updated_at", "from": "$.after.updated_at" }
       ]
     },
-    "actions": [
-      { "op": "r", "method": "POST", "path": "", "body": "mapped" }
-    ],
     "guards": [],
     "rules": [
       {
@@ -43,13 +40,12 @@
                 "kind": "if",
                 "branches": [
                   {
-                    "scope": "status",
-                    "assert": [{ "op": "in", "value": [200] }],
+                    "assert": [{ "field": "$.affected", "op": "eq", "value": 1 }],
                     "then": [{ "kind": "outcome", "verdict": "success", "code": "R_WROTE" }]
                   },
                   {
                     "assert": [],
-                    "then": [{ "kind": "outcome", "verdict": "fatal", "code": "R_BAD_STATUS" }]
+                    "then": [{ "kind": "outcome", "verdict": "fatal", "code": "R_BAD_AFFECTED" }]
                   }
                 ]
               }

@@ -40,7 +40,7 @@ pub struct SynDeliveryVo {
     pub task_name: String,
     /// 任务订阅的 topic
     pub topic: Option<String>,
-    /// 变更操作。两张表都不记，恒为 `null`
+    /// 变更操作。台账行恒为 `null`；明细行记 `c` / `r` / `u` / `d`
     pub op: Option<String>,
     /// 结论
     pub verdict: Verdict,
@@ -54,6 +54,10 @@ pub struct SynDeliveryVo {
     pub latency_ms: u64,
     /// 下游 HTTP 状态码。台账行按结论换算；传输失败 / DB 直写失败为空
     pub http_status: Option<u16>,
+    /// 实际发出的请求体快照（JSON 文本）。台账行恒为 `null`
+    pub request_body: Option<String>,
+    /// 下游响应体快照（JSON 文本）。台账行恒为 `null`
+    pub response_body: Option<String>,
     /// 首次记账时间 / 明细产生时间
     pub create_ms: U64,
     /// 补充说明（失败详情）。台账行恒为 `null`

@@ -1,8 +1,10 @@
 /**
  * 任务编辑窗体的六段元数据。
  *
- * 顺序就是执行顺序：匹配 → 映射 → 校验 → 动作 → 投递 → 判定。
- * 判定放在投递之后，因为它看的就是投递的响应；控制面板卡片、属性栏、画布段落
+ * 顺序就是配置顺序：匹配 → 映射 → 校验 → 投递 → 动作 → 判定。
+ * 投递排在动作之前，因为动作的形状依附于出口：`action.path` 相对 `target.base`，
+ * 而 `kind=db` 时动作段根本不存在（op 由记录自带，写库形状看 `on_conflict`）。
+ * 判定排在最后，因为它看的就是投递的响应。控制面板卡片、属性栏、画布段落
  * 都引用同一组 key（`TaskStage` / `TaskTab`），改顺序时三处必须一起看。
  *
  * 这里只放纯逻辑（顺序、概要、问题归段），方便单测；渲染在 `TaskStageRail`。
@@ -23,7 +25,7 @@ export type TaskTab =
 export interface StageDef {
   key: TaskTab;
   label: string;
-  /** 轨道上的圈号；JSON 段没有圈号 */
+  /** 轨道上的圈号；JSON 段没有圈号，db 任务的「动作」也不占号 */
   stage: string;
 }
 
@@ -31,12 +33,32 @@ export const STAGES: StageDef[] = [
   { key: "match", label: "匹配", stage: "1" },
   { key: "mapping", label: "映射", stage: "2" },
   { key: "guards", label: "校验", stage: "3" },
-  { key: "actions", label: "动作", stage: "4" },
-  // 投递在判定之前：判定段看的就是投递的响应，先有投递才有结论
-  { key: "target", label: "投递", stage: "5" },
+  // 先定出口，再定形状：路径前缀与「有没有动作段」都由投递段决定
+  { key: "target", label: "投递", stage: "4" },
+  { key: "actions", label: "动作", stage: "5" },
+  // 判定在最后：它看的就是投递的响应，先有投递才有结论
   { key: "outcomes", label: "判定", stage: "6" },
   { key: "json", label: "JSON", stage: "—" },
 ];
+
+/**
+ * 这份 spec 实际要显示的段。
+ *
+ * db 直写没有动作段 —— 执行器不读 actions，保存期也要求它为空（后端校验同一口径），
+ * 所以轨道与页签都不该出现它；圈号顺延，不能留一个空缺号。
+ */
+export function stagesFor(spec: TaskSpec): StageDef[] {
+  const db = spec.target.kind === "db";
+  const live = STAGES.filter((s) => !(db && s.key === "actions"));
+  return live.map((s, i) =>
+    s.stage === "—" ? s : { ...s, stage: String(i + 1) },
+  );
+}
+
+/** 当前 spec 下，这一段到底存不存在（供页签渲染与 `tabOfPath` 兜底用） */
+export function stageExists(spec: TaskSpec, key: TaskTab): boolean {
+  return stagesFor(spec).some((s) => s.key === key);
+}
 
 /** 问题路径 → 归属的段：保存失败时要能把人直接送到出错的那一段 */
 export function tabOfPath(path: string): TaskTab {

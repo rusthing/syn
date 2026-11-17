@@ -174,6 +174,8 @@ interface WireDelivery {
   recordKey?: string | null;
   latencyMs: number;
   httpStatus?: number | null;
+  requestBody?: string | null;
+  responseBody?: string | null;
   createMs: string;
   detail?: string | null;
 }
@@ -378,6 +380,8 @@ function toDelivery(v: WireDelivery): Delivery {
     record_key: v.recordKey ?? null,
     latency_ms: v.latencyMs,
     http_status: v.httpStatus ?? null,
+    request_body: v.requestBody ?? null,
+    response_body: v.responseBody ?? null,
     create_ms: v.createMs,
     detail: v.detail ?? null,
   };

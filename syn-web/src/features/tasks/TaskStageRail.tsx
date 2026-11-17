@@ -9,7 +9,7 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import type { TaskSpec } from "@/lib/api/types";
-import { STAGES, stageFilled, stageSummary, type StageDef, type TaskTab } from "./task-stages";
+import { stagesFor, stageFilled, stageSummary, type StageDef, type TaskTab } from "./task-stages";
 
 const ICONS: Record<TaskTab, { paths: string[]; cap?: boolean; join?: boolean }> = {
   // 漏斗：从一堆记录里筛出归本任务管的
@@ -139,8 +139,10 @@ export function TaskStageRail({
   issueCount: (key: TaskTab) => number;
   onSelect: (key: TaskTab) => void;
 }): ReactNode {
-  const steps = STAGES.filter((s) => s.key !== "json");
-  const json = STAGES.find((s) => s.key === "json")!;
+  // db 直写没有动作段：段列表与圈号都由 `stagesFor` 算，不要在这里判断 kind
+  const stages = stagesFor(spec);
+  const steps = stages.filter((s) => s.key !== "json");
+  const json = stages.find((s) => s.key === "json")!;
   const filled = steps.filter((s) => stageFilled(spec, s.key)).length;
 
   return (
@@ -151,7 +153,7 @@ export function TaskStageRail({
       */}
       <div className="sticky top-0 flex min-h-[380px] flex-col px-2 pb-2.5 pt-3">
         <div className="flex items-center justify-between px-1 pb-2 text-[11px] text-muted">
-          <span>6 段配置</span>
+          <span>{steps.length} 段配置</span>
           <span className="tnum">{filled} 已填</span>
         </div>
         <div className="relative">

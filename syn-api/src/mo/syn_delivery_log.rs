@@ -36,6 +36,12 @@ pub struct Model {
     pub stage: String,
     /// 失败详情
     pub detail: Option<String>,
+    /// 变更操作：`c` / `r` / `u` / `d`；记录缺 op 或取值不合法时为空
+    pub op: Option<String>,
+    /// 实际发出的请求体（映射后的 JSON 快照）；映射段之前短路时为空
+    pub request_body: Option<String>,
+    /// 下游响应体快照；传输失败 / DB 直写失败时为空
+    pub response_body: Option<String>,
     /// 下游 HTTP 状态码；没发出请求 / 传输失败 / DB 直写失败时为空
     pub http_status: Option<i16>,
     /// 本任务执行耗时（毫秒）

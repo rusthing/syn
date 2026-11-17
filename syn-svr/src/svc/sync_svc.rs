@@ -147,7 +147,7 @@ pub async fn handle(topic: &str, record: &Value, idem_key: Option<&str>) -> Sync
                         Stage::Action,
                         e.clone(),
                     );
-                    record_failure(topic, task, idem_key, &execution, latency_ms(started)).await;
+                    record_failure(topic, task, idem_key, record, &execution, latency_ms(started)).await;
                     return SyncOutcome::fatal("TARGET_UNRESOLVED", Stage::Action, e);
                 }
             };
@@ -157,7 +157,7 @@ pub async fn handle(topic: &str, record: &Value, idem_key: Option<&str>) -> Sync
         if let Some(key) = idem_key {
             remember(task, key, &execution).await;
         }
-        record_failure(topic, task, idem_key, &execution, elapsed).await;
+        record_failure(topic, task, idem_key, record, &execution, elapsed).await;
         executions.push(execution);
     }
 
@@ -177,6 +177,7 @@ async fn record_failure(
     topic: &str,
     task: &TaskSpec,
     idem_key: Option<&str>,
+    record: &Value,
     execution: &Execution,
     latency_ms: i32,
 ) {
@@ -184,6 +185,8 @@ async fn record_failure(
         return;
     }
     let Ok(db) = robotech::db::get_db_conn() else {
+        // 拿不到连接也要落 warn 日志：明细写不进去时，进程日志是唯一回溯入口
+        warn_failure(topic, task, idem_key, record, execution, latency_ms);
         return;
     };
     let now = now_ms() as i64;
@@ -196,6 +199,21 @@ async fn record_failure(
     am.code = sea_orm::ActiveValue::Set(truncate(&execution.code, 64));
     am.stage = sea_orm::ActiveValue::Set(truncate(execution.stage.as_str(), 20));
     am.detail = sea_orm::ActiveValue::Set(execution.detail.as_deref().map(|d| truncate(d, 1000)));
+    // 变更操作从原始记录取；映射段之前就短路时，request 快照还没渲染出来
+    am.op = sea_orm::ActiveValue::Set(op_label(record));
+    am.request_body = sea_orm::ActiveValue::Set(
+        execution
+            .request
+            .as_ref()
+            .and_then(|r| r.body.as_ref())
+            .map(|b| truncate(&b.to_string(), 4000)),
+    );
+    am.response_body = sea_orm::ActiveValue::Set(
+        execution
+            .response
+            .as_ref()
+            .map(|r| truncate(&r.body.to_string(), 4000)),
+    );
     // DB 直写失败时没有真实 HTTP 响应，留空；传输失败同样为空
     am.http_status = sea_orm::ActiveValue::Set(
         execution
@@ -211,6 +229,50 @@ async fn record_failure(
     if let Err(e) = SynDeliveryLogDao::insert(am, db.as_ref()).await {
         tracing::debug!("投递明细写入跳过: {e}");
     }
+
+    warn_failure(topic, task, idem_key, record, execution, latency_ms);
+}
+
+/// 失败结论打一条 warn 日志：明细落库失败时，运维还能从进程日志按 topic / 记录键回溯
+fn warn_failure(
+    topic: &str,
+    task: &TaskSpec,
+    idem_key: Option<&str>,
+    record: &Value,
+    execution: &Execution,
+    latency_ms: i32,
+) {
+    let req_body = execution
+        .request
+        .as_ref()
+        .and_then(|r| r.body.as_ref())
+        .map(|b| b.to_string());
+    let resp_body = execution.response.as_ref().map(|r| r.body.to_string());
+    tracing::warn!(
+        topic = topic,
+        task = %task.name,
+        verdict = execution.verdict.as_str(),
+        code = %execution.code,
+        stage = execution.stage.as_str(),
+        record_key = ?idem_key,
+        op = ?op_label(record),
+        http = execution.response.as_ref().map(|r| r.status),
+        latency_ms,
+        request = ?req_body,
+        response = ?resp_body,
+        detail = execution.detail.as_deref(),
+        "投递结论：{}",
+        execution.verdict.as_str(),
+    );
+}
+
+/// 记录上的变更操作文本；缺 op / 取值不合法时返回 `None`
+fn op_label(record: &Value) -> Option<String> {
+    record
+        .get("op")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// 按字符截断到列宽，超长时用省略号收尾（PostgreSQL 的 varchar 按字符计）

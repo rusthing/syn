@@ -15,6 +15,7 @@ import type {
   OnNull,
   Op,
   Operator,
+  Rule,
   Scope,
   TaskSpec,
   Verdict,
@@ -220,6 +221,28 @@ export function newTask(topic = "dtw.region", sortOrder = 100): TaskSpec {
       { kind: "outcome", verdict: "fatal", code: "unclassified" },
     ],
   };
+}
+
+/**
+ * db 直写的判定模板。
+ *
+ * `execute_db` 判的不是下游响应，而是写库结果的合成响应 `200 + { affected: n }`：
+ * status 恒为 200、没有记录、响应体只有 affected。所以这一套只回答一件事 ——
+ * 「一行都没写进去」算不算失败。想换力度就改这里的 1 与结论。
+ */
+export function dbRules(): Rule[] {
+  return [
+    {
+      kind: "if",
+      branches: [
+        {
+          assert: [{ scope: "body", field: "$.affected", op: "gte", value: 1 }],
+          then: [{ kind: "outcome", verdict: "success", code: "db_ok" }],
+        },
+      ],
+    },
+    { kind: "outcome", verdict: "fatal", code: "no_row" },
+  ];
 }
 
 /** 深拷贝：编辑器一律在副本上改，取消时才不会污染列表数据 */

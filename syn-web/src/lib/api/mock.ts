@@ -525,6 +525,8 @@ function buildDeliveries(): Delivery[] {
       latency_ms:
         verdict === "retriable" ? 3_000 + Math.floor(rand() * 2_000) : 40 + Math.floor(rand() * 260),
       http_status: verdict === "success" ? 200 : verdict === "skip" ? 200 : failure.status,
+      request_body: verdict === "success" || verdict === "skip" ? null : JSON.stringify({ name: "示例记录", code: "demo" }),
+      response_body: verdict === "success" || verdict === "skip" ? null : failure.detail,
       create_ms: String(create),
       detail: verdict === "success" || verdict === "skip" ? null : failure.detail,
     });

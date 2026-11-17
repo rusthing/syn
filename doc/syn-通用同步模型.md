@@ -14,18 +14,26 @@
 ## 1. 三段式
 
 ```
-        ┌── 取数 ──┐        ┌──────── 规则（五段）────────┐        ┌── 投递 ──┐
-来源 ──▶│ push     │──记录──▶│ 匹配 → 映射 → 校验 → 动作 → 判定 │──调用──▶│ http     │
-        │ poll     │  流    │                              │        │ db       │
-        └──────────┘        └──────────────────────────────┘        └──────────┘
+来源 ──▶ 取数（push / poll）──记录流──▶ 匹配 → 映射 → 校验 → 投递 → 动作 → 判定
 ```
 
 - **取数**决定「记录从哪来、什么形态」；
-- **五段**是纯函数，不认识来源也不认识目标；
-- **投递**由 `target.kind` 决定，是唯一有 IO 的地方。
+- **匹配 / 映射 / 校验**是纯函数，不认识来源也不认识目标；
+- **投递**（`target.kind`）只声明出口 —— http 服务，或 db 的数据源 + 表 + 冲突策略，是唯一有 IO 的地方；
+- **动作**把出口具体成「一次调用长什么样」：http 是四态矩阵（`c` / `r` / `u` / `d` 各自的
+  method / path / query / headers / body）；**db 直写没有这一段** —— `op` 由记录自带，
+  写库形状由 `on_conflict` 决定；
+- **判定**看投递的响应定结论。http 看得见 status / headers / body 与记录；db 直写看到的
+  只有合成响应 `{ affected: n }`（status 恒 200、记录为空），所以规则只许读 `$.affected`。
+
+所以：**http 六段、db 五段**。顺序上「投递」排在「动作」之前，理由只有一条 —— 依赖方向：
+动作的 `path` 是相对 `target.base` 拼出来的，db 的写库形状由 `on_conflict` 决定，出口
+不定，第 5 段无从谈起。先定出口，再定形状，最后定结论。保存期校验把这条落成硬约束：
+`kind = db` 时 `actions` 必须为空（留着就是永远不会被读的配置），判定段也只许出现
+`$.affected`（`syn-api::validate_actions` / `validate_db_verdict`，前端 `validateSpec` 同构）。
 
 关键：`poll` 把一批数据写成**虚拟 topic** `source:{code}`（`code` 是 `syn_source.code`）。
-任务通过 `topic` 关联，所以**五段完全不需要知道这条记录是推来的还是拉来的**。
+任务通过 `topic` 关联，所以**匹配 / 映射 / 校验完全不需要知道这条记录是推来的还是拉来的**。
 这是整个设计里最省事的一刀。
 
 ---
@@ -145,6 +153,15 @@ target:
 - 批量时按 key 分块生成 `insert ... on conflict do update set ...`；
 - 一个批次一个事务。
 
+db 与 http 有两处**不是同一份语义**，照抄会写出恒真/恒假的死配置：
+
+- **没有动作段**。`op` 由记录自带，写库形状由 `on_conflict` 决定，`method` / `path` /
+  `query` / `headers` / `body_mode` 在这里一个消费者都没有。留着只是让人以为它能改直写行为，
+  所以 `actions` 必须为空。
+- **判定只看 `$.affected`**。写库成功后执行器合成 `200 + { affected: n }` 再交给判定段：
+  status 恒 200、记录为空、报文只有 affected。`on_conflict: nothing` 撞键时 `affected = 0`，
+  这就是 db 唯一的「没写进去」信号。
+
 **必须承认的边界**：HTTP 与 DB 不在同一个事务里，跨协议同步只能做到 at-least-once，
 去重靠下游（DB 靠 `on conflict`，HTTP 靠幂等键）。这不是设计缺陷，是物理限制。
 
@@ -161,7 +178,8 @@ target:
 3. **不引入脚本**。现有三条链路 710 行 magic-api 脚本，全部落在配置里；
    真要脚本时（跨记录聚合）再开逃生门，默认关闭。
 
-五段仍然是五张表。新增的 `split` / `dispatch` / `target.kind` 都是**声明式开关**，
+规则段仍然只占 `syn_task.spec` 一个 JSONB 列，不拆从表。新增的 `split` /
+`dispatch` / `target.kind` 都是**声明式开关**，
 不是流程控制。
 
 ---
@@ -170,13 +188,13 @@ target:
 
 | 表 | 用途 |
 |---|---|
-| `syn_task` | 五段规则 + topic/sort_order/enabled |
+| `syn_task` | 整份任务规则（`target` / `match` / `mapping` / `guards` / `actions` / `rules`）+ topic/sort_order/enabled |
 | `syn_task_version` | 不可变版本快照，回滚只是指回去 |
 | `syn_source` | 数据抽取定义（kind/mode/topic/interval/batch/spec，spec 内可含手写 sql） |
 | `syn_cursor` | 每个数据抽取的水位 + 最近一次错误 |
 | `syn_idem` | 幂等记账（task_id + idem_key） |
 
-`syn_source.topic` = `source:{id}`，任务照常按 topic 关联，五段不用改。
+`syn_source.topic` = `source:{id}`，任务照常按 topic 关联，规则段不用改。
 
 ---
 

@@ -227,11 +227,9 @@ export function validateSpec(spec: TaskSpec): SpecIssue[] {
     });
   });
 
-  // 动作
+  // 动作：只在 http 出口存在。db 直写不读它（op 由记录自带、写库形状看 on_conflict），
+  // 后端保存期也要求为空 —— 留着就是一份永远不会生效的配置。
   const actions = spec.actions ?? [];
-  if (actions.length === 0) {
-    issues.push({ path: "actions", kind: "missing", message: "至少要有一个动作，否则任务无法发出任何请求" });
-  }
   const ops = new Set<string>();
   actions.forEach((a, i) => {
     const at = `actions[${i}]`;
@@ -246,13 +244,26 @@ export function validateSpec(spec: TaskSpec): SpecIssue[] {
       issues.push({ path: at, kind: "invalid", message: "GET 不应带请求体" });
     }
   });
-  // 快照重放是最容易被漏掉的一条：漏了它，历史数据永远补不上，而且不报错
-  if (actions.length > 0 && !ops.has("r")) {
-    issues.push({
-      path: "actions",
-      kind: "invalid",
-      message: "未配置 r（快照读）动作，快照重放的记录会找不到动作",
-    });
+  if (spec.target.kind === "db") {
+    if (actions.length > 0) {
+      issues.push({
+        path: "actions",
+        kind: "invalid",
+        message: "db 直写不读动作：op 由记录自带、写库形状由 target.on_conflict 决定，把动作清空",
+      });
+    }
+  } else {
+    if (actions.length === 0) {
+      issues.push({ path: "actions", kind: "missing", message: "至少要有一个动作，否则任务无法发出任何请求" });
+    }
+    // 快照重放是最容易被漏掉的一条：漏了它，历史数据永远补不上，而且不报错
+    if (actions.length > 0 && !ops.has("r")) {
+      issues.push({
+        path: "actions",
+        kind: "invalid",
+        message: "未配置 r（快照读）动作，快照重放的记录会找不到动作",
+      });
+    }
   }
 
   // 守卫
@@ -301,7 +312,85 @@ export function validateSpec(spec: TaskSpec): SpecIssue[] {
     }
   }
 
+  // db 直写：判定段的输入是合成响应，只能看 affected（同后端 validate_db_verdict）
+  if (spec.target.kind === "db") {
+    if (rules.length > 0) {
+      checkDbBlock("rules", rules, issues);
+    } else {
+      outcomes.forEach((o, i) => {
+        o.assert.forEach((c, j) => {
+          checkDbCondition(`outcomes[${i}].assert[${j}]`, c, o.scope, issues);
+        });
+      });
+    }
+  }
+
   return issues;
+}
+
+/**
+ * db 直写的判定：只能看合成响应里的 `$.affected`。
+ *
+ * 执行器写库成功后合成 `200 + { affected: n }` 再交给判定段，所以 status 恒为 200、
+ * 记录为空、报文只有 affected。写 status / record 或别的字段，都是恒真或恒假的死配置，
+ * 恒假的那条还会让整串规则不命中、落成 UNCLASSIFIED 致命。与后端 `validate_db_verdict` 同构。
+ */
+function checkDbScope(at: string, field: string, scope: Scope, issues: SpecIssue[]): void {
+  if (scope === "status") {
+    issues.push({
+      path: at,
+      kind: "invalid",
+      message: "db 直写没有真实响应：status 恒为 200，判定只能看 $.affected",
+    });
+    return;
+  }
+  if (scope === "record") {
+    issues.push({
+      path: at,
+      kind: "invalid",
+      message: "db 直写的判定看不到记录：能看的只有合成响应里的 $.affected",
+    });
+    return;
+  }
+  if (field.trim().replace(/^\$\./, "") !== "affected") {
+    issues.push({
+      path: at,
+      kind: "invalid",
+      message: "db 直写只有合成响应 { affected: n }：判定只能看 $.affected（写进去的行数）",
+    });
+  }
+}
+
+function checkDbCondition(at: string, c: Condition, fallback: Scope, issues: SpecIssue[]): void {
+  if (isAssert(c)) {
+    checkDbScope(at, c.field ?? "", c.scope ?? fallback, issues);
+    return;
+  }
+  if ("all" in c) {
+    c.all.forEach((x, i) => checkDbCondition(`${at}.all[${i}]`, x, fallback, issues));
+  } else if ("any" in c) {
+    c.any.forEach((x, i) => checkDbCondition(`${at}.any[${i}]`, x, fallback, issues));
+  } else {
+    checkDbCondition(`${at}.not`, c.not, fallback, issues);
+  }
+}
+
+function checkDbBlock(at: string, block: Rule[], issues: SpecIssue[]): void {
+  block.forEach((rule, i) => {
+    const rat = `${at}[${i}]`;
+    if (rule.kind === "outcome") return;
+    if (rule.kind === "if") {
+      rule.branches.forEach((b, j) => {
+        const bat = `${rat}.branches[${j}]`;
+        (b.assert ?? []).forEach((c, k) => checkDbCondition(`${bat}.assert[${k}]`, c, b.scope ?? "body", issues));
+        checkDbBlock(`${bat}.then`, b.then ?? [], issues);
+      });
+      return;
+    }
+    checkDbScope(`${rat}.on`, rule.on, rule.scope ?? "body", issues);
+    rule.cases.forEach((c, j) => checkDbBlock(`${rat}.cases[${j}].then`, c.then ?? [], issues));
+    checkDbBlock(`${rat}.default`, rule.default ?? [], issues);
+  });
 }
 
 function validateRuleBlock(at: string, block: Rule[], issues: SpecIssue[], depth: number): void {

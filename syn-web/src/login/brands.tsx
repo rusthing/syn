@@ -683,7 +683,7 @@ export const BRANDS: Record<BrandKey, LoginBrand> = {
     eyebrow: "SYNC · FIVE-STAGE PIPELINE",
     headline: ["五段顺序固定，", "改库之前先给出答案。"],
     description: "任务规则（五段）、数据抽取、试跑、投递记录、幂等台账。图形化配置最怕点了保存才发现规则写错，试跑必须能在改库之前给出答案。",
-    features: ["匹配 → 映射 → 校验 → 动作 → 判定，命中即停", "变换链含 WKB→WKT，Debezium 的 PostGIS 十六进制能走通", "成功 / 跳过 / 失败 / 重试，四种判定决定 offset 与死信"],
+    features: ["匹配 → 映射 → 校验 → 投递 → 动作 → 判定，命中即停", "变换链含 WKB→WKT，Debezium 的 PostGIS 十六进制能走通", "成功 / 跳过 / 失败 / 重试，四种判定决定 offset 与死信"],
     terms: "MATCH · MAP · GUARD · ACTION · VERDICT · IDEM",
     storyFoot: "「真实投递」调 POST /syn/sync/{topic}，返回的就是 sink 会收到的结论。",
     formTitle: "登录同步台",

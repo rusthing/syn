@@ -357,7 +357,7 @@ assert_eq "fatal 不记幂等台账" 2 "$(q syn_it 'select count(*) from syn_ide
 
 # ---- 判定语句树（rules） ---------------------------------------------------
 # 前面几段全用老的扁平 outcomes（同一份夹具顺带锁住「老配置零迁移」）。
-# 这一段专测新形状：switch 按 affected 分流，臂里再嵌一层 if 看状态码。
+# 这一段专测新形状：switch 按 affected 分流，臂里再嵌一层 if（db 没有真实响应，内层只能再看 affected）。
 # on conflict do nothing 让同一个 id 第二次写回 affected=0，两种响应就都有了，
 # 不用为「造一个失败响应」去改库。
 say "判定语句：switch 分流 + 臂内 if 两层"

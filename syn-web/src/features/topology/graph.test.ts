@@ -223,20 +223,44 @@ describe("buildGraph", () => {
 });
 
 describe("taskSegments", () => {
-  it("六段的顺序与概要固定，投递在判定之前", () => {
+  it("段序固定：投递在动作之前、判定在最后", () => {
     const segments = taskSegments(specOf("dtw.region"));
     expect(segments.map((s) => s.stage)).toEqual([
       "match",
       "mapping",
       "guards",
-      "actions",
       "target",
+      "actions",
       "outcomes",
+    ]);
+    expect(segments.map((s) => s.label)).toEqual([
+      "1 匹配",
+      "2 映射",
+      "3 校验",
+      "4 投递",
+      "5 动作",
+      "6 判定",
     ]);
     expect(segments[0].detail).toBe("1 条断言");
     expect(segments[1].detail).toBe("1 个字段");
-    expect(segments[4].detail).toBe("dtw-rs-svr");
+    expect(segments[3].detail).toBe("dtw-rs-svr");
     expect(segments.every((s) => s.issues === 0)).toBe(true);
+  });
+
+  it("db 直写不画动作段，序号顺延", () => {
+    const spec = specOf("dtw.region", {
+      target: { kind: "db", service: "", base: "", datasource: "iot", table: "region", key: ["id"] },
+      actions: [],
+    });
+    const segments = taskSegments(spec);
+    expect(segments.map((s) => s.stage)).toEqual([
+      "match",
+      "mapping",
+      "guards",
+      "target",
+      "outcomes",
+    ]);
+    expect(segments.map((s) => s.label)).toEqual(["1 匹配", "2 映射", "3 校验", "4 投递", "5 判定"]);
   });
 
   it("校验问题按 path 归到对应段", () => {
@@ -250,7 +274,10 @@ describe("taskSegments", () => {
     const spec = specOf("dtw.region", {
       target: { kind: "db", service: "", base: "", datasource: "iot", table: "region", key: ["id"] },
     });
-    expect(taskSegments(spec)[4].detail).toBe("iot · region");
+    // db 没有动作段：投递是第 4 项（下标 3）
+    const segments = taskSegments(spec);
+    expect(segments.find((s) => s.stage === "target")!.detail).toBe("iot · region");
+    expect(segments.some((s) => s.stage === "actions")).toBe(false);
   });
 });
 

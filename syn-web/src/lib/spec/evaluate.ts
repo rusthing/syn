@@ -552,6 +552,41 @@ export function preview(spec: TaskSpec, record: unknown, options: PreviewOptions
     steps.push({ stage: "action", ok: false, title: "记录缺少 op", detail: "op 必须是 c/r/u/d 之一" });
     return { ...stop("fatal", "NO_OP", "action", "记录缺少 op 或取值不合法"), body: mapped.body };
   }
+  // db 直写没有动作段：op 由记录自带，写库形状看 on_conflict（同 execute_db）
+  if (spec.target.kind === "db") {
+    const ds = spec.target.datasource?.trim() || "«数据源»";
+    const table = spec.target.table?.trim() || "«表»";
+    const request: RequestPreview = {
+      method: "POST",
+      url: `db://${ds}/${table}`,
+      query: [],
+      headers: [],
+      body: mapped.body,
+    };
+    steps.push({
+      stage: "action",
+      ok: true,
+      title: `写库 · op=${op}`,
+      detail: `${spec.target.on_conflict ?? "update"} · ${request.url}`,
+    });
+    steps.push({
+      stage: "transport",
+      ok: true,
+      title: "待真实写库",
+      detail: "本地预演不连库；勾选「真实投递」由服务端写，判定只看 affected",
+    });
+    return {
+      task,
+      verdict: "success",
+      code: "preview_only",
+      stage: "transport",
+      steps,
+      body: mapped.body,
+      request,
+      op,
+    };
+  }
+
   const action = (spec.actions ?? []).find((a) => a.op === op);
   if (!action) {
     steps.push({ stage: "action", ok: false, title: `未配置 op=${op} 的动作` });

@@ -1853,14 +1853,16 @@ false 表示这条记录还要继续喂给后面的任务（一分多）</a:Comm
 </o:EntityAttribute>
 <o:EntityAttribute Id="o18">
 <a:ObjectID>9725094D-B8DC-513A-8A1B-93638D3E7484</a:ObjectID>
-<a:Name>五段规则</a:Name>
+<a:Name>任务规则</a:Name>
 <a:Code>spec</a:Code>
 <a:CreationDate>1794481012</a:CreationDate>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794481012</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>五段规则（match / mapping / actions / guards / outcomes）
+<a:Comment>任务规则（target / match / mapping / guards / actions / rules）
 嵌套结构，整体被执行器消费，没有任何一列参与检索，所以按 JSONB 存
+target.kind=http 时 actions 是四态调用矩阵；kind=db 时 actions 必须为空：op 由记录自带，写库形状由 target.on_conflict 决定
+判定段的输入跟着出口走：http 是下游响应，db 是合成响应 { "affected": n }，所以 db 只能看 $.affected
 topic / sort_order / enabled / exclusive 以本表的列为准，spec 里的同名字段只是导入来源</a:Comment>
 <a:DataType>JSONB</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
@@ -2042,7 +2044,7 @@ topic / sort_order / enabled / exclusive 以本表的列为准，spec 里的同�
 </o:EntityAttribute>
 <o:EntityAttribute Id="o31">
 <a:ObjectID>A824FD71-4A92-58E0-946E-C5CA2FF95855</a:ObjectID>
-<a:Name>五段规则</a:Name>
+<a:Name>任务规则</a:Name>
 <a:Code>spec</a:Code>
 <a:CreationDate>1794481012</a:CreationDate>
 <a:Creator>张柏子</a:Creator>

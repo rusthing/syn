@@ -605,6 +605,9 @@ create table syn_delivery_log (
    code                 VARCHAR(64)          not null,
    stage                VARCHAR(20)          not null,
    detail               VARCHAR(1000)        null,
+   op                   VARCHAR(8)           null,
+   request_body         TEXT                 null,
+   response_body        TEXT                 null,
    http_status          INT2                 null,
    latency_ms           INT4                 not null,
    creater_id           INT8                 not null,
@@ -660,6 +663,18 @@ comment on column syn_delivery_log.detail is
 '失败详情
 守卫消息、传输错误、下游响应片段等，超长会被截断
 @len 0..=1000';
+
+comment on column syn_delivery_log.op is
+'变更操作
+c / r / u / d；记录缺 op 或取值不合法时为空';
+
+comment on column syn_delivery_log.request_body is
+'实际发出的请求体快照（映射后的 JSON）
+映射段之前短路时为空；超长截断';
+
+comment on column syn_delivery_log.response_body is
+'下游响应体快照（JSON）
+传输失败 / DB 直写失败时为空；超长截断';
 
 comment on column syn_delivery_log.http_status is
 '下游 HTTP 状态码

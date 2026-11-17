@@ -1,12 +1,19 @@
 //! # 执行编排
 //!
-//! 一次 `execute` 就是一条记录走完五段。顺序固定，短路点固定：
+//! 一条记录先走完共用的四段，再按 `target.kind` 分岔。顺序固定，短路点固定：
 //!
 //! ```text
-//! 启用? → 匹配 → 映射 → 校验 → 选动作 → 发送 → 判定
-//!    ↓否    ↓不命中  ↓失败   ↓拒绝    ↓没有    ↓IO 错   ↓规则
-//!   skip   skip   fatal   fatal   fatal  retriable
+//! 启用? → 匹配 → 映射 → 校验 → ┬─ http：选动作 → 发送 → 判定
+//!    ↓否    ↓不命中  ↓失败   ↓拒绝 └─ db  ：写库        → 判定
+//!   skip   skip   fatal   fatal        ↓没有动作 / IO 错  ↓规则
+//!                                      fatal | retriable
 //! ```
+//!
+//! db 直写**没有动作段**：`op` 由记录自带（`c` / `r` / `u` 走 upsert，`d` 走删除），
+//! 写库形状由 `target.on_conflict` 决定，动作里的 method / path / query / headers
+//! 一个都不参与。判定段的输入也不是下游响应，而是写库结果的合成响应
+//! `200 + {"affected": n}` —— 所以 db 任务的判定只能看 `$.affected`，
+//! 保存期由 `TaskSpec::validate` 拦掉其它写法。
 //!
 //! 短路之后**立刻返回**，不再尝试后面的段。这样每条失败只有一个明确的原因，
 //! 死信里能看到到底是哪一段把它挡下来的。
@@ -131,7 +138,18 @@ pub async fn execute<T: Transport + ?Sized>(
         Err(stop) => return stop,
     };
 
-    let request = render(spec, record, &prepared.body, base_url, prepared.action);
+    // 动作是 http 出口自己的东西：db 直写不读它（见 `execute_db`）
+    let Some(action) = spec.actions.iter().find(|a| a.op == prepared.op) else {
+        return Execution::stop(
+            spec,
+            Verdict::Fatal,
+            "NO_ACTION_FOR_OP",
+            Stage::Action,
+            format!("未配置 op={} 的动作", prepared.op.as_str()),
+        );
+    };
+
+    let request = render(spec, record, &prepared.body, base_url, action);
 
     let response = match transport.send(&request).await {
         Ok(r) => r,
@@ -156,8 +174,13 @@ pub async fn execute<T: Transport + ?Sized>(
 
 /// # 执行一条记录（DB 直写）
 ///
-/// 与 [`execute`] 共用前四段，只把最后一步换成写库。判定段照常生效：写库成功合成一个
-/// `200 + {"affected": n}` 的响应，所以「一行都没写进去」可以用 `$.affected eq 0` 表达。
+/// 与 [`execute`] 共用前四段，然后**跳过动作段直接写库**：`op` 由记录自带，
+/// 写库形状由 `target.on_conflict` 决定，动作里的 method / path / query / headers
+/// 在这条链路上没有任何消费者（db 任务的 `actions` 必须为空，保存期就拦）。
+///
+/// 判定段照常跑，但输入是写库结果的合成响应 `200 + {"affected": n}` —— 不是下游响应。
+/// 因此 db 任务的判定只能看 `$.affected`：「一行都没写进去」用 `$.affected eq 0` 表达。
+/// 拿 status 或响应体其它字段写规则，在保存期就会被 `TaskSpec::validate` 拒掉。
 ///
 /// 伪 URL `db://<数据源>/<表>` 只服务于试跑面板与日志 —— 让人一眼看出这条记录打算写哪儿，
 /// 不参与任何真实请求。
@@ -215,13 +238,12 @@ pub async fn execute_db<D: DbWriter + ?Sized>(
     }
 }
 
-/// # 前四段：启用 → 匹配 → 映射 → 校验 → 选动作
+/// # 前四段：启用 → 匹配 → 映射 → 校验 → 取变更操作
 ///
-/// 两种投递共用这一段。短路点固定，失败立刻返回，保证一条记录只有一个失败原因。
-struct Prepared<'a> {
-    /// 选中的动作
-    action: &'a syn_api::Action,
-    /// 变更操作
+/// 两种投递共用这一段，**不含动作选择**：动作只在 http 出口存在，db 直写不要它。
+/// 短路点固定，失败立刻返回，保证一条记录只有一个失败原因。
+struct Prepared {
+    /// 变更操作：http 用来挑动作，db 用来决定 upsert / 删除
     op: Op,
     /// 映射后的请求体 / 待写行
     body: Map<String, Value>,
@@ -229,7 +251,7 @@ struct Prepared<'a> {
 
 // `Execution` 带请求/响应快照，体积大；这里只在进程内传一次，装箱反而多一次分配
 #[allow(clippy::result_large_err)]
-fn prepare<'a>(spec: &'a TaskSpec, record: &Value) -> Result<Prepared<'a>, Execution> {
+fn prepare(spec: &TaskSpec, record: &Value) -> Result<Prepared, Execution> {
     if !spec.enabled {
         return Err(Execution::stop(
             spec,
@@ -299,7 +321,9 @@ fn prepare<'a>(spec: &'a TaskSpec, record: &Value) -> Result<Prepared<'a>, Execu
         }
     }
 
-    // 4 选动作
+    // 4 取变更操作
+    // op 是记录自带的（sink 或 poll 写进来的 `c` / `r` / `u` / `d`），不是动作上的字段。
+    // http 拿它挑动作，db 拿它决定 upsert 还是删除；缺 op 谁都发不出去。
     let Some(op) = op_of(record) else {
         return Err(Execution::stop(
             spec,
@@ -309,18 +333,8 @@ fn prepare<'a>(spec: &'a TaskSpec, record: &Value) -> Result<Prepared<'a>, Execu
             "记录缺少 op 或取值不合法",
         ));
     };
-    let Some(action) = spec.actions.iter().find(|a| a.op == op) else {
-        return Err(Execution::stop(
-            spec,
-            Verdict::Fatal,
-            "NO_ACTION_FOR_OP",
-            Stage::Action,
-            format!("未配置 op={} 的动作", op.as_str()),
-        ));
-    };
 
     Ok(Prepared {
-        action,
         op,
         body: mapped.body,
     })
@@ -803,6 +817,9 @@ mod tests {
     }
 
     /// 把 region_spec 改成直写 `dtw.dtw_region`
+    ///
+    /// 顺带把动作清空、判定换成只看 `$.affected`：这才是 db 任务合法的形状
+    /// （保存期就是这么校验的，见 `TaskSpec::validate`）。
     fn db_spec() -> TaskSpec {
         let mut spec = region_spec();
         spec.target = Target {
@@ -812,6 +829,28 @@ mod tests {
             key: vec!["id".into()],
             ..Target::default()
         };
+        // db 直写没有动作段：op 由记录自带
+        spec.actions.clear();
+        spec.outcomes = vec![
+            syn_api::Outcome {
+                scope: Scope::Body,
+                asserts: vec![syn_api::Condition::Assert(syn_api::Assert {
+                    field: Some("$.affected".into()),
+                    op: syn_api::Operator::Gte,
+                    value: Some(serde_json::json!(1)),
+                    scope: None,
+                })],
+                verdict: Verdict::Success,
+                code: "db_ok".into(),
+            },
+            // 兜底：affected 不是正数就别当成功（空断言 = 无 field 的兜底）
+            syn_api::Outcome {
+                scope: Scope::Body,
+                asserts: vec![],
+                verdict: Verdict::Fatal,
+                code: "no_row".into(),
+            },
+        ];
         spec
     }
 
@@ -829,6 +868,33 @@ mod tests {
         assert_eq!(row.get("tags"), Some(&serde_json::json!("|电子围栏|")));
         // 试跑面板要能显示「写哪儿」
         assert_eq!(ex.request.unwrap().url, "db://dtw/public.dtw_region");
+    }
+
+    #[tokio::test]
+    async fn db_target_needs_no_action_at_all() {
+        // 动作清空后照样能写库：db 链路上「动作」没有消费者，op 来自记录本身
+        let db = MockDb::new(1);
+        let spec = db_spec();
+        assert!(spec.actions.is_empty(), "db 任务不应带动作");
+        let ex = execute_db(&spec, &ok_record(), &db).await;
+        assert_eq!(ex.verdict, Verdict::Success);
+        assert_eq!(ex.code, "db_ok");
+    }
+
+    #[tokio::test]
+    async fn db_record_without_op_is_fatal() {
+        // op 是记录自带的：缺了它，写库连 upsert 还是删除都定不了。
+        // 这里把 match 段清空，让记录真的走到第 4 步，否则会先按 no_match 跳过。
+        let db = MockDb::new(1);
+        let mut spec = db_spec();
+        spec.match_conds.clear();
+        let mut record = ok_record();
+        record.as_object_mut().unwrap().remove("op");
+        let ex = execute_db(&spec, &record, &db).await;
+        assert_eq!(ex.verdict, Verdict::Fatal);
+        assert_eq!(ex.code, "NO_OP");
+        assert_eq!(ex.stage, Stage::Action);
+        assert!(db.last.lock().unwrap().is_none(), "没 op 就不该碰库");
     }
 
     #[tokio::test]

@@ -129,9 +129,9 @@ export function Sidebar() {
         </div>
 
         <p className="mt-6 px-2 text-[10.5px] leading-relaxed text-muted/80">
-          五段顺序固定：匹配 → 映射 → 校验 → 动作 → 判定。
+          顺序固定：匹配 → 映射 → 校验 → 投递 → 动作 → 判定。
           <br />
-          任何一段短路，后段不再执行。
+          任何一段短路，后段不再执行；db 直写没有动作段。
         </p>
       </nav>
 

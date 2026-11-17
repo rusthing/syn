@@ -11,7 +11,7 @@
  * 消费者集合 = 匹配它的任务；两边都为空的 topic 不存在，不会被画出来。
  *
  * 方向就是数据流：数据源 → 数据抽取 → 主题 → 任务。投递不画成节点 ——
- * 它是任务的第五段（第六段判定看的就是投递的响应），画到卡里（见 `TaskCard`），
+ * 它是任务的第四段（第 5 段动作的 path 相对它的 base，第 6 段判定看的是它换来的响应），画到卡里（见 `Card`），
  * 否则多个任务投同一个服务时会连出一堆交叉线，还把「投递目标」误当成共享实体。
  */
 
@@ -31,7 +31,7 @@ export const nodeId = (kind: CanvasNodeKind, key: string): string => `${kind}:${
 
 export type NodeTone = "ok" | "warn" | "bad" | "muted";
 
-/** 任务卡里可点开的六段，值与任务窗体的页签同名 */
+/** 任务卡里可点开的规则段（http 六段、db 五段），值与任务窗体的页签同名 */
 export type TaskStage = "match" | "mapping" | "guards" | "actions" | "outcomes" | "target";
 
 export interface TaskSegment {
@@ -61,7 +61,7 @@ export interface GraphNode {
   task?: SyncTask;
   source?: SyncSource;
   datasource?: DatasourceInfo;
-  /** 任务卡的六段 */
+  /** 任务卡的规则段 */
   segments?: TaskSegment[];
   /** 主题节点：写它的数据抽取数 / 消费它的任务数 */
   producers: number;
@@ -87,18 +87,27 @@ export function worstTone(...tones: NodeTone[]): NodeTone {
   return tones.reduce((a, b) => (TONE_RANK[b] < TONE_RANK[a] ? b : a), "ok");
 }
 
-/* ------------------------------- 任务六段 ------------------------------- */
+/* ------------------------------- 规则段 ------------------------------- */
 
-const STAGE_LABEL: Array<{ stage: TaskStage; label: string }> = [
-  { stage: "match", label: "1 匹配" },
-  { stage: "mapping", label: "2 映射" },
-  { stage: "guards", label: "3 校验" },
-  { stage: "actions", label: "4 动作" },
-  // 投递在判定之前：判定段看的就是投递的响应（http 的回复 / db 的 {affected:n}），
-  // 先有投递才有结论，顺序不能反过来
-  { stage: "target", label: "5 投递" },
-  { stage: "outcomes", label: "6 判定" },
-];
+const STAGE_NAME: Record<TaskStage, string> = {
+  match: "匹配",
+  mapping: "映射",
+  guards: "校验",
+  target: "投递",
+  actions: "动作",
+  outcomes: "判定",
+};
+
+/**
+ * 段序：先定出口（投递），再定形状（动作），最后定结论（判定）。
+ *
+ * 动作的 `path` 相对投递段的 `base`，db 的写库形状由 `on_conflict` 决定 —— 出口
+ * 不定，第 5 段无从谈起。db 直写没有动作段，所以那一段不出现、序号顺延。
+ */
+function stageOrder(spec: TaskSpec): TaskStage[] {
+  const base: TaskStage[] = ["match", "mapping", "guards", "target"];
+  return spec.target.kind === "db" ? [...base, "outcomes"] : [...base, "actions", "outcomes"];
+}
 
 /** 投递段概要：http 看服务 + 路径，db 看数据源 + 表 */
 export function targetSummary(spec: TaskSpec): string {
@@ -121,7 +130,7 @@ export function targetDetail(spec: TaskSpec): string {
 }
 
 /**
- * 把一个任务的 spec 拆成六段概要。
+ * 把一个任务的 spec 拆成规则段概要。
  *
  * 段内只放「条数 / 名字」这类一眼能核对的信息，完整内容仍在窗体里改 ——
  * 卡片上塞下 `$.after.op in [c,r,u,d]` 会让卡变成第二份编辑器。
@@ -143,9 +152,9 @@ export function taskSegments(spec: TaskSpec): TaskSegment[] {
     if (stage) counts[stage].issues += 1;
   }
 
-  return STAGE_LABEL.map(({ stage, label }) => ({
+  return stageOrder(spec).map((stage, i) => ({
     stage,
-    label,
+    label: `${i + 1} ${STAGE_NAME[stage]}`,
     detail: counts[stage].detail,
     issues: counts[stage].issues,
   }));

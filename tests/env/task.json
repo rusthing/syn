@@ -22,9 +22,6 @@
         { "to": "updated_at", "from": "$.after.updated_at" }
       ]
     },
-    "actions": [
-      { "op": "r", "method": "POST", "path": "", "body": "mapped" }
-    ],
     "guards": [],
     "outcomes": [
       {
@@ -34,8 +31,8 @@
         "code": "DB_OK"
       },
       {
-        "scope": "status",
-        "assert": [{ "op": "in", "value": [200] }],
+        "scope": "body",
+        "assert": [],
         "verdict": "fatal",
         "code": "DB_NO_ROW"
       }

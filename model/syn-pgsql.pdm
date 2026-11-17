@@ -4759,7 +4759,7 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794481012</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>同步任务：五段规则的载体。一条记录命中哪些任务，由 match 段决定，与 topic 一起构成匹配入口</a:Comment>
+<a:Comment>同步任务：规则与投递的载体。一条记录命中哪些任务，由 match 段决定，与 topic 一起构成匹配入口</a:Comment>
 <a:History>ORG {235B2DC3-96A2-57B4-8BF2-D9F9C93BF3CF}
 DAT 1794481012</a:History>
 <a:GlobalObjectID/>
@@ -4873,14 +4873,16 @@ DAT 1794481012</a:History>
 </o:Column>
 <o:Column Id="o14">
 <a:ObjectID>4EE385FD-130F-5317-93FC-630190D019F2</a:ObjectID>
-<a:Name>五段规则</a:Name>
+<a:Name>任务规则</a:Name>
 <a:Code>spec</a:Code>
 <a:CreationDate>1794481012</a:CreationDate>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794481012</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>五段规则（match / mapping / actions / guards / outcomes）
+<a:Comment>任务规则（target / match / mapping / guards / actions / rules）
 嵌套结构，整体被执行器消费，没有任何一列参与检索，所以按 JSONB 存
+target.kind=http 时 actions 是四态调用矩阵；kind=db 时 actions 必须为空：op 由记录自带，写库形状由 target.on_conflict 决定
+判定段的输入跟着出口走：http 是下游响应，db 是合成响应 { "affected": n }，所以 db 只能看 $.affected
 topic / sort_order / enabled / exclusive 以本表的列为准，spec 里的同名字段只是导入来源</a:Comment>
 <a:History>ORG {9725094D-B8DC-513A-8A1B-93638D3E7484}
 DAT 1794481012</a:History>
@@ -5114,13 +5116,13 @@ DAT 1794481012</a:History>
 </o:Column>
 <o:Column Id="o32">
 <a:ObjectID>320D75BA-FEDB-5B79-BDDE-DF0D30E140AC</a:ObjectID>
-<a:Name>五段规则</a:Name>
+<a:Name>任务规则</a:Name>
 <a:Code>spec</a:Code>
 <a:CreationDate>1794481012</a:CreationDate>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794481012</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>该版本的完整五段规则</a:Comment>
+<a:Comment>该版本的完整任务规则（target / 五段 / 判定）</a:Comment>
 <a:History>ORG {A824FD71-4A92-58E0-946E-C5CA2FF95855}
 DAT 1794481012</a:History>
 <a:DataType>JSONB</a:DataType>

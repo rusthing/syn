@@ -24,13 +24,15 @@ use super::db_err;
 /// 台账行补 `stage='verdict'`、`latency_ms=0`、`detail=null`，明细行直接用自己的值。
 const UNION_SQL: &str = "\
  select 'idem' as source, i.id as id, i.task_id as task_id, t.name as task_name, \
-        t.topic as topic, i.verdict as verdict, i.code as code, 'verdict' as stage, \
+        t.topic as topic, null::text as op, i.verdict as verdict, i.code as code, 'verdict' as stage, \
         i.idem_key as record_key, 0 as latency_ms, null::int2 as http_status, \
+        null::text as request_body, null::text as response_body, \
         i.create_ms as create_ms, null::text as detail \
    from syn_idem i left join syn_task t on t.id = i.task_id \
  union all \
- select 'log', l.id, l.task_id, l.task_name, l.topic, l.verdict, l.code, l.stage, \
-        l.record_key, l.latency_ms, l.http_status, l.create_ms, l.detail \
+ select 'log', l.id, l.task_id, l.task_name, l.topic, l.op, l.verdict, l.code, l.stage, \
+        l.record_key, l.latency_ms, l.http_status, l.request_body, l.response_body, \
+        l.create_ms, l.detail \
    from syn_delivery_log l";
 
 /// # 投递记录服务
@@ -132,13 +134,15 @@ fn to_vo(row: &sea_orm::QueryResult) -> Result<SynDeliveryVo, DbErr> {
         source: row.try_get("", "source")?,
         task_name: row.try_get::<Option<String>>("", "task_name")?.unwrap_or_default(),
         topic: row.try_get("", "topic")?,
-        op: None,
+        op: row.try_get("", "op")?,
         verdict,
         code: row.try_get("", "code")?,
         stage: row.try_get("", "stage")?,
         record_key: row.try_get("", "record_key")?,
         latency_ms: row.try_get::<i32>("", "latency_ms")?.max(0) as u64,
         http_status,
+        request_body: row.try_get("", "request_body")?,
+        response_body: row.try_get("", "response_body")?,
         create_ms: U64::from(row.try_get::<i64>("", "create_ms")?),
         detail: row.try_get("", "detail")?,
     })

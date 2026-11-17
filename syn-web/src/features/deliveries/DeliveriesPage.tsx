@@ -3,11 +3,12 @@ import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input, Select } from "@/components/ui/Field";
 import { Panel, PanelState, Skeleton } from "@/components/ui/Panel";
+import { Drawer } from "@/components/ui/Drawer";
 import { PageHeader } from "@/components/page";
 import { EmptyRow, TableFoot, TableShell, Td, Th } from "@/components/table";
 import { cn } from "@/lib/utils";
 import { formatCompact, formatDuration } from "@/lib/time";
-import type { Verdict } from "@/lib/api/types";
+import type { Delivery, Verdict } from "@/lib/api/types";
 import { useDeliveries } from "@/hooks/use-deliveries";
 import { useAllTasks } from "@/hooks/use-tasks";
 import { useDebounced } from "@/hooks/use-debounce";
@@ -28,6 +29,7 @@ export function DeliveriesPage() {
   const [verdict, setVerdict] = useState<"" | Verdict>("");
   const [keyword, setKeyword] = useState("");
   const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState<Delivery | null>(null);
 
   const debounced = useDebounced(keyword, 250);
   const { data: tasks } = useAllTasks();
@@ -177,9 +179,14 @@ export function DeliveriesPage() {
                     {formatDuration(d.latency_ms)}
                   </Td>
                   <Td className="max-w-[260px]">
-                    <span className="block truncate text-[11px] text-muted" title={d.detail ?? ""}>
-                      {d.detail ?? "—"}
-                    </span>
+                    <button
+                      type="button"
+                      className="block max-w-full truncate text-left text-[11px] text-muted hover:text-ink"
+                      title={d.detail ?? ""}
+                      onClick={() => setSelected(d)}
+                    >
+                      {d.detail ?? (d.request_body || d.response_body ? "查看报文" : "—")}
+                    </button>
                   </Td>
                 </tr>
               ))}
@@ -221,6 +228,63 @@ export function DeliveriesPage() {
         「重试」不是执行器在重试：它把结论翻成 503 交还 sink，重试预算在 sink 的{" "}
         <code className="font-mono">http.retry.*</code> 里。执行器自己从不重试。
       </p>
+
+      <DeliveryDetail delivery={selected} onClose={() => setSelected(null)} />
     </>
+  );
+}
+
+function DeliveryDetail({
+  delivery,
+  onClose,
+}: {
+  delivery: Delivery | null;
+  onClose: () => void;
+}) {
+  const d = delivery;
+  return (
+    <Drawer
+      open={d !== null}
+      onClose={onClose}
+      title={d ? `${d.task_name || "未命名任务"} · ${d.code}` : "投递详情"}
+      badge={d ? <VerdictBadge verdict={d.verdict} dot /> : undefined}
+      width={620}
+    >
+      {d && (
+        <div className="space-y-4">
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-[11.5px]">
+            <DetailItem label="topic" value={d.topic} />
+            <DetailItem label="op" value={d.op} />
+            <DetailItem label="段" value={d.stage} />
+            <DetailItem label="HTTP" value={d.http_status == null ? "—" : String(d.http_status)} />
+            <DetailItem label="耗时" value={formatDuration(d.latency_ms)} />
+            <DetailItem label="记录键" value={d.record_key} />
+          </dl>
+          <DetailBlock title="失败详情" body={d.detail} empty="—" />
+          <DetailBlock title="请求体（映射后）" body={d.request_body} empty="映射段之前短路，没有请求体" />
+          <DetailBlock title="下游响应体" body={d.response_body} empty="传输失败 / DB 直写失败，没有响应" />
+        </div>
+      )}
+    </Drawer>
+  );
+}
+
+function DetailItem({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div className="flex gap-2">
+      <dt className="w-16 shrink-0 text-muted">{label}</dt>
+      <dd className="min-w-0 break-all font-mono text-ink-soft">{value || "—"}</dd>
+    </div>
+  );
+}
+
+function DetailBlock({ title, body, empty }: { title: string; body?: string | null; empty: string }) {
+  return (
+    <section className="space-y-1.5">
+      <h4 className="text-[11px] font-medium text-muted">{title}</h4>
+      <pre className="max-h-64 overflow-auto rounded-md border border-line bg-sunken/60 p-2.5 font-mono text-[11px] leading-relaxed text-ink-soft">
+        {body ?? empty}
+      </pre>
+    </section>
   );
 }

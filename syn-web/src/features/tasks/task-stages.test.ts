@@ -6,20 +6,44 @@
  */
 import { describe, expect, it } from "vitest";
 import { newTask } from "@/lib/spec/defaults";
-import { STAGES, stageFilled, stageSummary, tabOfPath } from "./task-stages";
+import {
+  STAGES,
+  stageExists,
+  stageFilled,
+  stageSummary,
+  stagesFor,
+  tabOfPath,
+} from "./task-stages";
 
-describe("六段顺序", () => {
-  it("投递在判定之前，JSON 是额外的第七项且不占圈号", () => {
+describe("段序", () => {
+  it("投递在动作之前、判定在最后，JSON 是额外项且不占圈号", () => {
     expect(STAGES.map((s) => s.key)).toEqual([
       "match",
       "mapping",
       "guards",
-      "actions",
       "target",
+      "actions",
       "outcomes",
       "json",
     ]);
     expect(STAGES.map((s) => s.stage)).toEqual(["1", "2", "3", "4", "5", "6", "—"]);
+  });
+
+  it("db 直写没有动作段，圈号顺延不留空号", () => {
+    const spec = newTask();
+    spec.target = { kind: "db", service: "", base: "", datasource: "dtw", table: "public.region" };
+    expect(stagesFor(spec).map((s) => s.key)).toEqual([
+      "match",
+      "mapping",
+      "guards",
+      "target",
+      "outcomes",
+      "json",
+    ]);
+    expect(stagesFor(spec).map((s) => s.stage)).toEqual(["1", "2", "3", "4", "5", "—"]);
+    expect(stageExists(spec, "actions")).toBe(false);
+    // http 任务照旧
+    expect(stageExists(newTask(), "actions")).toBe(true);
   });
 });
 

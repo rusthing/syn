@@ -7,8 +7,8 @@ import { Field, Input, Select, Textarea } from "@/components/ui/Field";
 import { SuggestInput } from "@/components/ui/SuggestInput";
 import { Badge } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
-import type { SyncTask, TaskSpec } from "@/lib/api/types";
-import { cloneSpec, newTask } from "@/lib/spec/defaults";
+import type { Action, SyncTask, TaskSpec } from "@/lib/api/types";
+import { cloneSpec, dbRules, emptyAction, newTask } from "@/lib/spec/defaults";
 import { issuesByPath, issuesUnder, validateSpec } from "@/lib/spec/validate";
 import { AssertEditor } from "@/components/spec/AssertEditor";
 import { MappingEditor } from "@/components/spec/MappingEditor";
@@ -19,7 +19,7 @@ import { useAllTasks, useTaskMutations } from "@/hooks/use-tasks";
 import { useDatasources, useServices } from "@/hooks/use-sources";
 import { TaskStageRail } from "./TaskStageRail";
 import { VerdictEditor } from "./verdict/VerdictEditor";
-import { STAGES, tabOfPath, type TaskTab } from "./task-stages";
+import { STAGES, stageExists, tabOfPath, type TaskTab } from "./task-stages";
 
 /** 控制面板按这个类型直达某一段，历史入口保留在本模块上 */
 export type { TaskTab } from "./task-stages";
@@ -61,6 +61,9 @@ export function TaskEditorDrawer({
   const [spec, setSpec] = useState<TaskSpec>(() => newTask());
   const [jsonText, setJsonText] = useState("");
   const [jsonError, setJsonError] = useState<string | null>(null);
+  // 切到 db 时把 http 的动作暂存起来：动作在 db 下无效（保存期要求为空），
+  // 但用户切回 http 时不该发现自己刚配的四态矩阵被抹掉了
+  const httpActions = useRef<Action[]>([]);
 
   const { data: allTasks } = useAllTasks();
   // 用 ref 读最新列表：把 allTasks 放进依赖里，列表一到就会把正在填的草稿重置掉
@@ -80,7 +83,10 @@ export function TaskEditorDrawer({
         );
     setSpec(next);
     setName(task?.name ?? "");
-    setTab(initialTab ?? "match");
+    httpActions.current = next.target.kind === "db" ? [] : (next.actions ?? []);
+    // 直达的段可能不存在（db 任务没有动作段）：退回投递段，别停在空白页
+    const wanted = initialTab ?? "match";
+    setTab(stageExists(next, wanted) ? wanted : "target");
     setJsonText(JSON.stringify(next, null, 2));
     setJsonError(null);
   }, [open, task, initialTab]);
@@ -115,6 +121,29 @@ export function TaskEditorDrawer({
     });
   };
 
+  /**
+   * 换投递方式。
+   *
+   * 动作依附于出口：db 直写没有动作段（执行器不读、保存期要求为空），所以切到 db
+   * 时清空并把原动作暂存；切回 http 时原样恢复，没暂存过就给两态默认值。
+   * 判定段**不动**：那是用户可能手调过的语句树，要换口径由他点「套用 db 模板」。
+   */
+  const switchTargetKind = (kind: "http" | "db") => {
+    if (kind === "db") {
+      httpActions.current = spec.actions ?? [];
+      patch({ target: { ...spec.target, kind }, actions: [] });
+      if (tab === "actions") setTab("outcomes");
+      return;
+    }
+    patch({
+      target: { ...spec.target, kind },
+      actions:
+        httpActions.current.length > 0
+          ? httpActions.current
+          : [emptyAction("c"), emptyAction("r")],
+    });
+  };
+
   /** 进入 JSON 段时从当前 spec 重新生成原文；已在 JSON 段则不要覆盖未应用的编辑 */
   const selectTab = (key: Tab) => {
     if (tab === "json" && key === "json") return;
@@ -125,7 +154,9 @@ export function TaskEditorDrawer({
   const submit = () => {
     if (issues.length > 0) {
       const first = issues[0];
-      setTab(tabOfPath(first.path));
+      // db 任务的 actions 问题没有对应页签（动作段已隐藏），送到投递段看说明
+      const wanted = tabOfPath(first.path);
+      setTab(stageExists(spec, wanted) ? wanted : "target");
       toast.error(`还有 ${issues.length} 处配置问题`, first.message);
       return;
     }
@@ -159,7 +190,7 @@ export function TaskEditorDrawer({
       height={720}
       scroll={false}
       title={task ? `编辑 ${task.name}` : "新建同步任务"}
-      subtitle={task ? `v${task.version} · ${task.topic}` : "六段流水线一次配完，保存后自动通知各副本刷新"}
+      subtitle={task ? `v${task.version} · ${task.topic}` : "流水线一次配完，保存后自动通知各副本刷新"}
       badge={
         issues.length > 0 ? (
           <Badge tone="danger" dot>
@@ -288,11 +319,11 @@ export function TaskEditorDrawer({
             </div>
           )}
 
-          {tab === "actions" && (
+          {stageExists(spec, "actions") && tab === "actions" && (
             <div className="space-y-3">
               <SectionIntro
-                title="动作"
-                body="op → 一次 HTTP 调用。四种 op 各一个动作，路径相对 target.base。"
+                title="动作（第 5 步）"
+                body="op → 一次 HTTP 调用。四种 op 各一个动作，路径相对投递段的 base —— 所以投递先配。db 直写没有这一段：op 由记录自带，写库形状看 on_conflict。"
               />
               <ActionEditor
                 actions={spec.actions ?? []}
@@ -321,9 +352,27 @@ export function TaskEditorDrawer({
           {tab === "outcomes" && (
             <div className="space-y-3">
               <SectionIntro
-                title="判定"
-                body="投递的响应 → 结论（第 6 步）。语句从上往下执行、首个命中即停；if 多分支、switch 按字段分流，分支体里还能再放语句。分类码会进死信，也是判断「能否改报文重投」的依据。"
+                title="判定（第 6 步）"
+                body="投递的响应 → 结论。语句从上往下执行、首个命中即停；if 多分支、switch 按字段分流，分支体里还能再放语句。分类码会进死信，也是判断「能否改报文重投」的依据。"
               />
+              {spec.target.kind === "db" && (
+                <div className="flex items-start gap-3 rounded-lg bg-warn-soft px-3 py-2 text-[11.5px] leading-relaxed text-warn">
+                  <div className="min-w-0 flex-1">
+                    db 直写没有下游响应：判定看到的是写库结果的合成响应{" "}
+                    <code className="font-mono">{"{ affected: n }"}</code>，status 恒为 200、
+                    也看不到记录。所以这里只能看 <code className="font-mono">$.affected</code>
+                    （写进去的行数）；按 status 或报文体别的字段写规则，保存时会被拒。
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0"
+                    onClick={() => patch({ rules: dbRules(), outcomes: undefined })}
+                  >
+                    套用 db 模板
+                  </Button>
+                </div>
+              )}
               {(spec.rules ?? []).length === 0 && (spec.outcomes ?? []).length > 0 && (
                 <div className="rounded-lg bg-info-soft px-3 py-2 text-[11.5px] leading-relaxed text-info">
                   这个任务还是旧的扁平规则，已按语句树展示：每条规则 = 一个单分支的{" "}
@@ -350,8 +399,8 @@ export function TaskEditorDrawer({
           {tab === "target" && (
             <div className="space-y-3">
               <SectionIntro
-                title="投递"
-                body="前四段决定发什么，这里决定往哪儿投；投完由判定段（第 6 步）看响应定结论。候选清单只是辅助输入：服务可能还没注册、数据源也可能先配好，所以两处都保留手输。"
+                title="投递（第 4 步）"
+                body="先定往哪儿投，再定动作的形状（第 5 步）。出口一换，后面的段跟着变：http 要四态动作、判下游真实响应；db 直写没有动作段、判定只看写进去的行数。候选清单只是辅助输入：服务可能还没注册、数据源也可能先配好，所以两处都保留手输。"
               />
 
               <div className="space-y-3 rounded-lg border border-line bg-sunken/30 p-3">
@@ -360,9 +409,7 @@ export function TaskEditorDrawer({
                     <Select
                       className="w-full font-mono text-[12.5px]"
                       value={spec.target.kind ?? "http"}
-                      onChange={(e) =>
-                        patch({ target: { ...spec.target, kind: e.target.value as "http" | "db" } })
-                      }
+                      onChange={(e) => switchTargetKind(e.target.value as "http" | "db")}
                     >
                       <option value="http">http — 调下游接口</option>
                       <option value="db">db — 直写下游库表</option>
@@ -546,7 +593,7 @@ function SectionIntro({ title, body }: { title: string; body: string }) {
       <div className="mb-1 flex items-baseline justify-between gap-3">
         <h3 className="text-[14px] font-semibold text-ink">{title}</h3>
         <span className="font-mono text-[11px] text-muted">
-          {title === "JSON" ? "高级" : `${index + 1} / 6`}
+          {title === "JSON" ? "高级" : `${index + 1} / ${STAGES.length - 1}`}
         </span>
       </div>
       <div className="rounded-lg border border-line/80 bg-sunken/50 px-3 py-2">

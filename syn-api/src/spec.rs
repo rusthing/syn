@@ -848,6 +848,7 @@ impl TaskSpec {
         self.validate_guards(&mut issues);
         self.validate_outcomes(&mut issues);
         self.validate_rules(&mut issues);
+        self.validate_db_verdict(&mut issues);
 
         if issues.is_empty() {
             Ok(())
@@ -945,6 +946,19 @@ impl TaskSpec {
     }
 
     fn validate_actions(&self, issues: &mut Vec<SpecIssue>) {
+        // db 直写没有动作段：op 由记录自带，写库形状由 target.on_conflict 决定，
+        // 动作里的 method / path / query / headers 一个都没有消费者。留着它只会
+        // 得到一份永远不读的配置（改半天 path 也不生效），保存期就拒。
+        if self.target.is_db() {
+            if !self.actions.is_empty() {
+                issues.push(SpecIssue::new(
+                    "actions",
+                    SpecIssueKind::Invalid,
+                    "db 直写不读动作：op 由记录自带、写库形状由 target.on_conflict 决定，把动作清空",
+                ));
+            }
+            return;
+        }
         if self.actions.is_empty() {
             issues.push(SpecIssue::new(
                 "actions",
@@ -1059,6 +1073,120 @@ impl TaskSpec {
             return;
         }
         self.validate_rule_block("rules", &self.rules, 0, issues);
+    }
+
+    /// # db 直写的判定：输入只有一个合成的数
+    ///
+    /// 执行器的 `execute_db` 把写库结果包成 `200 + {"affected": n}` 再交给判定段，所以
+    /// status 恒为 200、记录恒为空、响应体只有 `affected` 一个字段。在这里写
+    /// status / record 作用域，或者盯别的响应字段，得到的都是恒真或恒假的死配置：
+    /// 恒假的还会让整串规则不命中，运行时落到 `UNCLASSIFIED` 致命。保存期就拦掉。
+    ///
+    /// http 目标不受影响：它判的是下游真实响应，什么都可能出现在里面。
+    fn validate_db_verdict(&self, issues: &mut Vec<SpecIssue>) {
+        if !self.target.is_db() {
+            return;
+        }
+        if !self.rules.is_empty() {
+            self.check_db_block("rules", &self.rules, issues);
+            return;
+        }
+        for (i, o) in self.outcomes.iter().enumerate() {
+            let at = format!("outcomes[{i}].asserts");
+            for (j, c) in o.asserts.iter().enumerate() {
+                self.check_db_condition(&format!("{at}[{j}]"), c, o.scope, issues);
+            }
+        }
+    }
+
+    /// 语句块递归：只查作用域，结构校验仍归 [`Self::validate_rule_block`]
+    fn check_db_block(&self, at: &str, block: &[Rule], issues: &mut Vec<SpecIssue>) {
+        for (i, rule) in block.iter().enumerate() {
+            let rat = format!("{at}[{i}]");
+            match rule {
+                Rule::Outcome { .. } => {}
+                Rule::If { branches } => {
+                    for (j, b) in branches.iter().enumerate() {
+                        let bat = format!("{rat}.branches[{j}]");
+                        for (k, c) in b.asserts.iter().enumerate() {
+                            self.check_db_condition(
+                                &format!("{bat}.assert[{k}]"),
+                                c,
+                                b.scope,
+                                issues,
+                            );
+                        }
+                        self.check_db_block(&format!("{bat}.then"), &b.then, issues);
+                    }
+                }
+                Rule::Switch {
+                    on,
+                    scope,
+                    cases,
+                    default,
+                } => {
+                    self.check_db_scope(&format!("{rat}.on"), on, *scope, issues);
+                    for (j, c) in cases.iter().enumerate() {
+                        self.check_db_block(&format!("{rat}.cases[{j}].then"), &c.then, issues);
+                    }
+                    self.check_db_block(&format!("{rat}.default"), default, issues);
+                }
+            }
+        }
+    }
+
+    /// 条件树递归：分组只是布尔运算，作用域照样要看
+    fn check_db_condition(
+        &self,
+        at: &str,
+        c: &Condition,
+        default: Scope,
+        issues: &mut Vec<SpecIssue>,
+    ) {
+        match c {
+            Condition::Assert(a) => {
+                let scope = a.scope.unwrap_or(default);
+                self.check_db_scope(at, a.field.as_deref().unwrap_or(""), scope, issues);
+            }
+            Condition::All(g) => {
+                for (i, c) in g.all.iter().enumerate() {
+                    self.check_db_condition(&format!("{at}.all[{i}]"), c, default, issues);
+                }
+            }
+            Condition::Any(g) => {
+                for (i, c) in g.any.iter().enumerate() {
+                    self.check_db_condition(&format!("{at}.any[{i}]"), c, default, issues);
+                }
+            }
+            Condition::Not(g) => {
+                self.check_db_condition(&format!("{at}.not"), &g.not, default, issues);
+            }
+        }
+    }
+
+    /// 一个取值（断言或 switch 的判别字段）在 db 下必须落在 `$.affected` 上
+    fn check_db_scope(&self, at: &str, field: &str, scope: Scope, issues: &mut Vec<SpecIssue>) {
+        match scope {
+            Scope::Status => issues.push(SpecIssue::new(
+                at,
+                SpecIssueKind::Invalid,
+                "db 直写没有真实响应：status 恒为 200，判定只能看 $.affected",
+            )),
+            Scope::Record => issues.push(SpecIssue::new(
+                at,
+                SpecIssueKind::Invalid,
+                "db 直写的判定看不到记录：能看的只有合成响应里的 $.affected",
+            )),
+            Scope::Body => {
+                if field.trim().trim_start_matches("$.") != "affected" {
+                    issues.push(SpecIssue::new(
+                        at,
+                        SpecIssueKind::Invalid,
+                        "db 直写只有合成响应 { affected: n }：判定只能看 $.affected（写进去的行数）",
+                    ));
+                }
+            }
+        }
     }
 
     /// 一个语句块：非空、逐条校验、末尾必然产出结论
@@ -1477,7 +1605,11 @@ mod tests {
              "default": [{"kind": "outcome", "verdict": "success"}]}
         ]);
         let spec: TaskSpec = serde_json::from_value(v).unwrap();
-        assert!(spec.validate().is_ok(), "{:?}", spec.validate().unwrap_err());
+        assert!(
+            spec.validate().is_ok(),
+            "{:?}",
+            spec.validate().unwrap_err()
+        );
         let back = serde_json::to_value(&spec).unwrap();
         assert_eq!(back["rules"][0]["kind"], "switch");
         assert!(
@@ -1587,5 +1719,127 @@ mod tests {
             .unwrap_err()
             .iter()
             .any(|i| i.message.contains("8 层")));
+    }
+
+    /* ------------------------------ db 直写 ------------------------------ */
+
+    /// db 任务的标准形状：没有动作，判定只看合成响应里的 affected
+    fn db_spec() -> Value {
+        json!({
+            "topic": "tp", "sort_order": 1,
+            "target": {"kind": "db", "datasource": "dtw", "table": "public.dtw_person", "key": ["id"]},
+            "mapping": {"rows": [{"to": "id", "from": "$.id"}]},
+            "actions": [],
+            "outcomes": [
+                {"scope": "body", "assert": [{"field": "$.affected", "op": "gte", "value": 1}], "verdict": "success"},
+                {"scope": "body", "assert": [], "verdict": "fatal", "code": "no_row"}
+            ]
+        })
+    }
+
+    #[test]
+    fn db_target_accepts_no_actions_and_affected_verdict() {
+        let spec: TaskSpec = serde_json::from_value(db_spec()).unwrap();
+        assert!(
+            spec.validate().is_ok(),
+            "{:?}",
+            spec.validate().unwrap_err()
+        );
+    }
+
+    #[test]
+    fn db_target_rejects_actions() {
+        // 动作在 db 下没有任何消费者：留着就是一份永不读取的配置
+        let mut v = db_spec();
+        v["actions"] = json!([{"op": "r", "method": "POST"}]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.iter()
+                .any(|i| i.path == "actions" && i.message.contains("db 直写不读动作")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn db_verdict_cannot_look_at_status() {
+        let mut v = db_spec();
+        v["outcomes"] = json!([
+            {"scope": "body", "assert": [{"field": "$.affected", "op": "gte", "value": 1}], "verdict": "success"},
+            {"scope": "status", "assert": [{"op": "in", "value": [200]}], "verdict": "fatal", "code": "no_row"}
+        ]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.iter().any(
+                |i| i.path == "outcomes[1].asserts[0]" && i.message.contains("status 恒为 200")
+            ),
+            "status 在 db 下是常量 200，写它就是死配置：{err:?}"
+        );
+    }
+
+    #[test]
+    fn db_verdict_only_reads_affected() {
+        let mut v = db_spec();
+        v["outcomes"] = json!([
+            {"scope": "body", "assert": [{"field": "$.msg", "op": "eq", "value": "ok"}], "verdict": "success"},
+            {"scope": "body", "assert": [], "verdict": "fatal"}
+        ]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.iter().any(|i| i.message.contains("只能看 $.affected")),
+            "合成响应里没有 msg，这种规则运行时必然落 UNCLASSIFIED：{err:?}"
+        );
+    }
+
+    #[test]
+    fn db_verdict_cannot_read_record() {
+        let mut v = db_spec();
+        v["outcomes"] = json!([
+            {"scope": "record", "assert": [{"field": "$.op", "op": "eq", "value": "c"}], "verdict": "success"},
+            {"scope": "body", "assert": [], "verdict": "fatal"}
+        ]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        assert!(
+            spec.validate()
+                .unwrap_err()
+                .iter()
+                .any(|i| i.message.contains("看不到记录"))
+        );
+    }
+
+    #[test]
+    fn db_switch_on_must_be_affected() {
+        let mut v = db_spec();
+        v["outcomes"] = json!([]);
+        v["rules"] = json!([
+            {"kind": "switch", "on": "$.code", "scope": "body",
+             "cases": [{"values": [0], "then": [{"kind": "outcome", "verdict": "skip"}]}],
+             "default": [{"kind": "outcome", "verdict": "success"}]}
+        ]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.iter().any(|i| i.path == "rules[0].on"),
+            "switch 的判别字段也要落在 affected 上：{err:?}"
+        );
+    }
+
+    #[test]
+    fn http_verdict_still_reads_status_and_body() {
+        // 收紧只针对 db：http 判的是真实响应，原有写法一条都不能被误伤
+        let mut v = base_spec();
+        v["outcomes"] = json!([
+            {"scope": "body", "assert": [{"field": "$.msg", "op": "eq", "value": "ok"}], "verdict": "success"},
+            {"scope": "status", "assert": [{"op": "in", "value": [200, 201]}], "verdict": "success"},
+            {"scope": "status", "assert": [], "verdict": "fatal"}
+        ]);
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        assert!(
+            spec.validate().is_ok(),
+            "{:?}",
+            spec.validate().unwrap_err()
+        );
     }
 }

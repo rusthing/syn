@@ -308,7 +308,7 @@ pub enum JobType { Manual = 0, Cron = 1, FixedDelay = 2, FixedRate = 3 }
 2. 永远整体消费，**没有任何一层要参与检索/排序/分组**；
 3. 变更频率与宿主行一致（改一个字节就整行重写，可以接受）。
 
-`syn_task.spec`（五段规则）三条都满足。反过来，`topic` / `sort_order` / `enabled` / `exclusive` 要建索引、要排序，所以**提成关系列**，并且规定「以列为准，spec 里的同名字段只是导入来源」——两份数据不一致时行为不能取决于读取顺序。
+`syn_task.spec`（整份任务规则：`target` / `match` / `mapping` / `guards` / `actions` / `rules`）三条都满足。反过来，`topic` / `sort_order` / `enabled` / `exclusive` 要建索引、要排序，所以**提成关系列**，并且规定「以列为准，spec 里的同名字段只是导入来源」——两份数据不一致时行为不能取决于读取顺序。
 
 `JSONB` 列在 mo 里是 `Json` + `#[sea_orm(column_type = "JsonBinary")]`，在 VO 里是 `serde_json::Value` + `#[schema(value_type = Object)]`。
 
@@ -571,7 +571,7 @@ cd syn-web && pnpm typecheck && pnpm test && pnpm build
 - **同一个 `target` 目录同时只能跑一个 cargo**，并行构建要分开 `CARGO_TARGET_DIR`。
 - `cargo fmt` 会把仓库里既有的偏差一并改掉，跑完只提交自己动过的文件，保持 diff 聚焦。
 - 单测放在被测模块的 `#[cfg(test)] mod tests` 里（`syn-core` 是纯函数，50 个用例都在原地）；跨服务的联调放 `tests/`。前端的 wire 契约测试放 `lib/api/live.test.ts`（§14.6）。
-- 纯逻辑不要塞进 handler 里测：五段、映射、判定、WKB 转换都在 `syn-core`，`syn-svr` 只做装配。
+- 纯逻辑不要塞进 handler 里测：匹配 / 映射 / 校验 / 动作 / 判定、WKB 转换都在 `syn-core`，`syn-svr` 只做装配。
 - 改了 poll / DB sink / 幂等 / 总览的行为，提交前按 §15 跑一次真库联调；这四处都有「编译全绿但行为错」的历史。
 
 ---
@@ -608,14 +608,14 @@ feat(syn): 五段规则与记录转发
 这几处和兄弟服务**不一样**，理由记在这里，避免后来者「统一」回去：
 
 1. **任务没有 `code`，身份是 `id`，人读是 `name`**（本条 2026-11 修订，推翻了早期「任务标识用 code」的做法）。雪花 ID 由框架与前端自己用，不出现在 Kafka topic 名和日志正文里；日志/排障要的是**名字**，直接读 `name`。任务之间只靠 `id` 引用（投递 / 幂等 / 画布节点），所以 `name` 可以随便改，改完不需要同步任何地方。`TaskSpec.id` / `TaskSpec.name` 是 `#[serde(skip)]` 的运行态字段，由 `store::reload` 从列注入，不落 `spec` JSON。
-2. **`spec` 用 `JSONB` 一列装五段规则**。五段是嵌套的（段 → 行 → 断言），拆表会得到 6 张从表 + 一堆枚举，配置一次要写二十几行，而且没有一层参与检索（见 §4.5）。判定段在 `spec` 里是**语句树**（`if` / `switch` / 结论，见 `syn-通用同步模型.md` §9.4）：`rules` 是新形状，`outcomes` 只读兼容，求值器只认 `TaskSpec::verdict_rules()` 这一个入口；两端求值器的用例只有一份（`fixtures/verdict-cases.json`），改语义先改用例，两边同时红才是对的。
+2. **`spec` 用 `JSONB` 一列装整份任务规则**。规则段是嵌套的（段 → 行 → 断言），拆表会得到 6 张从表 + 一堆枚举，配置一次要写二十几行，而且没有一层参与检索（见 §4.5）。判定段在 `spec` 里是**语句树**（`if` / `switch` / 结论，见 `syn-通用同步模型.md` §9.4）：`rules` 是新形状，`outcomes` 只读兼容，求值器只认 `TaskSpec::verdict_rules()` 这一个入口；两端求值器的用例只有一份（`fixtures/verdict-cases.json`），改语义先改用例，两边同时红才是对的。
 3. **不做 `syn-api-client`**。没有 Rust 调用方（见 §1）。
 4. **运行时表（`syn_idem` / `syn_cursor`）也带审计四列**。不是为了让它们「像配置表」，而是 `#[crud_dto]` / `#[dao]` 假定存在；少列编译不过。
 5. **游标独立成 `syn_cursor`**。它每轮都在写，`syn_source` 是低频配置；混在一张表里会让「读配置」和「推水位」争同一行。
 6. **`syn` 自己的元数据库（`syn_*` 五张表）迁移只有 `pgsql`**。`mysql` / `sqlite` 目录留占位。注意这与「外部数据源」不是一回事：被抽取 / 被直写的业务库可以是 PostgreSQL / MySQL / SQLite（sqlx `any` 驱动，见 `db/dialect.rs`），它们的表结构由下游自己负责，不进 `syn` 迁移。
 7. **自拉调度不放在进程里**。`POST /syn/source/{id}/pull` 是 jobx 计划任务与运维按钮**同一个**入口：定时跑的和手动跑的不存在两套实现，单写者、执行历史、失败可见都由 jobx 给。进程内不再有调度器，也没有开它的开关（曾经有 `self-schedule`，开了又部署多副本会互相把游标推乱，已于 §5.1 一并删除）；进程内只留每副本的任务快照缓存与一把防连点的锁（`store.rs` / `poll.rs`）。
 8. **一轮拉取不因一条坏数据整体失败**。`SynSourcePullVo` 同时给 `rows` / `success` / `skip` / `fatal` / `retriable` / `position` / `stalled`：游标只推进到第一条非 success/skip 之前，`stalled` 说明卡在哪。界面必须把 `stalled` 显示出来，否则「没数据」和「被卡住」看起来一样。
-9. **`target.kind: db` 只换最后一步**。匹配 / 映射 / 校验 / 判定四段与 HTTP 目标完全共用，直写发生在动作段之后；`insert ... upsert` 的 `c` / `r` / `u` 与按冲突键删除的 `d` 由 `db_sink.rs` 负责。表名与列名**不信任配置**：启动时读列白名单（PG/MySQL 走 `information_schema.columns`，SQLite 走 `pragma_table_info`），拼 SQL 前再校验一次标识符合法，值一律绑参数。方言差异（引号、占位符、upsert 语法、类型转换）收敛在 `db/dialect.rs`。
+9. **`target.kind: db` 换掉的是第 5 段，不是最后一步**。匹配 / 映射 / 校验 / 判定四段与 HTTP 目标共用，但 db 直写**没有动作段**：`op` 由记录自带（`prepare` 只取 `$.op`，缺了就是 `NO_OP`），写库形状看 `target.on_conflict`，`insert ... upsert` 的 `c` / `r` / `u` 与按冲突键删除的 `d` 由 `db_sink.rs` 按 `op` 分派 —— 动作里的 method / path / query / headers / body 在这里一个都不读。因此保存期要求 `kind = db` 时 `actions` 必须为空（`validate_actions` 的 db 分支），而不是「不要求」。判定段的输入也不是真实响应：执行器合成 `200 + { affected: n }` 再交给判定，status 恒 200、记录为空，所以只许读 `$.affected`（`validate_db_verdict`，前端同构）。表名与列名**不信任配置**：启动时读列白名单（PG/MySQL 走 `information_schema.columns`，SQLite 走 `pragma_table_info`），拼 SQL 前再校验一次标识符合法，值一律绑参数。方言差异（引号、占位符、upsert 语法、类型转换）收敛在 `db/dialect.rs`。
 10. **`syn_idem` 只记终态，不记逐次投递**。一个 `(task_id, idem_key)` 只有一行，重投命中直接返回上次结论并刷新 `update_ms`；没有「命中次数」「耗时」「中间轨迹」这几列。控制台的「投递记录」是这张表的投影，`op` / `detail` 恒为 `null`、`latency_ms` / `p95_ms` 恒为 `0`。要看逐次轨迹得先改 LDM 建明细表，**不要凭空编一列**。
 11. **总览的口径是「记账行数」**。没带 `X-Idempotency-Key` 的投递不记账，因此 `total` / 各结论计数 / 失败 Top 恒为 0 —— 这是事实，不是「没命中」。任务数、数据抽取数是配置表的实时值，与窗口无关，两者别混在一个图例里。
 12. **总览小时桶必须含当前小时**。`from = now - N 小时`，两端整点化后正好相差 N 个桶，所以曲线要 **N+1** 个点；只给 N 个点时刚发生的记账会落在数组之外，尾部恒为 0（真库联调才看得见，单测锁在 `syn_overview_svc::hour_buckets`）。窗口合计与曲线各桶之和必须相等，§15 的脚本把这条写成了断言。
@@ -699,7 +699,7 @@ feat(syn): 五段规则与记录转发
 | `model/syn.ldm` / `syn-pgsql.pdm` / `syn.prj` | ✅ | 七张表：`syn_task` / `syn_task_version` / `syn_idem` / `syn_source` / `syn_cursor` / `syn_datasource` / `syn_canvas_layout` |
 | `model/create-table-pgsql.sql` | ✅ | 在 PG 18 上 `psql -v ON_ERROR_STOP=1` 跑通，约束名与框架拼名一致 |
 | `syn-svr/migrations/pgsql/*_create-table.sql` | ✅ | 与 model 脚本逐字一致 |
-| `syn-core`（五段纯函数 + WKB） | ✅ | 50 个单测，`clippy -D warnings` 干净 |
+| `syn-core`（规则段纯函数 + WKB） | ✅ | 50 个单测，`clippy -D warnings` 干净 |
 | `POST /syn/sync/{topic}`、`POST /syn/task/reload` | ✅ | 手写 handler；`sync` 用 `(StatusCode, Json)` 对齐 sink 语义，`reload` 走 `Ro<u64>` |
 | `AppConfig` + `bootstrap!` + `db_migrate!` + **`build.rs`** | ✅ | 运行期资源（配置 / `log.toml` / `migrations`）由 `build.rs` 拷到二进制旁，见 §1.1 |
 | `syn-api/src/mo`（七个实体） | ✅ | 与 PDM 逐列对齐，`store.rs` 已改走 `dao` |
@@ -708,8 +708,8 @@ feat(syn): 五段规则与记录转发
 | `POST /syn/source/{id}/pull`（poll 入口，`kind=sql`） | ✅ | 两种模式：`mode=cursor` 复合游标 + 5 秒重叠窗口；`mode=snapshot` 全表快照（单次 / 分批）。SQL 按表名 + 游标字段生成，jobx 与运维按钮共用一条实现，进程内无调度器，见 §11.7 |
 | poll 的 `kind=http` 全量分页取数 | ✅ | 一轮推一页，空页/无 next 即收尾，翻到底写 `{"http":{"done":true}}`、此后调度跳过；`pull?reset=true` 重跑。页模式与 token 模式都验过，见 §15.8 |
 | `syn_idem` 记账 / `target.kind: db` 直写 | ✅ | `X-Idempotency-Key` 只记终态；DB sink 有 `information_schema` 列白名单，见 §11.9 / §11.10 |
-| `syn-web`（控制台） | ✅ | 总览 / 任务（五段编辑器，含 `http`↔`db` 目标切换）/ 数据抽取 / 试跑 / 投递 / 幂等；演示数据可独立运行 |
-| `syn-web` 的 `lib/spec`（五段本地预演） | ✅ | `syn-core` 的 TS 同构实现，含 JSONPath / 变换 / WKB→WKT / 判定 |
+| `syn-web`（控制台） | ✅ | 总览 / 任务（规则段编辑器，投递在动作前，`http`↔`db` 切换时 db 隐藏动作段）/ 数据抽取 / 试跑 / 投递 / 幂等；演示数据可独立运行 |
+| `syn-web` 的 `lib/spec`（规则段本地预演，db 走 `db://` 分支） | ✅ | `syn-core` 的 TS 同构实现，含 JSONPath / 变换 / WKB→WKT / 判定 |
 | `syn-web` 的实时模式适配层 | ✅ | `live.ts` 统一处理 `Ro.extra` / `PageRx` / camelCase VO / `U64` 字符串 / 字典整数；`live.test.ts` 16 个 wire 契约用例 + `validate-source.test.ts` 7 个校验用例 |
 | 数据抽取的新增 / 编辑 / 删除入口 | ✅ | 后端五件套齐全（`code` 不可改）；前端 `SourceEditorDrawer` + `lib/spec/validate-source.ts` 本地预校验，错误定位到字段；SQL 按表名 + 游标字段自动生成 |
 | 数据源管理（`syn_datasource` 表 + 八个接口） | ✅ | 控制台可增删改（连接串 / 池上限 / 启停 / 备注）；明文只写不回显，读接口一律脱敏；改完发 `refresh.syn.datasource` 让各副本重建连接池；`[syn.datasources.*]` 降级为兜底，见 §11 第 13 条。第八个接口是 `POST /syn/datasource/test`（传 `url` 或 `id`），失败也走 200，见 §14.7 第 7 条 |
@@ -734,7 +734,7 @@ TanStack Query + lucide-react。**不引组件库**：一个控制台要用的�
 ```
 syn-web/
   src/
-    components/{ui,layout,spec,table}   # 通用控件、布局、五段编辑器
+    components/{ui,layout,spec,table}   # 通用控件、布局、规则段编辑器
     features/{overview,tasks,sources,topology,playground,deliveries,idem}
     hooks/                              # 一资源一 hook，query key 集中在 hook 里
     lib/api/{http,types,mock,live,index} # types 是 syn-api 的 TS 镜像
@@ -753,14 +753,16 @@ syn-web/
   `packages field missing or empty` 并拒绝执行任何 `pnpm <script>`；`pnpm xxx | tail`
   还会把非零退出码吞掉，看起来像「构建过了」。
 
-### 14.2 五段编辑器
+### 14.2 规则段编辑器
 
 新增 / 编辑用**居中弹出窗体**（`components/ui/Drawer.tsx` 的 `Modal`，与右侧抽屉共用
 同一套遮罩、焦点圈定、ESC、body 滚动锁，只是 `placement="center"`），按段分页签：
-基本 / 匹配 / 映射 / 校验 / 动作 / 判定 / 投递 / JSON。三条硬约定：
+基本 / 匹配 / 映射 / 校验 / 投递 / 动作 / 判定 / JSON —— 顺序就是执行顺序，
+「先定出口（投递），再定形状（动作）」；`target.kind = db` 时动作页签**不存在**，圈号顺延
+（`stageExists` / `stagesFor` 是唯一的判定处），JSON 恒排最后且不占圈号。三条硬约定：
 
 1. **保存前先跑 `validateSpec`**，把问题按 `path` 定位到页签与行；有错不许保存。
-   `tabOfPath` 必须跟着页签改动同步：`target.*` 现在映射到「投递」（第 6 步），
+   `tabOfPath` 必须跟着页签改动同步：`target.*` 映射到「投递」（第 4 步），
    不跟着改的话，保存报错的提示点不动、跳不回出错字段。**这是拆页签最容易漏的一处。**
 2. **每段只有一种输入形态**：条件是三段共用的一张表（`AssertEditor`），动作是四行矩阵，
    不要为某一段另做一个「更好用」的控件 —— 两套控件必然长出两套语义。条件数组本身是
@@ -788,8 +790,10 @@ syn-web/
    `fatal · UNCLASSIFIED` 兜底（把运行时那条隐式兜底显式化，判定结果逐字不变）；
    `spec.rules` 本身缺兜底属于配置错误，界面不替用户补。
 
-「投递」是第 6 步而不是基本页的一部分：它是判定之后唯一的出口，与前五段是「同一批记录
-的不同出口」，与基本页的元信息（名称、topic、排序值）不是一类东西。
+「投递」是第 4 步而不是基本页的一部分：它是唯一有 IO 的地方，动作段（第 5 步）的
+`path` 相对它的 `base`，所以它必须先定；与基本页的元信息（名称、topic、排序值）不是一类
+东西。db 直写切到 `db` 时要把当前动作暂存起来（切回 http 恢复，没暂存过就给默认四态），
+判定段不自动替换 —— 用户可能手调过语句树，只给一条警示与「套用 db 模板」按钮。
 两个下拉都必须是**可手输的候选**（原生 `<input list>`）：注册中心 / 数据源表拿不到清单时
 自动退化成纯输入框，配置要能先于下游上线写好的。
 
@@ -896,11 +900,12 @@ cd syn-web && pnpm typecheck && pnpm test && pnpm build
 2. **属性栏只读图节点**（`graph.nodes.find(n => n.id === selectedId)`），不另发请求、
    不另存一份选中实体。点卡片**始终选中**（不是 toggle），点空白才取消 —— 否则连点
    同一张卡会把属性栏抵消掉。**属性栏里没有任何操作**：没有启用开关、没有「编辑配置」。
-   任务卡点某一段（匹配 / 映射 / 判定 / 动作 / 投递 …）只把属性栏换成那一段的只读详情，
+   任务卡点某一段（匹配 / 映射 / 校验 / 投递 / 动作 / 判定 …）只把属性栏换成那一段的只读详情，
    **不弹窗体**；要改配置走卡片操作行的「编辑」。
-3. **投递是任务卡的第六段，不单独建节点**。画到卡外会连出「一个任务分支到一个服务」
+3. **投递是任务卡的第四段，不单独建节点**。画到卡外会连出「一个任务分支到一个服务」
    的假关系；多个任务投同一个服务时还会交叉连线，还把投递目标误当成共享实体。
-   任务卡六段并排（段名 + 概要），点某段是「看」（属性栏），不是「改」（窗体）。
+   任务卡按段并排（段名 + 概要；http 六段、db 五段 —— 直写没有动作段，那一段不画），
+   点某段是「看」（属性栏），不是「改」（窗体）。
 4. **开关请求期间不禁用按钮**。原生 `disabled` 的 button 连 `click` 都不派发，
    请求稍慢就会被当成「点了没用」；`busy` 只加 `aria-busy` 与描边。在途状态按
    `${node.id}:${action}` 分键（`enabled` / `exclusive`），两个开关互不置灰。

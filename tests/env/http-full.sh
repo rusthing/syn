@@ -171,11 +171,10 @@ task_json() { # code topic
         { "to": "updated_at", "from": "\$.after.updated_at" }
       ]
     },
-    "actions": [{ "op": "r", "method": "POST", "path": "", "body": "mapped" }],
     "guards": [],
     "outcomes": [
       { "scope": "body", "assert": [{ "field": "\$.affected", "op": "gt", "value": 0 }], "verdict": "success", "code": "DB_OK" },
-      { "scope": "status", "assert": [{ "op": "in", "value": [200] }], "verdict": "fatal", "code": "DB_NO_ROW" }
+      { "scope": "body", "assert": [], "verdict": "fatal", "code": "DB_NO_ROW" }
     ]
   }
 }

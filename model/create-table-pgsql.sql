@@ -25,7 +25,7 @@ create table syn_task (
 );
 
 comment on table syn_task is
-'同步任务：五段规则的载体。';
+'同步任务：规则与投递的载体。';
 
 comment on column syn_task.id is
 'ID
@@ -55,8 +55,10 @@ comment on column syn_task.exclusive is
 false 表示这条记录还要继续喂给后面的任务（一分多）';
 
 comment on column syn_task.spec is
-'五段规则（match / mapping / actions / guards / outcomes）
+'任务规则（target / match / mapping / guards / actions / rules）
 嵌套结构，整体被执行器消费，没有任何一列参与检索，所以按 JSONB 存
+target.kind=http 时 actions 是四态调用矩阵；kind=db 时 actions 必须为空：op 由记录自带，写库形状由 target.on_conflict 决定
+判定段的输入跟着出口走：http 是下游响应，db 是合成响应 { "affected": n }，所以 db 只能看 $.affected
 topic / sort_order / enabled / exclusive 以本表的列为准，spec 里的同名字段只是导入来源';
 
 comment on column syn_task.version is
@@ -127,7 +129,7 @@ comment on column syn_task_version.version is
 @range 1..=2147483647';
 
 comment on column syn_task_version.spec is
-'该版本的完整五段规则';
+'该版本的完整任务规则（target / 五段 / 判定）';
 
 comment on column syn_task_version.remark is
 '发布说明（这一版改了什么）
@@ -592,6 +594,9 @@ create table syn_delivery_log (
    code                 VARCHAR(64)          not null,
    stage                VARCHAR(20)          not null,
    detail               VARCHAR(1000)        null,
+   op                   VARCHAR(8)           null,
+   request_body         TEXT                 null,
+   response_body        TEXT                 null,
    http_status          INT2                 null,
    latency_ms           INT4                 not null,
    creater_id           INT8                 not null,
@@ -647,6 +652,18 @@ comment on column syn_delivery_log.detail is
 '失败详情
 守卫消息、传输错误、下游响应片段等，超长会被截断
 @len 0..=1000';
+
+comment on column syn_delivery_log.op is
+'变更操作
+c / r / u / d；记录缺 op 或取值不合法时为空';
+
+comment on column syn_delivery_log.request_body is
+'实际发出的请求体快照（映射后的 JSON）
+映射段之前短路时为空；超长截断';
+
+comment on column syn_delivery_log.response_body is
+'下游响应体快照（JSON）
+传输失败 / DB 直写失败时为空；超长截断';
 
 comment on column syn_delivery_log.http_status is
 '下游 HTTP 状态码

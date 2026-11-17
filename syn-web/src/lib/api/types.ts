@@ -447,6 +447,10 @@ export interface Delivery {
   record_key: string | null;
   latency_ms: number;
   http_status: number | null;
+  /** 实际发出的请求体快照（JSON 文本）；台账行为空 */
+  request_body: string | null;
+  /** 下游响应体快照（JSON 文本）；台账行为空 */
+  response_body: string | null;
   create_ms: string;
   detail: string | null;
 }
