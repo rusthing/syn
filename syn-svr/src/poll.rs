@@ -667,13 +667,15 @@ fn row_json_cols(_spec: &SourceSpec, dialect: Dialect, alias: &str) -> Result<St
     }
 }
 
+/// 源库标识符：大小写都收，拼进 SQL 前一律按方言包引号（`quote_table` / `quote_col`），
+/// 大小写原样保留。这里只负责挡引号、分号等会破坏语句结构的字符。
 fn is_ident(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
-        Some(c) if c.is_ascii_lowercase() || c == '_' => {}
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
         _ => return false,
     }
-    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// # 全量快照的进度状态
@@ -1144,6 +1146,14 @@ mod tests {
         assert!(quote_table("public.a.b", dialect).is_err());
         assert_eq!(quote_col("s", "update_timestamp", dialect).unwrap(), "s.\"update_timestamp\"");
         assert!(quote_col("s", "id; --", dialect).is_err());
+
+        // 源库里的真实名字带大写：包引号后大小写原样保留，别被折叠成小写
+        assert_eq!(quote_table("WS_DEVICE", dialect).unwrap(), "\"WS_DEVICE\"");
+        assert_eq!(
+            quote_table("CRM.WS_DEVICE", dialect).unwrap(),
+            "\"CRM\".\"WS_DEVICE\""
+        );
+        assert_eq!(quote_col("s", "UPDATE_TIME", dialect).unwrap(), "s.\"UPDATE_TIME\"");
     }
 
     #[test]

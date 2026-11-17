@@ -444,7 +444,7 @@ export function TaskEditorDrawer({
                       <Field
                         label="目标表"
                         required
-                        hint="table 或 schema.table，只允许小写字母/数字/下划线"
+                        hint="table 或 schema.table，字母（大小写）/数字/下划线；按目标库里的真实名字填"
                         error={byPath.get("target.table")?.[0]?.message}
                       >
                         <Input

@@ -216,14 +216,18 @@ impl Target {
     }
 }
 
-/// 小写标识符：`[a-z_][a-z0-9_]*`
+/// 目标库标识符（表名 / 冲突键列名）：大小写都收。
+///
+/// 写库时一律按方言包引号（见 `syn-svr/src/db/dialect.rs`），加了引号大小写原样保留，
+/// 所以 `WS_PERSON` / `ID` 这类大写名字能直接落到真实表上；这里只挡引号、分号、空格
+/// 这类会破坏语句结构的字符。
 fn is_ident(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
-        Some(c) if c.is_ascii_lowercase() || c == '_' => {}
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
         _ => return false,
     }
-    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// `table` 或 `schema.table`
@@ -819,7 +823,7 @@ impl TaskSpec {
                     Some(t) if !is_qualified_ident(t.trim()) => issues.push(SpecIssue::new(
                         "target.table",
                         SpecIssueKind::Invalid,
-                        "表名只能是「表」或「模式.表」，小写字母/数字/下划线",
+                        "表名只能是「表」或「模式.表」，字母（大小写）/数字/下划线",
                     )),
                     Some(_) => {}
                 }
@@ -835,7 +839,7 @@ impl TaskSpec {
                         issues.push(SpecIssue::new(
                             format!("target.key[{i}]"),
                             SpecIssueKind::Invalid,
-                            "键列名只能是小写字母/数字/下划线",
+                            "键列名只能是字母（大小写）/数字/下划线",
                         ));
                     }
                 }
@@ -1770,6 +1774,39 @@ mod tests {
             spec.validate().is_ok(),
             "{:?}",
             spec.validate().unwrap_err()
+        );
+    }
+
+    #[test]
+    fn db_target_accepts_uppercase_table_and_keys() {
+        // 目标库的表名 / 列名是别的系统建的，全大写：按真实名字填必须能保存
+        let mut v = db_spec();
+        v["target"] = json!({
+            "kind": "db", "datasource": "dtw",
+            "table": "CRM.WS_PERSON", "key": ["ID", "TENANT_ID"]
+        });
+        v["mapping"] = json!({"rows": [
+            {"to": "ID", "from": "$.id"},
+            {"to": "TENANT_ID", "from": "$.tenantId"},
+            {"to": "NAME", "from": "$.name"}
+        ]});
+        let spec: TaskSpec = serde_json::from_value(v).unwrap();
+        assert!(
+            spec.validate().is_ok(),
+            "{:?}",
+            spec.validate().unwrap_err()
+        );
+        // 放松大小写不等于放松字符集
+        let mut bad = db_spec();
+        bad["target"] = json!({
+            "kind": "db", "datasource": "dtw",
+            "table": "WS_PERSON; drop table x", "key": ["ID"]
+        });
+        let spec: TaskSpec = serde_json::from_value(bad).unwrap();
+        let err = spec.validate().unwrap_err();
+        assert!(
+            err.iter().any(|i| i.path == "target.table"),
+            "{err:?}"
         );
     }
 

@@ -10,7 +10,8 @@
 //! | 时间水位上限 | `now() - interval 'N seconds'` | `NOW() - INTERVAL N SECOND` | 不做重叠窗口 |
 //! | 行内 upsert | `on conflict (...) do update set ... excluded.` | `on duplicate key update ...` | `on conflict (...) do update set ... excluded.` |
 //!
-//! 标识符仍走白名单校验（`[a-z_][a-z0-9_]*` / `schema.table`），这里只负责包引号与拼语法。
+//! 标识符仍走白名单校验（`[A-Za-z_][A-Za-z0-9_]*` / `schema.table`，大小写都收），
+//! 这里只负责包引号与拼语法；包了引号后大小写按源库实际名字匹配，不会被折叠成小写。
 
 use syn_api::DbEngine;
 

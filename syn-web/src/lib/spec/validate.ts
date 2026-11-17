@@ -131,7 +131,8 @@ export function validateSpec(spec: TaskSpec): SpecIssue[] {
   // target 按 kind 分支校验，与后端 TaskSpec::validate 逐条对齐。
   // db 目标不需要 service/base，http 目标不需要 datasource/table/key —— 两边都填
   // 反而会让人以为「两个出口都生效」。
-  const isIdent = (v: string) => /^[a-z_][a-z0-9_]*$/.test(v);
+  // 目标库的标识符跟着目标库走：大小写都收，写库时按方言包引号，大小写原样保留
+  const isIdent = (v: string) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(v);
   if (spec.target.kind === "db") {
     if (!(spec.target.datasource ?? "").trim()) {
       issues.push({
@@ -147,7 +148,7 @@ export function validateSpec(spec: TaskSpec): SpecIssue[] {
       issues.push({
         path: "target.table",
         kind: "invalid",
-        message: "表名只能是「表」或「模式.表」，小写字母/数字/下划线",
+        message: "表名只能是「表」或「模式.表」，字母（大小写）/数字/下划线",
       });
     }
     const keys = spec.target.key ?? [];
@@ -163,7 +164,7 @@ export function validateSpec(spec: TaskSpec): SpecIssue[] {
         issues.push({
           path: `target.key[${i}]`,
           kind: "invalid",
-          message: "键列名只能是小写字母/数字/下划线",
+          message: "键列名只能是字母（大小写）/数字/下划线",
         });
       }
     });

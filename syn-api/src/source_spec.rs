@@ -296,7 +296,7 @@ impl SourceSpec {
                         table if !is_qualified_ident(table) => issues.push(SpecIssue::new(
                             "spec.table",
                             SpecIssueKind::Invalid,
-                            "表名只能是小写字母/数字/下划线，可用 schema.table",
+                            "表名只能用字母（大小写）/数字/下划线，可用 schema.table",
                         )),
                         _ => {}
                     }
@@ -316,7 +316,7 @@ impl SourceSpec {
                         issues.push(SpecIssue::new(
                             "spec.cursor_field",
                             SpecIssueKind::Invalid,
-                            "字段名只能是小写字母/数字/下划线",
+                            "字段名只能用字母（大小写）/数字/下划线",
                         ));
                     }
                     if tie.is_empty() {
@@ -329,7 +329,7 @@ impl SourceSpec {
                         issues.push(SpecIssue::new(
                             "spec.tie_field",
                             SpecIssueKind::Invalid,
-                            "字段名只能是小写字母/数字/下划线",
+                            "字段名只能用字母（大小写）/数字/下划线",
                         ));
                     }
                     if !cursor.is_empty() && cursor == tie {
@@ -429,13 +429,16 @@ impl SourceSpec {
     }
 }
 
+/// 源库标识符（表名 / 字段名）。大小写都收：工业库、从别的系统迁过来的库常有
+/// `WS_DEVICE` / `UPDATE_TIME` 这类大写名字。拼 SQL 时按方言包引号，大小写原样保留
+/// （见 `syn-svr` 的 `quote_table` / `quote_col`），所以这里只挡引号与分号等注入字符。
 fn is_ident(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
-        Some(c) if c.is_ascii_lowercase() || c == '_' => {}
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
         _ => return false,
     }
-    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// `table` 或 `schema.table`，两段都必须是合法标识符
@@ -519,6 +522,30 @@ mod tests {
         let mut ok = cursor_spec();
         ok["table"] = json!("public.dtw_polygon");
         assert!(check(ok, SourceKind::Sql).is_empty());
+    }
+
+    #[test]
+    fn table_and_fields_accept_uppercase() {
+        // 源库是从别的系统迁过来的：表名、列名都是大写，按真实名字填必须能保存
+        let mut v = cursor_spec();
+        v["table"] = json!("WS_DEVICE");
+        v["cursor_field"] = json!("UPDATE_TIME");
+        v["tie_field"] = json!("ID");
+        assert!(check(v, SourceKind::Sql).is_empty());
+
+        // schema 段同样收大写
+        let mut qualified = cursor_spec();
+        qualified["table"] = json!("CRM.WS_DEVICE");
+        assert!(check(qualified, SourceKind::Sql).is_empty());
+
+        // 放松大小写不等于放松字符集：引号、分号、空格仍旧拒绝
+        let mut quoted = cursor_spec();
+        quoted["table"] = json!("\"WS_DEVICE\"");
+        assert!(
+            check(quoted, SourceKind::Sql)
+                .iter()
+                .any(|(p, _)| p == "spec.table")
+        );
     }
 
     #[test]

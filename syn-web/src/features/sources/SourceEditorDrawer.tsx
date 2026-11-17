@@ -301,7 +301,7 @@ export function SourceEditorDrawer({
               </Field>
 
               {sqlMode === "auto" ? (
-                <Field label="源表名" required error={err("spec.table")} hint="表名写库里的真实名字，可用 schema.table">
+                <Field label="源表名" required error={err("spec.table")} hint="表名写库里的真实名字（区分大小写），可用 schema.table">
                   <Input
                     value={spec.table ?? ""}
                     placeholder="dtw_polygon"
@@ -333,7 +333,7 @@ export function SourceEditorDrawer({
                       label="主游标字段"
                       required
                       error={err("spec.cursor_field")}
-                      hint="时间戳 / 自增 ID，建好索引才能快"
+                      hint="时间戳 / 自增 ID，按库里真实列名（区分大小写）"
                     >
                       <Input
                         value={spec.cursor_field ?? ""}

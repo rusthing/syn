@@ -18,9 +18,16 @@ export interface SourceIssue {
   message: string;
 }
 
-const IDENT = /^[a-z_][a-z0-9_]*$/;
+/** 编码是 syn 自己的标识（topic、配置名），仍只认小写，避免大小写两份配置并存 */
+const CODE_IDENT = /^[a-z_][a-z0-9_]*$/;
+/**
+ * 表名与字段名是**源库**的标识符，跟着源库走：工业库、从别的系统迁过来的库
+ * 常有大写列名（`WS_DEVICE` / `UPDATE_TIME`），这里只挡引号、分号这类注入字符。
+ * 后端拼 SQL 时按方言包引号（`"WS_DEVICE"` / `` `WS_DEVICE` ``），大小写原样保留。
+ */
+const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** 表名允许 `schema.table`，两段都必须是合法标识符 */
-const QUALIFIED_IDENT = /^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$/;
+const QUALIFIED_IDENT = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/;
 
 const CURSOR_TYPES = ["bigint", "timestamptz", "varchar"] as const;
 const TIE_TYPES = ["bigint", "uuid", "varchar"] as const;
@@ -37,7 +44,7 @@ export function validateSource(input: SourceSaveInput): SourceIssue[] {
   const code = input.code.trim();
   if (!code) push("code", "编码必填，最长 64 字符");
   else if (code.length > 64) push("code", "编码最长 64 字符");
-  else if (!IDENT.test(code)) push("code", "编码只能用小写字母、数字、下划线，且不能以数字开头");
+  else if (!CODE_IDENT.test(code)) push("code", "编码只能用小写字母、数字、下划线，且不能以数字开头");
   const name = input.name.trim();
   if (!name) push("name", "名称必填，最长 100 字");
   else if (name.length > 100) push("name", "名称最长 100 字");
@@ -69,7 +76,7 @@ export function validateSource(input: SourceSaveInput): SourceIssue[] {
     } else if (!table) {
       push("spec.table", "必须写源表名或手写 SQL：取数语句按它生成");
     } else if (!QUALIFIED_IDENT.test(table)) {
-      push("spec.table", "表名只能是小写字母/数字/下划线，可用 schema.table");
+      push("spec.table", "表名只能用字母（大小写）/数字/下划线，可用 schema.table");
     }
 
     // serde 的 #[serde(default)] 让 mode 缺省即 cursor，别把「没写」当错
@@ -86,10 +93,10 @@ function validateCursor(spec: SourceSpec, push: (path: string, message: string) 
   const tie = (spec.tie_field ?? "").trim();
 
   if (!cursor) push("spec.cursor_field", "游标增量必须写主游标字段（时间戳 / 自增 ID）");
-  else if (!IDENT.test(cursor)) push("spec.cursor_field", "字段名只能是小写字母/数字/下划线");
+  else if (!IDENT.test(cursor)) push("spec.cursor_field", "字段名只能用字母（大小写）/数字/下划线");
 
   if (!tie) push("spec.tie_field", "游标增量必须写决胜字段：同一主游标值靠它排出唯一顺序");
-  else if (!IDENT.test(tie)) push("spec.tie_field", "字段名只能是小写字母/数字/下划线");
+  else if (!IDENT.test(tie)) push("spec.tie_field", "字段名只能用字母（大小写）/数字/下划线");
 
   if (cursor && cursor === tie) push("spec.tie_field", "决胜字段必须与主游标字段不同");
 

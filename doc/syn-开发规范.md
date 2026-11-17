@@ -619,7 +619,7 @@ feat(syn): 五段规则与记录转发
 6. **`syn` 自己的元数据库（`syn_*` 五张表）迁移只有 `pgsql`**。`mysql` / `sqlite` 目录留占位。注意这与「外部数据源」不是一回事：被抽取 / 被直写的业务库可以是 PostgreSQL / MySQL / SQLite（sqlx `any` 驱动，见 `db/dialect.rs`），它们的表结构由下游自己负责，不进 `syn` 迁移。
 7. **自拉调度不放在进程里**。`POST /syn/source/{id}/pull` 是 jobx 计划任务与运维按钮**同一个**入口：定时跑的和手动跑的不存在两套实现，单写者、执行历史、失败可见都由 jobx 给。进程内不再有调度器，也没有开它的开关（曾经有 `self-schedule`，开了又部署多副本会互相把游标推乱，已于 §5.1 一并删除）；进程内只留每副本的任务快照缓存与一把防连点的锁（`store.rs` / `poll.rs`）。
 8. **一轮拉取不因一条坏数据整体失败**。`SynSourcePullVo` 同时给 `rows` / `success` / `skip` / `fatal` / `retriable` / `position` / `stalled`：游标只推进到第一条非 success/skip 之前，`stalled` 说明卡在哪。界面必须把 `stalled` 显示出来，否则「没数据」和「被卡住」看起来一样。
-9. **`target.kind: db` 换掉的是第 5 段，不是最后一步**。匹配 / 映射 / 校验 / 判定四段与 HTTP 目标共用，但 db 直写**没有动作段**：`op` 由记录自带（`prepare` 只取 `$.op`，缺了就是 `NO_OP`），写库形状看 `target.on_conflict`，`insert ... upsert` 的 `c` / `r` / `u` 与按冲突键删除的 `d` 由 `db_sink.rs` 按 `op` 分派 —— 动作里的 method / path / query / headers / body 在这里一个都不读。因此保存期要求 `kind = db` 时 `actions` 必须为空（`validate_actions` 的 db 分支），而不是「不要求」。判定段的输入也不是真实响应：执行器合成 `200 + { affected: n }` 再交给判定，status 恒 200、记录为空，所以只许读 `$.affected`（`validate_db_verdict`，前端同构）。表名与列名**不信任配置**：启动时读列白名单（PG/MySQL 走 `information_schema.columns`，SQLite 走 `pragma_table_info`），拼 SQL 前再校验一次标识符合法，值一律绑参数。方言差异（引号、占位符、upsert 语法、类型转换）收敛在 `db/dialect.rs`。
+9. **`target.kind: db` 换掉的是第 5 段，不是最后一步**。匹配 / 映射 / 校验 / 判定四段与 HTTP 目标共用，但 db 直写**没有动作段**：`op` 由记录自带（`prepare` 只取 `$.op`，缺了就是 `NO_OP`），写库形状看 `target.on_conflict`，`insert ... upsert` 的 `c` / `r` / `u` 与按冲突键删除的 `d` 由 `db_sink.rs` 按 `op` 分派 —— 动作里的 method / path / query / headers / body 在这里一个都不读。因此保存期要求 `kind = db` 时 `actions` 必须为空（`validate_actions` 的 db 分支），而不是「不要求」。判定段的输入也不是真实响应：执行器合成 `200 + { affected: n }` 再交给判定，status 恒 200、记录为空，所以只许读 `$.affected`（`validate_db_verdict`，前端同构）。表名与列名**不信任配置**：启动时读列白名单（PG/MySQL 走 `information_schema.columns`，SQLite 走 `pragma_table_info`），拼 SQL 前再校验一次标识符合法，值一律绑参数。标识符（表名 / 键列）大小写都收（`[A-Za-z_][A-Za-z0-9_]*`），拼 SQL 时按方言包引号，大小写原样保留 —— 与源端抽取同一口径。方言差异（引号、占位符、upsert 语法、类型转换）收敛在 `db/dialect.rs`。
 10. **`syn_idem` 只记终态，不记逐次投递**。一个 `(task_id, idem_key)` 只有一行，重投命中直接返回上次结论并刷新 `update_ms`；没有「命中次数」「耗时」「中间轨迹」这几列。控制台的「投递记录」是这张表的投影，`op` / `detail` 恒为 `null`、`latency_ms` / `p95_ms` 恒为 `0`。要看逐次轨迹得先改 LDM 建明细表，**不要凭空编一列**。
 11. **总览的口径是「记账行数」**。没带 `X-Idempotency-Key` 的投递不记账，因此 `total` / 各结论计数 / 失败 Top 恒为 0 —— 这是事实，不是「没命中」。任务数、数据抽取数是配置表的实时值，与窗口无关，两者别混在一个图例里。
 12. **总览小时桶必须含当前小时**。`from = now - N 小时`，两端整点化后正好相差 N 个桶，所以曲线要 **N+1** 个点；只给 N 个点时刚发生的记账会落在数组之外，尾部恒为 0（真库联调才看得见，单测锁在 `syn_overview_svc::hour_buckets`）。窗口合计与曲线各桶之和必须相等，§15 的脚本把这条写成了断言。
@@ -816,6 +816,10 @@ syn-web/
 也可以切到「手写 SQL」，写单条 `select` / `with`（忽略结尾分号，内部不允许再出现分号），
 执行器把它当子查询再套游标条件、排序与 LIMIT —— 所以**手写结果必须输出主游标字段与决胜字段**。
 后端 `poll.rs` 按同一模板拼 SQL，两边改模板必须一起改。
+表名与字段名按**源库里的真实名字**填，大小写都收（`WS_DEVICE` / `UPDATE_TIME` 这种从别的
+系统迁过来的大写名字是合法的）：拼 SQL 前按方言包引号（`"WS_DEVICE"` / `` `WS_DEVICE` ``），
+大小写原样保留、不会被源库折叠成小写。预览也按这个形态显示，所以别把裸名当最终语句。
+白名单只挡引号、分号、空格这类会破坏语句结构的字符 —— 大小写不算违规。
 编辑态下 `code` 只读（后端也拒绝改），别做成可编辑再靠报错兜。
 `datasource` 用 `GET /syn/datasource/list` 的下拉（候选取自 `syn_datasource` 表），
 **不填连接串**（§11 第 13 条）。

@@ -65,6 +65,25 @@ describe("validateSource", () => {
     expect(paths(input)).not.toContain("spec.table");
   });
 
+  it("表名与字段名允许大写：按源库里的真实名字填", () => {
+    const input = valid();
+    input.spec.table = "WS_DEVICE";
+    input.spec.cursor_field = "UPDATE_TIME";
+    input.spec.tie_field = "ID";
+    expect(validateSource(input)).toEqual([]);
+
+    // schema 段同样收大写
+    input.spec.table = "CRM.WS_DEVICE";
+    expect(validateSource(input)).toEqual([]);
+
+    // 放松大小写不放宽字符集
+    input.spec.table = '"WS_DEVICE"';
+    expect(paths(input)).toContain("spec.table");
+    input.spec.table = "WS_DEVICE";
+    input.spec.cursor_field = "UPDATE TIME";
+    expect(paths(input)).toContain("spec.cursor_field");
+  });
+
   it("主游标与决胜字段不能相同，类型要符合各自可选集", () => {
     const input = valid();
     input.spec.tie_field = "updated_at";
