@@ -17,9 +17,9 @@
  * - 双击卡片仍然直接进窗体，是给老用户的近路。
  */
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { RefreshCw, TriangleAlert } from "lucide-react";
+import { Download, RefreshCw, TriangleAlert, Upload } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { PageHeader } from "@/components/page";
 import { useToast } from "@/components/ui/Toast";
@@ -27,12 +27,15 @@ import { ConfirmDialog } from "@/components/ui/Drawer";
 import type {
   DatasourceInfo,
   DatasourceTestResult,
+  PanelImportMode,
+  PanelImportResult,
   SyncSource,
   SyncTask,
 } from "@/lib/api/types";
 import { useAllTasks, useTaskMutations } from "@/hooks/use-tasks";
 import { useDatasources, useServices, useSources, useSourceMutations, useDatasourceMutations } from "@/hooks/use-sources";
 import { cloneSpec } from "@/lib/spec/defaults";
+import { panel } from "@/lib/api";
 import { SourceEditorDrawer } from "@/features/sources/SourceEditorDrawer";
 import { DatasourceEditorDrawer } from "@/features/datasources/DatasourceEditorDrawer";
 import { TaskEditorDrawer, type TaskTab } from "@/features/tasks/TaskEditorDrawer";
@@ -40,6 +43,15 @@ import { buildGraph, nodeId, type GraphNode, type TaskStage } from "./graph";
 import { TopologyCanvas } from "./TopologyCanvas";
 import { TopologyInspector } from "./TopologyInspector";
 import { TopologyPalette } from "./TopologyPalette";
+import {
+  archiveFileName,
+  buildArchive,
+  parseArchive,
+  planImport,
+  toImportInput,
+  type PanelArchive,
+} from "./panel-archive";
+import { PanelImportDialog } from "./PanelImportDialog";
 
 type Editing =
   | { kind: "task"; task: SyncTask; tab: TaskTab }
@@ -93,6 +105,121 @@ export function TopologyPage() {
   const [testResults, setTestResults] = useState<Record<string, DatasourceTestResult>>({});
   /** 外部要求画布把某张卡移到正中；token 保证连点同一条也能再次定位 */
   const [focus, setFocus] = useState<{ id: string; token: number } | null>(null);
+
+  /* ------------------------- 控制面板导出 / 导入 ------------------------- */
+
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [archive, setArchive] = useState<PanelArchive | null>(null);
+  const [importMode, setImportMode] = useState<PanelImportMode>("overwrite");
+  /** 新增数据源的连接串由用户在预览里现填，键是 code */
+  const [importUrls, setImportUrls] = useState<Record<string, string>>({});
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importResult, setImportResult] = useState<PanelImportResult | null>(null);
+
+  const currentPanel = useMemo(() => ({ datasources, sources, tasks }), [datasources, sources, tasks]);
+  const importPlan = useMemo(
+    () => archive && planImport(archive, currentPanel, importMode),
+    [archive, currentPanel, importMode],
+  );
+
+  /** 导出走服务端：连接串明文只有 `GET /syn/panel/export` 给，前端拼不出来 */
+  const exportPanel = async () => {
+    try {
+      const snapshot = buildArchive(await panel.export());
+      const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
+        type: "application/json;charset=utf-8",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = archiveFileName(snapshot);
+      // Safari 要求锚点在文档里才肯触发下载；URL 延后释放，避免下载被取消
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      toast.success(
+        "已导出控制面板",
+        `数据源 ${snapshot.summary.datasources} · 数据抽取 ${snapshot.summary.sources} · 任务 ${snapshot.summary.tasks}；文件含连接串明文，请按密钥保管`,
+      );
+    } catch (err) {
+      toast.error("导出失败", err instanceof Error ? err.message : "接口不可达");
+    }
+  };
+
+  const pickArchive = () => fileRef.current?.click();
+
+  /** 读文件、解析、预检；真正的写入等用户在预览里确认 */
+  const loadArchive = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const parsed = parseArchive(await file.text());
+      if (!parsed.ok) {
+        toast.error("文件读不了", parsed.errors.slice(0, 2).join("；"));
+        return;
+      }
+      setArchive(parsed.archive);
+      setImportMode("overwrite");
+      setImportUrls(
+        Object.fromEntries(
+          parsed.archive.datasources.map((d) => [d.code, d.url.trim()]),
+        ),
+      );
+      setImportError(null);
+      setImportResult(null);
+      if (parsed.warnings.length > 0) {
+        toast.info("文件有提示", parsed.warnings[0]);
+      }
+    } catch (err) {
+      toast.error("文件读不了", err instanceof Error ? err.message : "无法读取文件");
+    }
+  };
+
+  /**
+   * 确认导入：后端单事务写入，失败即整批回滚。
+   * 预览里补填的连接串只覆盖「当前环境没有、需要新建」的数据源；
+   * 已存在的留住库里的那条，文件里带了新串才覆盖。
+   */
+  const confirmImport = async () => {
+    if (!archive) return;
+    setImporting(true);
+    setImportError(null);
+    setImportResult(null);
+    try {
+      const datasources = archive.datasources.map((d) => {
+        const row = importPlan?.datasources.find((r) => r.code === d.code);
+        return row?.action === "create"
+          ? { ...d, url: (importUrls[d.code] ?? d.url).trim() }
+          : d;
+      });
+      const result = await panel.import({
+        ...toImportInput(archive, importMode),
+        datasources,
+      });
+      setImportResult(result);
+      setSelectedId(null);
+      setStage(null);
+      await Promise.all([refetchDs(), refetchSources(), refetchTasks()]);
+      const written =
+        result.datasources.created +
+        result.datasources.updated +
+        result.sources.created +
+        result.sources.updated +
+        result.tasks.created +
+        result.tasks.updated;
+      toast.success(
+        "导入完成",
+        `写入 ${written} 条（跳过 ${result.datasources.skipped + result.sources.skipped + result.tasks.skipped} 条）${result.watermarks_reset > 0 ? `；${result.watermarks_reset} 条抽取的水位已清空` : ""}`,
+      );
+      setArchive(null);
+      setImportUrls({});
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : "接口不可达");
+    } finally {
+      setImporting(false);
+    }
+  };
 
   const runPending = (key: string, run: (settled: () => void) => void) => {
     setPendingKeys((prev) => new Set(prev).add(key));
@@ -357,6 +484,24 @@ export function TopologyPage() {
             <Button
               variant="ghost"
               size="sm"
+              icon={<Download className="size-3.5" />}
+              onClick={() => void exportPanel()}
+              title="导出面板结构与全部组件配置（含连接串明文，仅本接口破例）"
+            >
+              导出
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<Upload className="size-3.5" />}
+              onClick={pickArchive}
+              title="从导出文件恢复数据源 / 数据抽取 / 任务"
+            >
+              导入
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
               icon={<RefreshCw className="size-3.5" />}
               onClick={() => {
                 void Promise.all([refetchDs(), refetchSources(), refetchTasks()]);
@@ -367,6 +512,19 @@ export function TopologyPage() {
             </Button>
           </>
         }
+      />
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".json,application/json"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          // 清空 value 才能再次选中同一个文件做「改完再导」
+          e.target.value = "";
+          void loadArchive(file);
+        }}
       />
 
       {(issueNodes.length > 0 || warnNodes.length > 0) && (
@@ -489,6 +647,32 @@ export function TopologyPage() {
             return rest;
           });
         }}
+      />
+
+      <PanelImportDialog
+        open={archive !== null}
+        archive={archive}
+        plan={importPlan}
+        mode={importMode}
+        urls={importUrls}
+        busy={importing}
+        error={importError}
+        result={importResult}
+        onModeChange={(mode) => {
+          setImportMode(mode);
+          setImportError(null);
+        }}
+        onUrlChange={(code, value) =>
+          setImportUrls((prev) => ({ ...prev, [code]: value }))
+        }
+        onClose={() => {
+          if (importing) return;
+          setArchive(null);
+          setImportUrls({});
+          setImportError(null);
+          setImportResult(null);
+        }}
+        onConfirm={() => void confirmImport()}
       />
 
       <ConfirmDialog

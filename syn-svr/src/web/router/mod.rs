@@ -8,6 +8,7 @@ mod syn_datasource_router;
 mod syn_delivery_router;
 mod syn_idem_router;
 mod syn_overview_router;
+mod syn_panel_router;
 mod syn_service_router;
 mod syn_source_router;
 mod syn_sync_router;

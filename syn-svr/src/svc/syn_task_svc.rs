@@ -199,7 +199,7 @@ impl SynTaskSvc {
 ///
 /// 两步分开报错：结构反序列化失败是「字段名/类型写错」，返回 400 并指出具体位置；
 /// 结构合法但自相矛盾（比如没有兜底判定）由 `TaskSpec::validate` 给出带 `path` 的清单。
-fn parse_spec(value: &serde_json::Value) -> Result<TaskSpec, SvcError> {
+pub(crate) fn parse_spec(value: &serde_json::Value) -> Result<TaskSpec, SvcError> {
     let spec: TaskSpec = serde_json::from_value(value.clone())
         .map_err(|e| invalid("spec", format!("spec 结构不合法：{e}")))?;
     if let Err(issues) = spec.validate() {
@@ -220,7 +220,7 @@ fn format_issues(issues: &[SpecIssue]) -> String {
 ///
 /// `existing` 为 `None` 时是新建（版本 1、审计取当前时间），否则是修改
 /// （版本 +1、保留创建审计）。
-fn build_model(
+pub(crate) fn build_model(
     spec: &TaskSpec,
     dto: &SynTaskSaveDto,
     existing: Option<Model>,
@@ -265,7 +265,7 @@ fn build_model(
 }
 
 /// # 固化一份版本快照
-async fn insert_version<C: sea_orm::ConnectionTrait>(
+pub(crate) async fn insert_version<C: sea_orm::ConnectionTrait>(
     task: &Model,
     version: i32,
     remark: &Option<String>,

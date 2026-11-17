@@ -508,6 +508,9 @@ SynTaskDao::update(am, db.as_ref()).await?;
 
 手写路由同样挂在 `/{p}/{m}/...` 下，一段话描述清楚「这个接口是给谁的」。
 
+控制面板的备份不是 CRUD：`GET /syn/panel/export` 导出三张业务表的配置快照，
+`POST /syn/panel/import` 整批写回（单事务，覆盖 / 仅补缺，失败全回滚）。两者都是固定路径。
+
 ### 7.2 响应
 
 - 统一 `Ro<T>`：`{ result: 1|-1|-2|-3, msg, timestamp, extra, detail?, code? }`，业务数据在 **`extra`** 里，不在 `data` / `message`。`result !== 1` 一律当失败，即使 HTTP 是 200。
@@ -516,6 +519,7 @@ SynTaskDao::update(am, db.as_ref()).await?;
 - 错误统一 `CtrlError`：`Runtime` → 500、`Validation(s)` → 400、`Io` → 500、`Svc` → 按 `SvcError` 分类。
 - **例外**：需要让调用方按状态码决策的接口（`POST /syn/sync/{topic}`，2xx 提交 offset / 4xx 进 DLQ / 503 交还重试），直接返回 `(StatusCode, Json<..>)`，不要套 `Ro` 把语义压成 200。`POST /syn/task/reload` 不属于这一类：它是控制台动作，走 `Ro<u64>`，`extra` 是生效任务数。
 - **反过来的例外**：`POST /syn/datasource/test` 连不上也返回 `200` + `Ro{ extra: { ok:false, message } }`。测试结果是「配置对不对」的业务结论，不是「这次请求成不成立」；用 4xx/5xx 会让界面分不清「连接串写错」和「服务挂了」。
+- **连接串的唯一明文出口**：`GET /syn/panel/export` 为支持面板整体备份，会返回 `url` 原文（其余读接口仍只回脱敏 `target`）。文件即密钥，前端导出时提示按密钥保管，不要放进工单附件或仓库。
 
 ### 7.3 请求头
 
@@ -714,6 +718,7 @@ feat(syn): 五段规则与记录转发
 | 数据抽取的新增 / 编辑 / 删除入口 | ✅ | 后端五件套齐全（`code` 不可改）；前端 `SourceEditorDrawer` + `lib/spec/validate-source.ts` 本地预校验，错误定位到字段；SQL 按表名 + 游标字段自动生成 |
 | 数据源管理（`syn_datasource` 表 + 八个接口） | ✅ | 控制台可增删改（连接串 / 池上限 / 启停 / 备注）；明文只写不回显，读接口一律脱敏；改完发 `refresh.syn.datasource` 让各副本重建连接池；`[syn.datasources.*]` 降级为兜底，见 §11 第 13 条。第八个接口是 `POST /syn/datasource/test`（传 `url` 或 `id`），失败也走 200，见 §14.7 第 7 条 |
 | `GET /syn/registry/services`（http 目标服务名候选） | ✅ | 走 `robotech::micro_svc::list_services`（Consul 取 `/v1/catalog/services`，etcd/nacos 默认返回空）；**失败降级为空数组不报错**，表单手输照常能存，见 §14.2 |
+| 控制面板导出 / 导入 | ✅ | `GET /syn/panel/export` 导出面板结构 + 数据源 / 数据抽取 / 任务配置（含连接串明文，唯一破例）；`POST /syn/panel/import` 单事务写回，界面可选「覆盖 / 仅补缺」，失败整批回滚；只导配置与启停，不导游标与最近拉取结果；抽取定义变化时清空水位。前端 `panel-archive.ts` 做解析与预检，12 个单测 |
 | 控制面板（原「同步拓扑」；画布接口 / 坐标表已弃用） | ✅ | 泳道图（学习 uiam 网关配置）：一个主题一条泳道，按引用关系自动排布、连线从 DOM 量坐标画贝塞尔；节点来自三张业务表、图不落库；任务把手可在泳道内拖动改匹配顺序；数据抽取卡有「立即拉取」、异常 hint 走 portal 显示完整详情；卡片骨架照 dbz 控制面板（右上角启停、下面状态栏、最下操作行），属性栏与窗体里不放操作；投递是任务卡的一段画在卡内，见 §14.7 |
 | 真库端到端联调（migration → 源库查数 → db sink → 幂等命中 → 判定语句树 → pull 返回） | ✅ | `tests/e2e/run.sh` 一键跑 92 条断言，覆盖三库、控制台五接口、前端 wire 契约、`switch` 内嵌 `if` 的两层判定（老 `outcomes` 与新 `rules` 各跑一遍）、启停落库与数据源连接测试；见 §15.1–§15.4。联调中还修掉了总览小时桶的 off-by-one（§11 第 12 条） |
 | 部署形态联调（consul 配置中心 + 业务库隔离表） | ✅ | `tests/env/run.sh` 一次跑 50 条断言，验的是「不加 `-c`、走默认 `syn-svr.toml` + consul KV 覆盖」这条路；见 §15.5 |

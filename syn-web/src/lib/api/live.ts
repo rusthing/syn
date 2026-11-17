@@ -35,6 +35,13 @@ import type {
   Op,
   Overview,
   Page,
+  PanelDatasource,
+  PanelExport,
+  PanelImportInput,
+  PanelImportMode,
+  PanelImportResult,
+  PanelTask,
+  PanelSource,
   PullResult,
   ServiceOption,
   SourceKind,
@@ -679,4 +686,184 @@ export const liveIdem = {
 export const liveOverview = {
   get: (window = "24h"): Promise<Overview> =>
     request<WireOverview>("/syn/overview", { query: { window } }).then(toOverview),
+};
+
+/* ------------------------------ 控制面板导出 / 导入 ------------------------------ */
+
+interface WirePanelDatasource {
+  code: string;
+  name: string;
+  engine?: string;
+  url?: string;
+  maxConnections?: number;
+  enabled?: boolean;
+  remark?: string | null;
+  target?: string | null;
+}
+
+interface WirePanelSource {
+  code: string;
+  name: string;
+  kind?: number;
+  topic?: string;
+  enabled?: boolean;
+  intervalDuration?: string;
+  batchSize?: number;
+  spec?: SourceSpec;
+  remark?: string | null;
+}
+
+interface WirePanelTask {
+  name: string;
+  topic?: string;
+  sortOrder?: number;
+  enabled?: boolean;
+  exclusive?: boolean;
+  remark?: string | null;
+  spec?: TaskSpec;
+}
+
+interface WirePanelExport {
+  exportedMs?: string | number;
+  datasources?: WirePanelDatasource[];
+  sources?: WirePanelSource[];
+  tasks?: WirePanelTask[];
+}
+
+interface WirePanelImportCounts {
+  created?: number;
+  updated?: number;
+  skipped?: number;
+}
+
+interface WirePanelImportResult {
+  mode?: string;
+  datasources?: WirePanelImportCounts;
+  sources?: WirePanelImportCounts;
+  tasks?: WirePanelImportCounts;
+  watermarksReset?: number;
+}
+
+function toPanelDatasource(v: WirePanelDatasource): PanelDatasource {
+  const engine = v.engine === "mysql" || v.engine === "sqlite" ? v.engine : "postgres";
+  return {
+    code: v.code,
+    name: v.name,
+    engine,
+    url: v.url ?? "",
+    maxConnections: num(v.maxConnections ?? 8),
+    enabled: v.enabled ?? true,
+    remark: v.remark ?? null,
+    target: v.target ?? null,
+  };
+}
+
+function toPanelSource(v: WirePanelSource): PanelSource {
+  return {
+    code: v.code,
+    name: v.name,
+    kind: (v.kind === 1 ? "http" : "sql") as SourceKind,
+    topic: v.topic ?? "",
+    enabled: v.enabled ?? true,
+    interval_duration: v.intervalDuration ?? "1m",
+    batch_size: num(v.batchSize ?? 100),
+    spec: v.spec ?? {},
+    remark: v.remark ?? null,
+  };
+}
+
+function toPanelTask(v: WirePanelTask): PanelTask {
+  const topic = v.topic ?? v.spec?.topic ?? "";
+  const sortOrder = num(v.sortOrder ?? v.spec?.sort_order ?? 0);
+  const enabled = v.enabled ?? v.spec?.enabled ?? true;
+  const exclusive = v.exclusive ?? v.spec?.exclusive ?? true;
+  // 导出接口已把四个索引列覆盖进 spec；这里再对齐一次，手工编辑过的文件也不会
+  // 出现「列说启停、spec 说停用」的分裂
+  const spec: TaskSpec = {
+    ...(v.spec ?? ({} as TaskSpec)),
+    topic,
+    sort_order: sortOrder,
+    enabled,
+    exclusive,
+  };
+  return {
+    name: v.name,
+    topic,
+    sort_order: sortOrder,
+    enabled,
+    exclusive,
+    remark: v.remark ?? null,
+    spec,
+  };
+}
+
+const EMPTY_COUNTS = { created: 0, updated: 0, skipped: 0 };
+
+function toPanelCounts(v: WirePanelImportCounts | undefined): PanelImportResult["datasources"] {
+  if (!v) return { ...EMPTY_COUNTS };
+  return { created: num(v.created), updated: num(v.updated), skipped: num(v.skipped) };
+}
+
+function toPanelImportResult(v: WirePanelImportResult): PanelImportResult {
+  return {
+    mode: (v.mode === "skip" ? "skip" : "overwrite") as PanelImportMode,
+    datasources: toPanelCounts(v.datasources),
+    sources: toPanelCounts(v.sources),
+    tasks: toPanelCounts(v.tasks),
+    watermarks_reset: num(v.watermarksReset),
+  };
+}
+
+/**
+ * 导出 / 导入走**后端**而不是前端拼：导出需要连接串明文（读接口一律脱敏，
+ * 只有这个导出接口破例），导入要一个事务里全成或全败，前端逐条写做不到。
+ */
+export const livePanel = {
+  export: (): Promise<PanelExport> =>
+    request<WirePanelExport>("/syn/panel/export").then((v) => ({
+      exported_ms: String(v?.exportedMs ?? Date.now()),
+      datasources: (v?.datasources ?? []).map(toPanelDatasource),
+      sources: (v?.sources ?? []).map(toPanelSource),
+      tasks: (v?.tasks ?? []).map(toPanelTask),
+    })),
+
+  import: (input: PanelImportInput): Promise<PanelImportResult> =>
+    request<WirePanelImportResult>("/syn/panel/import", {
+      method: "POST",
+      body: {
+        mode: input.mode,
+        datasources: input.datasources.map((d) => ({
+          code: d.code,
+          name: d.name,
+          engine: d.engine,
+          // 新增必填；覆盖时留空表示沿用库里那条
+          ...(d.url.trim() ? { url: d.url.trim() } : {}),
+          maxConnections: d.maxConnections,
+          enabled: d.enabled,
+          ...(d.remark?.trim() ? { remark: d.remark.trim() } : {}),
+        })),
+        sources: input.sources.map((s) => ({
+          code: s.code,
+          name: s.name,
+          kind: s.kind === "http" ? 1 : 0,
+          topic: s.topic.trim() || undefined,
+          enabled: s.enabled,
+          intervalDuration: s.interval_duration,
+          batchSize: s.batch_size,
+          spec: s.spec,
+          ...(s.remark?.trim() ? { remark: s.remark.trim() } : {}),
+        })),
+        tasks: input.tasks.map((t) => ({
+          name: t.name,
+          spec: {
+            ...t.spec,
+            topic: t.topic,
+            sort_order: t.sort_order,
+            enabled: t.enabled,
+            exclusive: t.exclusive,
+          },
+          ...(t.remark?.trim() ? { remark: t.remark.trim() } : {}),
+        })),
+      },
+    }).then(toPanelImportResult),
 };

@@ -510,3 +510,81 @@ export interface SyncReply {
   stage: string;
   detail: string | null;
 }
+
+/* ------------------------------ 控制面板导出 / 导入 ------------------------------ */
+
+/**
+ * 导出的数据源。`url` 是连接串**明文**，只从 `GET /syn/panel/export` 出来：
+ * 其余读接口一律脱敏。文件按密钥对待。
+ */
+export interface PanelDatasource {
+  code: string;
+  name: string;
+  engine: DbEngine;
+  url: string;
+  maxConnections: number;
+  enabled: boolean;
+  remark?: string | null;
+  /** 脱敏目标，供人核对文件与环境的对应关系 */
+  target?: string | null;
+}
+
+/** 导出的数据抽取：只有配置，不含游标与运行结果 */
+export interface PanelSource {
+  code: string;
+  name: string;
+  kind: SourceKind;
+  topic: string;
+  enabled: boolean;
+  interval_duration: string;
+  batch_size: number;
+  spec: SourceSpec;
+  remark?: string | null;
+}
+
+/** 导出的任务：`spec` 里的 topic / sort_order / enabled / exclusive 已按列覆盖 */
+export interface PanelTask {
+  name: string;
+  topic: string;
+  sort_order: number;
+  enabled: boolean;
+  exclusive: boolean;
+  remark?: string | null;
+  spec: TaskSpec;
+}
+
+/** `GET /syn/panel/export` 的返回（对应 `SynPanelExportVo`） */
+export interface PanelExport {
+  /** 服务端导出时间（毫秒，U64 字符串） */
+  exported_ms: string;
+  datasources: PanelDatasource[];
+  sources: PanelSource[];
+  tasks: PanelTask[];
+}
+
+/** 导入模式：覆盖已存在组件 / 跳过已存在组件 */
+export type PanelImportMode = "overwrite" | "skip";
+
+/** `POST /syn/panel/import` 的入参：三类组件按依赖顺序写在同一个事务里 */
+export interface PanelImportInput {
+  mode: PanelImportMode;
+  datasources: PanelDatasource[];
+  sources: PanelSource[];
+  tasks: PanelTask[];
+}
+
+export interface PanelImportCounts {
+  created: number;
+  updated: number;
+  skipped: number;
+}
+
+/** 导入结果（对应 `SynPanelImportVo`）；失败时整批回滚，不会有部分结果 */
+export interface PanelImportResult {
+  mode: PanelImportMode;
+  datasources: PanelImportCounts;
+  sources: PanelImportCounts;
+  tasks: PanelImportCounts;
+  /** 因抽取定义变更而清空水位的条数 */
+  watermarks_reset: number;
+}

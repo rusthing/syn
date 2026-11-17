@@ -19,6 +19,7 @@ mod syn_datasource_vo;
 mod syn_delivery_vo;
 mod syn_idem_vo;
 mod syn_overview_vo;
+mod syn_panel_vo;
 mod syn_service_vo;
 mod syn_source_vo;
 mod syn_task_vo;
@@ -28,6 +29,10 @@ pub use syn_datasource_vo::{SynDatasourceTestVo, SynDatasourceVo};
 pub use syn_delivery_vo::SynDeliveryVo;
 pub use syn_idem_vo::SynIdemVo;
 pub use syn_overview_vo::{SynOverviewFailureVo, SynOverviewHourVo, SynOverviewVo};
+pub use syn_panel_vo::{
+    SynPanelDatasourceVo, SynPanelExportVo, SynPanelImportCounts, SynPanelImportVo, SynPanelSourceVo,
+    SynPanelTaskVo,
+};
 pub use syn_service_vo::SynServiceVo;
 pub use syn_source_vo::{SynCursorVo, SynSourcePullVo, SynSourceVo};
 pub use syn_task_vo::SynTaskVo;

@@ -20,6 +20,7 @@ mod syn_datasource_dto;
 mod syn_delivery_dto;
 mod syn_idem_dto;
 mod syn_overview_dto;
+mod syn_panel_dto;
 mod syn_source_dto;
 mod syn_task_dto;
 
@@ -30,5 +31,6 @@ pub use syn_datasource_dto::{
 pub use syn_delivery_dto::SynDeliveryQueryDto;
 pub use syn_idem_dto::SynIdemQueryDto;
 pub use syn_overview_dto::SynOverviewQueryDto;
+pub use syn_panel_dto::{SynPanelImportDto, SynPanelImportMode};
 pub use syn_source_dto::{SynSourceEnabledDto, SynSourceQueryDto, SynSourceSaveDto};
 pub use syn_task_dto::{SynTaskEnabledDto, SynTaskQueryDto, SynTaskSaveDto};

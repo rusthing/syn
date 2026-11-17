@@ -17,6 +17,10 @@ import type {
   IdemRecord,
   Overview,
   Page,
+  PanelExport,
+  PanelImportInput,
+  PanelImportMode,
+  PanelImportResult,
   PullResult,
   ServiceOption,
   SourceSaveInput,
@@ -1095,5 +1099,157 @@ export const mockCanvas = {
   save: async (nodes: CanvasNodePos[]): Promise<CanvasNodePos[]> => {
     for (const node of nodes) canvasPositions.set(`${node.kind}:${node.key}`, node);
     return nodes;
+  },
+};
+
+/* ------------------------------ 控制面板导出 / 导入 ------------------------------ */
+
+/**
+ * 演示模式的导出 / 导入。
+ *
+ * 演示数据**不保存连接串明文**（`DatasourceInfo` 里根本没有 url），导出的
+ * `url` 只能是空串：导入预览会要求给「新增的数据源」补填连接串 —— 这与实时模式
+ * 的手工编辑路径一致，演示里也能看到这条提示。
+ * 导入只改内存，刷新即还原；没有事务语义（演示模式没有「回滚」这个概念）。
+ */
+export const mockPanel = {
+  async export(): Promise<PanelExport> {
+    return {
+      exported_ms: String(Date.now()),
+      datasources: DATASOURCES.map((d) => ({
+        code: d.code,
+        name: d.name,
+        engine: d.engine,
+        url: "",
+        maxConnections: d.maxConnections,
+        enabled: d.enabled,
+        remark: d.remark ?? null,
+        target: d.target ?? null,
+      })),
+      sources: SOURCES.map((s) => ({
+        code: s.code,
+        name: s.name,
+        kind: s.kind,
+        topic: s.topic,
+        enabled: s.enabled,
+        interval_duration: s.interval_duration,
+        batch_size: s.batch_size,
+        spec: s.spec,
+        remark: s.remark ?? null,
+      })),
+      tasks: TASKS.map((t) => ({
+        name: t.name,
+        topic: t.topic,
+        sort_order: t.sort_order,
+        enabled: t.enabled,
+        exclusive: t.spec.exclusive ?? true,
+        remark: null,
+        spec: {
+          ...t.spec,
+          topic: t.topic,
+          sort_order: t.sort_order,
+          enabled: t.enabled,
+          exclusive: t.spec.exclusive ?? true,
+        },
+      })),
+    };
+  },
+
+  async import(input: PanelImportInput): Promise<PanelImportResult> {
+    const mode: PanelImportMode = input.mode;
+
+    const ds = { created: 0, updated: 0, skipped: 0 };
+    for (const row of input.datasources) {
+      const existing = DATASOURCES.find((d) => d.code === row.code);
+      if (existing) {
+        if (mode === "skip") {
+          ds.skipped += 1;
+          continue;
+        }
+        await mockDatasources.update(existing.id, {
+          code: row.code,
+          name: row.name,
+          engine: row.engine,
+          url: row.url.trim() || undefined,
+          maxConnections: row.maxConnections,
+          enabled: row.enabled,
+          remark: row.remark ?? undefined,
+        });
+        ds.updated += 1;
+      } else {
+        await mockDatasources.create({
+          code: row.code,
+          name: row.name,
+          engine: row.engine,
+          url: row.url,
+          maxConnections: row.maxConnections,
+          enabled: row.enabled,
+          remark: row.remark ?? undefined,
+        });
+        ds.created += 1;
+      }
+    }
+
+    const sc = { created: 0, updated: 0, skipped: 0 };
+    for (const row of input.sources) {
+      const existing = SOURCES.find((s) => s.code === row.code);
+      if (existing) {
+        if (mode === "skip") {
+          sc.skipped += 1;
+          continue;
+        }
+        await mockSources.save({
+          id: existing.id,
+          code: row.code,
+          name: row.name,
+          kind: row.kind,
+          topic: row.topic,
+          enabled: row.enabled,
+          intervalDuration: row.interval_duration,
+          batchSize: row.batch_size,
+          spec: row.spec,
+          remark: row.remark ?? undefined,
+        });
+        sc.updated += 1;
+      } else {
+        await mockSources.save({
+          code: row.code,
+          name: row.name,
+          kind: row.kind,
+          topic: row.topic,
+          enabled: row.enabled,
+          intervalDuration: row.interval_duration,
+          batchSize: row.batch_size,
+          spec: row.spec,
+          remark: row.remark ?? undefined,
+        });
+        sc.created += 1;
+      }
+    }
+
+    const tc = { created: 0, updated: 0, skipped: 0 };
+    const used = new Set<string>();
+    for (const row of input.tasks) {
+      // 身份：主题 + 名称；同名多条时取排序值最接近的那条，与后端一致
+      const candidates = TASKS.filter((t) => t.topic === row.topic && t.name === row.name && !used.has(t.id));
+      const hit = candidates.sort(
+        (a, b) => Math.abs(a.sort_order - row.sort_order) - Math.abs(b.sort_order - row.sort_order),
+      )[0];
+      if (hit) {
+        used.add(hit.id);
+        if (mode === "skip") {
+          tc.skipped += 1;
+          continue;
+        }
+        await mockTasks.update(hit.id, { name: row.name, spec: row.spec });
+        tc.updated += 1;
+      } else {
+        const created = await mockTasks.create({ name: row.name, spec: row.spec });
+        used.add(created.id);
+        tc.created += 1;
+      }
+    }
+
+    return { mode, datasources: ds, sources: sc, tasks: tc, watermarks_reset: 0 };
   },
 };

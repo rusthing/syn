@@ -17,6 +17,7 @@ import {
   liveSources,
   liveTasks,
   liveCanvas,
+  livePanel,
 } from "./live";
 import {
   mockCanvas,
@@ -26,6 +27,7 @@ import {
   mockRegistry,
   mockSources,
   mockTasks,
+  mockPanel,
   mockTopics,
   overview as mockOverview,
   SAMPLE_RECORDS,
@@ -41,6 +43,9 @@ import type {
   IdemRecord,
   Overview,
   Page,
+  PanelExport,
+  PanelImportInput,
+  PanelImportResult,
   PullResult,
   ServiceOption,
   SourceSaveInput,
@@ -167,6 +172,13 @@ export const canvas = {
 };
 
 /** 注册中心服务名候选。实时模式接口未落地 / 不可达时由 `useServices` 兜成空数组 */
+/** 控制面板导出 / 导入。导出含连接串明文，导入是后端单事务批量写 */
+export const panel = {
+  export: (): Promise<PanelExport> => (isMock() ? mockPanel.export() : livePanel.export()),
+  import: (input: PanelImportInput): Promise<PanelImportResult> =>
+    isMock() ? mockPanel.import(input) : livePanel.import(input),
+};
+
 export const registry = {
   services: (): Promise<ServiceOption[]> =>
     isMock() ? mockRegistry.services() : liveRegistry.services(),

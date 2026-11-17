@@ -256,7 +256,7 @@ impl SynDatasourceSvc {
 /// `url` 为 `Some` 才 `Set` 连接串；为 `None` 时**不动** `am.url`
 /// （`into_active_model()` 带的是 `Unchanged`，不会进 UPDATE 的变更集），
 /// 于是库里原值保持不变。新建走 `ActiveModel::default()`，此时 `url` 必为 `Some`。
-fn build_model(
+pub(crate) fn build_model(
     dto: &SynDatasourceSaveDto,
     url: Option<String>,
     existing: Option<Model>,
@@ -358,7 +358,7 @@ fn describe_connect_error(err: &sqlx::Error) -> String {
 ///
 /// `None` / 空串 / 纯空白 → `None`（本次不提供）；否则返回去首尾空白后的值。
 /// 新增时 `None` 触发「必须填写」，修改时 `None` 表示保留原值。
-fn normalized_url(url: &Option<String>) -> Option<String> {
+pub(crate) fn normalized_url(url: &Option<String>) -> Option<String> {
     url.as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -369,7 +369,7 @@ fn normalized_url(url: &Option<String>) -> Option<String> {
 ///
 /// 只保留 `user_info@` 之后、query 之前的部分。`postgres://u:p@host:5432/db?sslmode=disable`
 /// → `host:5432/db`。解析不出 `@` 时（比如 unix socket 形态）返回 null，不猜也不外泄。
-fn mask_url(url: &str) -> Option<String> {
+pub(crate) fn mask_url(url: &str) -> Option<String> {
     let after_user = url.split_once('@')?.1;
     let target = after_user
         .split(['?', '#'])

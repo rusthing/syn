@@ -245,7 +245,7 @@ impl SynSourceSvc {
 }
 
 /// # 解析并校验抽取定义
-fn parse_spec(dto: &SynSourceSaveDto) -> Result<serde_json::Value, SvcError> {
+pub(crate) fn parse_spec(dto: &SynSourceSaveDto) -> Result<serde_json::Value, SvcError> {
     let spec = SourceSpec::parse(&dto.spec)
         .map_err(|e| invalid("spec", format!("spec 结构不合法：{e}")))?;
     if let Err(issues) = spec.validate(dto.kind) {
@@ -272,7 +272,7 @@ fn parse_spec(dto: &SynSourceSaveDto) -> Result<serde_json::Value, SvcError> {
 /// 任务按 topic 精确匹配，两个数据抽取共用一个 topic 会互相串数据，不能只是「允许重复」。
 ///
 /// `self_id` 用于修改：同一个数据抽取保持 topic 不变时不算冲突。
-async fn ensure_topic_available<C: ConnectionTrait>(
+pub(crate) async fn ensure_topic_available<C: ConnectionTrait>(
     topic: &str,
     self_id: Option<i64>,
     db: &C,
@@ -294,7 +294,7 @@ async fn ensure_topic_available<C: ConnectionTrait>(
 }
 
 /// 虚拟 topic：留空由服务端按约定拼
-fn topic_of(dto: &SynSourceSaveDto) -> String {
+pub(crate) fn topic_of(dto: &SynSourceSaveDto) -> String {
     dto.topic
         .as_deref()
         .map(str::trim)
@@ -304,7 +304,7 @@ fn topic_of(dto: &SynSourceSaveDto) -> String {
 }
 
 /// # 由 DTO 推导实体
-fn build_model(
+pub(crate) fn build_model(
     dto: &SynSourceSaveDto,
     spec: serde_json::Value,
     topic: String,
@@ -357,7 +357,7 @@ fn build_model(
 /// 但 `> 旧 updated_at` 对新列毫无意义。
 ///
 /// 只比语义相关的字段：改名称、备注、间隔、批量大小都不影响水位。
-fn cursor_basis_changed(
+pub(crate) fn cursor_basis_changed(
     old_kind: SourceKind,
     old: &SourceSpec,
     new_kind: SourceKind,
