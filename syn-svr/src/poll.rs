@@ -1256,10 +1256,11 @@ mod tests {
 
     #[test]
     fn mysql_snapshot_wraps_row_as_json_text() {
-        let cols: Vec<&String> = ["ID", "CODE", "IS_ENABLED"]
+        let owned: Vec<String> = ["ID", "CODE", "IS_ENABLED"]
             .iter()
             .map(|s| s.to_string())
             .collect();
+        let cols: Vec<&String> = owned.iter().collect();
         let expr = mysql_row_json(&cols, Dialect::Mysql).unwrap();
         // 每列值先 CAST 成文本，整行再 CAST 成 CHAR 结果列，列名固定为 row
         assert_eq!(
@@ -1268,7 +1269,8 @@ mod tests {
              'IS_ENABLED', CAST(s.`IS_ENABLED` AS CHAR)) AS CHAR) AS row"
         );
         // 非白名单标识符拒绝拼接
-        let bad: Vec<&String> = vec!["ID; DROP TABLE x".to_string()].iter().collect();
+        let bad_owned = vec!["ID; DROP TABLE x".to_string()];
+        let bad: Vec<&String> = bad_owned.iter().collect();
         assert!(mysql_row_json(&bad, Dialect::Mysql).is_err());
     }
 
