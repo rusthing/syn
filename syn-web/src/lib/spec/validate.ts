@@ -212,6 +212,9 @@ export function validateSpec(spec: TaskSpec): SpecIssue[] {
         message: "常量行不需要变换：变换链会让常量失去「常量」的意义",
       });
     }
+    if (row.on_null === "fallback" && row.default === undefined) {
+      issues.push({ path: at, kind: "missing", message: "on_null=fallback 时必须填 default 兜底值" });
+    }
     (row.fn ?? []).forEach((t, k) => {
       const name = t.split("(")[0].trim();
       if (!(TRANSFORMS as readonly string[]).includes(name)) {

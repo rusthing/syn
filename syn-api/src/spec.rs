@@ -403,6 +403,10 @@ pub struct MappingRow {
     /// 来源为 null（含路径不存在）时的处理。**不跑变换链**，直接按这里决定
     #[serde(default)]
     pub on_null: OnNull,
+    /// 兜底值：`on_null = fallback` 时，来源为 null / 路径不存在就写这个值；
+    /// 其它策略下忽略
+    #[serde(rename = "default", default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Value>,
     /// 变换失败时的处理。`None` 表示按 fatal 处理（`TRANSFORM_ERROR`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_error: Option<OnError>,
@@ -420,6 +424,8 @@ pub enum OnNull {
     Omit,
     /// 显式写 null。要让下游清空字段时必须选这个
     Keep,
+    /// 写入该行 `default` 指定的兜底值。选这一档时 `default` 必填，由校验段保证
+    Fallback,
 }
 
 /// # 变换结果为空
@@ -733,7 +739,7 @@ impl Verdict {
 ///
 /// 封闭集合：新增变换要改代码发版，不允许从配置里演化。
 /// 这是数据正确性的最后一道闸，配置层只能选、不能写。
-pub const TRANSFORMS: [&str; 11] = [
+pub const TRANSFORMS: [&str; 13] = [
     "trim",
     "strip_nul",
     "strip_suffix",
@@ -745,6 +751,8 @@ pub const TRANSFORMS: [&str; 11] = [
     "upper",
     "lower",
     "map_enum",
+    "now_ms",
+    "now_sec",
 ];
 
 fn default_true() -> bool {
@@ -914,6 +922,13 @@ impl TaskSpec {
                     &at,
                     SpecIssueKind::Conflict,
                     "常量行不需要变换：变换链会让常量失去「常量」的意义",
+                ));
+            }
+            if row.on_null == OnNull::Fallback && row.default.is_none() {
+                issues.push(SpecIssue::new(
+                    &at,
+                    SpecIssueKind::Missing,
+                    "on_null=fallback 时必须填 default 兜底值",
                 ));
             }
             for (k, t) in row.transforms.iter().enumerate() {

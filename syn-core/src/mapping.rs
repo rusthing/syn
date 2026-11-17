@@ -96,6 +96,18 @@ pub fn map(spec: &TaskSpec, record: &Value) -> Result<MappedBody, MapFailure> {
                     });
                     continue;
                 }
+                OnNull::Fallback => {
+                    let fb = row
+                        .default
+                        .clone()
+                        .unwrap_or(Value::Null);
+                    insert_path(&mut body, &row.to, fb);
+                    trace.push(Trace {
+                        to: row.to.clone(),
+                        note: format!("{note}（null 兜底默认值）"),
+                    });
+                    continue;
+                }
             }
         }
 
@@ -216,6 +228,7 @@ mod tests {
                 on_empty: OnEmpty::Keep,
                 on_null: OnNull::Omit,
                 on_error: None,
+                default: None,
             },
             MappingRow {
                 to: "remark".into(),
@@ -225,6 +238,7 @@ mod tests {
                 on_empty: OnEmpty::Keep,
                 on_null: OnNull::Omit,
                 on_error: None,
+                default: None,
             },
         ]);
         let rec = json!({"after": {"id": 7}});
@@ -244,6 +258,7 @@ mod tests {
                 on_empty: OnEmpty::Keep,
                 on_null: OnNull::Omit,
                 on_error: None,
+                default: None,
             },
             MappingRow {
                 to: "name".into(),
@@ -253,6 +268,7 @@ mod tests {
                 on_empty: OnEmpty::Keep,
                 on_null: OnNull::Omit,
                 on_error: None,
+                default: None,
             },
         ]);
         let out = map(&spec, &json!({"after": {"name": "一号电子围栏区"}})).unwrap();
@@ -270,6 +286,7 @@ mod tests {
             on_empty: OnEmpty::KeepOriginal,
             on_null: OnNull::Omit,
             on_error: None,
+                default: None,
         }]);
         let out = map(&spec, &json!({"after": {"name": "电子围栏区"}})).unwrap();
         assert_eq!(out.body.get("name"), Some(&json!("电子围栏区")));
@@ -288,6 +305,7 @@ mod tests {
                 verdict: Verdict::Fatal,
                 code: "WKB_INVALID".into(),
             }),
+            default: None,
         }]);
         let err = map(&spec, &json!({"after": {"wkb": "BADDATA"}})).unwrap_err();
         assert_eq!(err.code, "WKB_INVALID");
@@ -304,6 +322,7 @@ mod tests {
             on_empty: OnEmpty::Keep,
             on_null: OnNull::Omit,
             on_error: None,
+                default: None,
         }]);
         let out = map(&spec, &json!({"after": {}})).unwrap();
         // 路径不存在 → null → 行级 on_null 默认 omit，字段被省略，但 trace 里留了原因
@@ -322,6 +341,7 @@ mod tests {
                 on_empty: OnEmpty::Keep,
                 on_null: OnNull::Keep,
                 on_error: None,
+                default: None,
             },
             MappingRow {
                 to: "drop_me".into(),
@@ -331,6 +351,7 @@ mod tests {
                 on_empty: OnEmpty::Keep,
                 on_null: OnNull::Omit,
                 on_error: None,
+                default: None,
             },
         ]);
         let out = map(&spec, &json!({"after": {}})).unwrap();
@@ -339,5 +360,43 @@ mod tests {
         assert!(!out.body.contains_key("drop_me"));
         assert!(out.trace[0].note.contains("null 保留"));
         assert!(out.trace[1].note.contains("null 省略"));
+    }
+
+    #[test]
+    fn fallback_writes_default_on_null_or_missing_path() {
+        let spec = spec_with(vec![
+            MappingRow {
+                to: "name".into(),
+                from: Some("$.after.name".into()),
+                const_value: None,
+                transforms: vec![],
+                on_empty: OnEmpty::Keep,
+                on_null: OnNull::Fallback,
+                on_error: None,
+                default: Some(json!("unknown")),
+            },
+            MappingRow {
+                to: "enabled".into(),
+                from: Some("$.after.enabled".into()),
+                const_value: None,
+                transforms: vec![],
+                on_empty: OnEmpty::Keep,
+                on_null: OnNull::Fallback,
+                on_error: None,
+                default: Some(json!(false)),
+            },
+        ]);
+        // 路径不存在
+        let out = map(&spec, &json!({"after": {}})).unwrap();
+        assert_eq!(out.body.get("name"), Some(&json!("unknown")));
+        assert_eq!(out.body.get("enabled"), Some(&json!(false)));
+        // 显式 null 同样兜底
+        let out = map(&spec, &json!({"after": {"name": null, "enabled": null}})).unwrap();
+        assert_eq!(out.body.get("name"), Some(&json!("unknown")));
+        assert_eq!(out.body.get("enabled"), Some(&json!(false)));
+        // 有值时不兜底
+        let out = map(&spec, &json!({"after": {"name": "张三", "enabled": true}})).unwrap();
+        assert_eq!(out.body.get("name"), Some(&json!("张三")));
+        assert_eq!(out.body.get("enabled"), Some(&json!(true)));
     }
 }

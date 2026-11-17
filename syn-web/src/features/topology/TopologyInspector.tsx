@@ -175,9 +175,15 @@ function StageDetail({ spec, stage }: { spec: TaskSpec; stage: TaskStage }) {
           </Section>
           <Section title="空值">
             <Row label="来源为 null">
-              {(spec.mapping?.rows ?? []).some((row) => row.on_null === "keep")
-                ? `${(spec.mapping?.rows ?? []).filter((row) => row.on_null === "keep").length} 行写 null，其余省略`
-                : "全部省略"}
+              {(() => {
+                const rows = spec.mapping?.rows ?? [];
+                const keep = rows.filter((row) => row.on_null === "keep").length;
+                const fb = rows.filter((row) => row.on_null === "fallback").length;
+                const parts: string[] = [];
+                if (keep > 0) parts.push(`${keep} 行写 null`);
+                if (fb > 0) parts.push(`${fb} 行兜底默认值`);
+                return parts.length > 0 ? `${parts.join("，")}，其余省略` : "全部省略";
+              })()}
             </Row>
           </Section>
         </>

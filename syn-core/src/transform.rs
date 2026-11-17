@@ -10,6 +10,14 @@
 
 use serde_json::Value;
 
+/// 当前 Unix 毫秒时间戳。抽成函数方便测试里替换口径
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// # 变换失败
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
@@ -94,6 +102,10 @@ pub fn apply(value: &Value, spec: &str) -> Result<Value, TransformError> {
             let ms = if n > 0.0 && n < 1e11 { n * 1000.0 } else { n };
             Ok(Value::from(ms as i64))
         }
+        // 当前处理时刻。不看输入值，直接覆盖：用于写 createMs / updateMs 这类
+        // 服务端时间戳；要保留源时间戳就别挂这个变换。
+        "now_ms" => Ok(Value::from(now_ms())),
+        "now_sec" => Ok(Value::from(now_ms() / 1000)),
         "upper" | "lower" => Ok(match value {
             Value::String(s) if name == "upper" => Value::String(s.to_uppercase()),
             Value::String(s) => Value::String(s.to_lowercase()),
@@ -242,6 +254,21 @@ mod tests {
             apply(&json!(1762900000000i64), "to_ms").unwrap(),
             json!(1762900000000i64)
         );
+    }
+
+    #[test]
+    fn now_overrides_input_with_current_timestamp() {
+        let before_ms = now_ms();
+        let ms = apply(&json!("whatever"), "now_ms").unwrap();
+        let after_ms = now_ms();
+        let ms = ms.as_i64().unwrap();
+        assert!(ms >= before_ms && ms <= after_ms, "{ms} 不在当前时刻区间");
+
+        let before_sec = now_ms() / 1000;
+        let sec = apply(&json!(123), "now_sec").unwrap();
+        let after_sec = now_ms() / 1000;
+        let sec = sec.as_i64().unwrap();
+        assert!(sec >= before_sec && sec <= after_sec, "{sec} 不在当前时刻区间");
     }
 
     #[test]

@@ -279,8 +279,15 @@ export function mapRecord(spec: TaskSpec, record: unknown): MapOutcome {
     const { value, note } = resolveRow(row, record);
 
     if (isNullish(value)) {
-      if ((row.on_null ?? "omit") === "omit") {
+      const mode = row.on_null ?? "omit";
+      if (mode === "omit") {
         rows.push({ to: row.to, note: `${note}（null 省略）`, ok: true, omitted: true });
+        continue;
+      }
+      if (mode === "fallback") {
+        const fb = row.default ?? null;
+        insertPath(body, row.to, fb);
+        rows.push({ to: row.to, note: `${note}（null 兜底默认值）`, ok: true, value: fb });
         continue;
       }
       insertPath(body, row.to, null);

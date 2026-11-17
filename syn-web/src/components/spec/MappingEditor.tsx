@@ -45,6 +45,7 @@ export function MappingEditor({
             <th className="w-[19%] px-2 py-1.5 text-left text-[10.5px] font-medium text-muted">变换链</th>
             <th className="w-[70px] px-2 py-1.5 text-left text-[10.5px] font-medium text-muted">null</th>
             <th className="w-[80px] px-2 py-1.5 text-left text-[10.5px] font-medium text-muted">为空</th>
+            <th className="w-[110px] px-2 py-1.5 text-left text-[10.5px] font-medium text-muted">默认值</th>
             <th className="w-[96px] px-2 py-1.5 text-left text-[10.5px] font-medium text-muted">失败码</th>
             <th className="w-9 px-1 py-1.5" />
           </tr>
@@ -120,10 +121,13 @@ export function MappingEditor({
                     value={row.on_null ?? "omit"}
                     aria-label="来源为 null 时"
                     className="h-8 w-full text-[11px]"
-                    title="来源为 null（含路径不存在）时：省略该字段，还是显式写 null"
+                    title="来源为 null（含路径不存在）时：省略该字段，显式写 null，还是写入默认值"
                     onChange={(e) => {
                       const onNull = e.target.value as OnNull;
-                      update(i, { on_null: onNull === "omit" ? undefined : onNull });
+                      update(i, {
+                        on_null: onNull === "omit" ? undefined : onNull,
+                        default: onNull === "fallback" ? row.default : undefined,
+                      });
                     }}
                   >
                     {ON_NULL.map((o) => (
@@ -146,6 +150,15 @@ export function MappingEditor({
                       </option>
                     ))}
                   </Select>
+                </td>
+                <td className="px-2 py-1.5">
+                  <ValueInput
+                    value={row.default}
+                    ariaLabel="默认值"
+                    placeholder="兜底值"
+                    disabled={row.on_null !== "fallback"}
+                    onChange={(value) => update(i, { default: value })}
+                  />
                 </td>
                 <td className="px-2 py-1.5">
                   <Input

@@ -126,6 +126,7 @@ export const ON_EMPTY: Array<{ value: OnEmpty; label: string; hint: string }> = 
 export const ON_NULL: Array<{ value: OnNull; label: string; hint: string }> = [
   { value: "omit", label: "省略", hint: "报文里不出现这个键（默认）" },
   { value: "keep", label: "写 null", hint: "键在，值是 null（要清空下游字段时用）" },
+  { value: "fallback", label: "写默认值", hint: "来源为 null / 路径不存在时写入该行 default 兜底值" },
 ];
 
 export const VERDICTS: Array<{

@@ -19,6 +19,8 @@ export const TRANSFORMS = [
   "upper",
   "lower",
   "map_enum",
+  "now_ms",
+  "now_sec",
 ] as const;
 
 export type TransformName = (typeof TRANSFORMS)[number];
@@ -33,6 +35,8 @@ export const TRANSFORM_DOCS: Record<TransformName, { label: string; args?: strin
   to_bool_01: { label: "转布尔", note: "1/0、true/false、t/f 都认；其它值报错" },
   wkb_to_wkt: { label: "WKB→WKT", note: "十六进制与 base64（Debezium bytea 默认编码）都认，支持 Point/Line/Polygon 及 Multi" },
   to_ms: { label: "补成毫秒", args: "", note: "小于 1e11 的按秒处理乘 1000，否则原样" },
+  now_ms: { label: "当前毫秒时间戳", args: "", note: "覆盖输入值，取处理时刻的 Unix 毫秒；写服务端时间戳用" },
+  now_sec: { label: "当前秒时间戳", args: "", note: "覆盖输入值，取处理时刻的 Unix 秒" },
   upper: { label: "转大写", note: "只对字符串生效" },
   lower: { label: "转小写", note: "只对字符串生效" },
   map_enum: { label: "枚举映射", args: "1=男,2=女", note: "未命中保持原值，不做二次猜测" },
@@ -153,6 +157,10 @@ export function applyTransform(value: unknown, spec: string): unknown {
       // 秒级时间戳补成毫秒；已经是毫秒的不动，避免乘两次
       return value > 0 && value < 1e11 ? Math.trunc(value * 1000) : Math.trunc(value);
     }
+    case "now_ms":
+      return Date.now();
+    case "now_sec":
+      return Math.trunc(Date.now() / 1000);
     case "upper":
       return typeof value === "string" ? value.toUpperCase() : value;
     case "lower":

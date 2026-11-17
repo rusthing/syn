@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { wkbToWkt } from "./transforms";
+import { applyTransform, wkbToWkt } from "./transforms";
 
 describe("wkbToWkt", () => {
   it("十六进制 WKB 照常解析", () => {
@@ -42,5 +42,25 @@ describe("wkbToWkt", () => {
   it("base64 里的非法字符显式报错，不再静默丢弃", () => {
     expect(() => wkbToWkt("AQM!")).toThrow("非法字符「!」");
     expect(() => wkbToWkt("AQ=M")).toThrow("非法字符「=」");
+  });
+});
+
+describe("now 时间戳", () => {
+  it("now_ms 覆盖输入，返回当前毫秒时间戳", () => {
+    const before = Date.now();
+    const out = applyTransform("whatever", "now_ms");
+    const after = Date.now();
+    expect(typeof out).toBe("number");
+    expect(out as number).toBeGreaterThanOrEqual(before);
+    expect(out as number).toBeLessThanOrEqual(after);
+  });
+
+  it("now_sec 覆盖输入，返回当前秒时间戳", () => {
+    const before = Math.trunc(Date.now() / 1000);
+    const out = applyTransform(123, "now_sec");
+    const after = Math.trunc(Date.now() / 1000);
+    expect(typeof out).toBe("number");
+    expect(out as number).toBeGreaterThanOrEqual(before);
+    expect(out as number).toBeLessThanOrEqual(after);
   });
 });
