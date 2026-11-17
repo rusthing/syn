@@ -40,6 +40,14 @@ impl Dialect {
         }
     }
 
+    /// 绑定占位符：PG / SQLite 用 `$n`，MySQL 用位置 `?`（sqlx 不会自动改写 SQL 文本）
+    pub fn placeholder(self, n: usize) -> String {
+        match self {
+            Self::Mysql => "?".to_string(),
+            _ => format!("${n}"),
+        }
+    }
+
     /// 游标参数的类型转换表达式（占位符 `?` / `$n` 由调用方绑定，这里只给 CAST 目标）
     pub fn cast_expr(self, param: &str, ty: syn_api::FieldType) -> String {
         match self {

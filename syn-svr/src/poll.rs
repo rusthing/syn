@@ -465,8 +465,10 @@ async fn fetch_sql(
     let mut sql = format!("select {select_list} from {from} s");
     let mut conds: Vec<String> = Vec::new();
     if let Some(_values) = values.as_ref() {
-        let c0 = dialect.cast_expr("$1", spec.cursor_type);
-        let c1 = dialect.cast_expr("$2", spec.tie_type);
+        let p0 = dialect.placeholder(1);
+        let p1 = dialect.placeholder(2);
+        let c0 = dialect.cast_expr(&p0, spec.cursor_type);
+        let c1 = dialect.cast_expr(&p1, spec.tie_type);
         conds.push(format!("({c}, {t}) > ({c0}, {c1})"));
     }
     // 重叠窗口只对时间戳游标成立：整数/文本水位没有「事务提交时间」这一维度
@@ -1176,6 +1178,13 @@ mod tests {
             "s.*, s.\"ID\" as k1"
         );
         assert_eq!(build_select_list(Dialect::Sqlite, "s", &[]), "s as row");
+    }
+
+    #[test]
+    fn placeholders_are_dialect_specific() {
+        assert_eq!(Dialect::Postgres.placeholder(1), "$1");
+        assert_eq!(Dialect::Mysql.placeholder(1), "?");
+        assert_eq!(Dialect::Sqlite.placeholder(2), "$2");
     }
 
     #[test]
