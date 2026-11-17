@@ -1,9 +1,88 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { useBodyScrollLock } from "@/hooks/use-body-scroll-lock";
 import { cn } from "@/lib/utils";
 import { IconButton } from "./Button";
+
+/** 窗体尺寸在 localStorage 的键；拖拽结果跨会话保留 */
+const SIZE_KEY = "syn.modal-size";
+
+interface StoredSize {
+  width: number;
+  height: number;
+}
+
+function readStoredSize(): StoredSize | null {
+  try {
+    const raw = localStorage.getItem(SIZE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredSize;
+    if (
+      typeof parsed.width === "number" &&
+      typeof parsed.height === "number" &&
+      Number.isFinite(parsed.width) &&
+      Number.isFinite(parsed.height)
+    ) {
+      return parsed;
+    }
+  } catch {
+    /* localStorage 被禁或损坏：回落默认尺寸 */
+  }
+  return null;
+}
+
+function writeStoredSize(size: StoredSize) {
+  try {
+    localStorage.setItem(SIZE_KEY, JSON.stringify(size));
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * 居中窗体右下角拖拽调宽高。
+ *
+ * 只拖右下一角：宽高两个方向同时可调，比四条边各画一个手柄简单，
+ * 也不会和内容区的滚动条抢事件。尺寸约束在视口内，松手后写回 localStorage。
+ */
+function useResize(defaultWidth: number, defaultHeight: number | undefined) {
+  const stored = readStoredSize();
+  const [size, setSize] = useState<StoredSize | null>(
+    stored ?? (defaultHeight ? { width: defaultWidth, height: defaultHeight } : null),
+  );
+  const drag = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
+
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startW = size?.width ?? defaultWidth;
+    const startH = size?.height ?? defaultHeight ?? 480;
+    drag.current = { startX: event.clientX, startY: event.clientY, startW, startH };
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+  };
+
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const start = drag.current;
+    if (!start) return;
+    const minW = 560;
+    const minH = 380;
+    const maxW = window.innerWidth - 32;
+    const maxH = window.innerHeight - 32;
+    const nextW = Math.min(maxW, Math.max(minW, start.startW + event.clientX - start.startX));
+    const nextH = Math.min(maxH, Math.max(minH, start.startH + event.clientY - start.startY));
+    setSize({ width: nextW, height: nextH });
+  };
+
+  const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!drag.current) return;
+    drag.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    if (size) writeStoredSize(size);
+  };
+
+  return { size, onPointerDown, onPointerMove, onPointerUp };
+}
 
 const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
@@ -94,6 +173,7 @@ export function Drawer({
   const centered = placement === "center";
   useBodyScrollLock(open);
   const dialogRef = useDialogFocus(open);
+  const resize = useResize(width, height ?? 720);
 
   useEffect(() => {
     if (!open) return;
@@ -105,6 +185,14 @@ export function Drawer({
   }, [open, onClose]);
 
   if (!open) return null;
+
+  const boxStyle = centered
+    ? {
+        maxWidth: resize.size?.width ?? width,
+        width: resize.size?.width,
+        height: resize.size?.height ?? height,
+      }
+    : { width };
 
   return createPortal(
     <div
@@ -131,7 +219,7 @@ export function Drawer({
             ? "max-h-[calc(100vh-40px)] w-full animate-rise rounded-[14px] border"
             : "h-full max-w-full animate-slide-left border-l",
         )}
-        style={centered ? { maxWidth: width, height } : { width }}
+        style={boxStyle}
       >
         <header className="flex items-start justify-between gap-3 border-b border-line px-5 py-3.5">
           <div className="min-w-0">
@@ -157,6 +245,31 @@ export function Drawer({
 
         {footer && (
           <footer className="border-t border-line bg-sunken/70 px-5 py-3">{footer}</footer>
+        )}
+
+        {centered && (
+          <div
+            role="separator"
+            aria-label="拖拽调整窗体大小"
+            onPointerDown={resize.onPointerDown}
+            onPointerMove={resize.onPointerMove}
+            onPointerUp={resize.onPointerUp}
+            className="absolute bottom-0 right-0 h-5 w-5 cursor-nwse-resize touch-none"
+          >
+            <svg
+              viewBox="0 0 20 20"
+              className="size-full p-1 text-muted/70"
+              aria-hidden
+            >
+              <path
+                d="M16 6 L6 16 M16 11 L11 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+          </div>
         )}
       </div>
     </div>,
