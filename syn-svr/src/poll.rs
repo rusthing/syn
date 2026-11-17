@@ -1265,7 +1265,7 @@ mod tests {
         // 每列值先 CAST 成文本，整行再 CAST 成 CHAR 结果列，列名固定为 row
         assert_eq!(
             expr,
-            "CAST(JSON_OBJECT('ID', CAST(s.`ID` AS CHAR)), 'CODE', CAST(s.`CODE` AS CHAR)), \
+            "CAST(JSON_OBJECT('ID', CAST(s.`ID` AS CHAR), 'CODE', CAST(s.`CODE` AS CHAR), \
              'IS_ENABLED', CAST(s.`IS_ENABLED` AS CHAR)) AS CHAR) AS row"
         );
         // 非白名单标识符拒绝拼接
