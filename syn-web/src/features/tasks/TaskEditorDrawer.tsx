@@ -19,7 +19,7 @@ import { rulesForEditing } from "@/lib/spec/rules";
 import { useAllTasks, useTaskMutations } from "@/hooks/use-tasks";
 import { useDatasources, useServices } from "@/hooks/use-sources";
 import { TaskStageRail } from "./TaskStageRail";
-import { RuleBlockEditor } from "./verdict/RuleBlockEditor";
+import { VerdictEditor } from "./verdict/VerdictEditor";
 import { STAGES, tabOfPath, type TaskTab } from "./task-stages";
 
 /** 控制面板按这个类型直达某一段，历史入口保留在本模块上 */
@@ -340,16 +340,17 @@ export function TaskEditorDrawer({
                   <code className="font-mono">spec.rules</code>），旧字段不再写回。
                 </div>
               )}
-              <RuleBlockEditor
+              <VerdictEditor
+                spec={spec}
                 rules={rulesForEditing(spec)}
                 onChange={(rules) => patch({ rules, outcomes: undefined })}
-                path="rules"
                 issues={byPath}
+                onOpenJson={() => selectTab("json")}
               />
               <p className="text-[10.5px] leading-relaxed text-muted">
                 每个块的最后一条语句必须「必然给出结论」（结论 / 带否则的 if / 带 default 的 switch）：
                 没被任何语句命中的响应会按 <code className="font-mono">UNCLASSIFIED</code> 致命处理，不能静默成功。
-                <span className="ml-1 text-ink-soft">Alt+↑/↓ 移动语句 —— 顺序就是优先级。</span>
+                <span className="ml-1 text-ink-soft">用行尾的 ↑/↓ 调整优先级；chevron 只折叠显示，不改判定。</span>
               </p>
             </div>
           )}
