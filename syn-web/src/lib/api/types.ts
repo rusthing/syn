@@ -74,17 +74,20 @@ export interface OnError {
   code: string;
 }
 
+/** 来源为 null（含路径不存在）时的处理：`omit` 省略字段（默认），`keep` 显式写 null */
+export type OnNull = "omit" | "keep";
+
 export interface MappingRow {
   to: string;
   from?: string;
   const?: unknown;
   fn?: string[];
   on_empty?: OnEmpty;
+  on_null?: OnNull;
   on_error?: OnError;
 }
 
 export interface Mapping {
-  omit_null?: boolean;
   rows: MappingRow[];
 }
 

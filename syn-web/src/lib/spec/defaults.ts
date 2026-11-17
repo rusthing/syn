@@ -12,6 +12,7 @@ import type {
   Condition,
   Method,
   OnEmpty,
+  OnNull,
   Op,
   Operator,
   Scope,
@@ -116,6 +117,17 @@ export const ON_EMPTY: Array<{ value: OnEmpty; label: string; hint: string }> = 
   { value: "null", label: "写成 null", hint: "键在，值是 null" },
 ];
 
+/**
+ * 来源为 null（含路径不存在）时逐行的选择。
+ *
+ * 默认「省略」：下游收不到这个键，通常等于保持原值，比显式 null 安全；
+ * 需要清空字段的行才改成「写 null」。
+ */
+export const ON_NULL: Array<{ value: OnNull; label: string; hint: string }> = [
+  { value: "omit", label: "省略", hint: "报文里不出现这个键（默认）" },
+  { value: "keep", label: "写 null", hint: "键在，值是 null（要清空下游字段时用）" },
+];
+
 export const VERDICTS: Array<{
   value: Verdict;
   label: string;
@@ -160,7 +172,6 @@ export function newTask(topic = "dtw.region", sortOrder = 100): TaskSpec {
     target: { service: "dtw-rs-svr", base: "/dtw/region" },
     match: [emptyAssert()],
     mapping: {
-      omit_null: true,
       rows: [{ to: "id", from: "$.after.id" }],
     },
     actions: [emptyAction("c"), emptyAction("r")],

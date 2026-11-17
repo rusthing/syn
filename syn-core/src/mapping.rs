@@ -4,14 +4,14 @@
 //! 那种分支应该上移到匹配段，拆成两个任务。
 //!
 //! 两个全局语义写在结构上而不是每行重复：
-//! - `omit_null`：来源为 null 时整行省略；
+//! - `on_null`（行级）：来源为 null 时省略该字段还是显式写 null，逐字段决定；
 //! - 变换失败：走该行的 `on_error`，默认 `fatal(TRANSFORM_ERROR)`。
 //!
 //! 变换失败**不抛到调用方再兜**，也不在这里 try/catch 成「跳过这行」——
 //! 静默少一个字段比整条失败更危险。
 
 use serde_json::{Map, Value};
-use syn_api::{OnEmpty, TaskSpec, Verdict};
+use syn_api::{OnEmpty, OnNull, TaskSpec, Verdict};
 
 use crate::transform;
 use crate::value::get_path;
@@ -80,19 +80,23 @@ pub fn map(spec: &TaskSpec, record: &Value) -> Result<MappedBody, MapFailure> {
         };
 
         if value.is_null() {
-            if spec.mapping.omit_null {
-                trace.push(Trace {
-                    to: row.to.clone(),
-                    note: format!("{note}（null 省略）"),
-                });
-                continue;
+            match row.on_null {
+                OnNull::Omit => {
+                    trace.push(Trace {
+                        to: row.to.clone(),
+                        note: format!("{note}（null 省略）"),
+                    });
+                    continue;
+                }
+                OnNull::Keep => {
+                    insert_path(&mut body, &row.to, Value::Null);
+                    trace.push(Trace {
+                        to: row.to.clone(),
+                        note: format!("{note}（null 保留）"),
+                    });
+                    continue;
+                }
             }
-            insert_path(&mut body, &row.to, Value::Null);
-            trace.push(Trace {
-                to: row.to.clone(),
-                note: format!("{note}（null 保留）"),
-            });
-            continue;
         }
 
         let original = value.clone();
@@ -190,12 +194,12 @@ mod tests {
         serde_json::from_value(json!({
             "topic": "tp", "sort_order": 1, "enabled": true,
             "target": {"service": "s", "base": "/b"},
-            "mapping": {"omit_null": true, "rows": []},
+            "mapping": {"rows": []},
             "actions": [{"op": "c", "method": "POST", "path": "/x"}],
             "outcomes": [{"scope": "status", "assert": [{"op": "in", "value": [200]}], "verdict": "success"}]
         }))
         .map(|mut s: TaskSpec| {
-            s.mapping = Mapping { omit_null: true, rows };
+            s.mapping = Mapping { rows };
             s
         })
         .unwrap()
@@ -210,6 +214,7 @@ mod tests {
                 const_value: None,
                 transforms: vec![],
                 on_empty: OnEmpty::Keep,
+                on_null: OnNull::Omit,
                 on_error: None,
             },
             MappingRow {
@@ -218,6 +223,7 @@ mod tests {
                 const_value: None,
                 transforms: vec![],
                 on_empty: OnEmpty::Keep,
+                on_null: OnNull::Omit,
                 on_error: None,
             },
         ]);
@@ -236,6 +242,7 @@ mod tests {
                 const_value: Some(json!("|电子围栏|")),
                 transforms: vec![],
                 on_empty: OnEmpty::Keep,
+                on_null: OnNull::Omit,
                 on_error: None,
             },
             MappingRow {
@@ -244,6 +251,7 @@ mod tests {
                 const_value: None,
                 transforms: vec!["strip_suffix(\"电子围栏区\")".into(), "trim".into()],
                 on_empty: OnEmpty::Keep,
+                on_null: OnNull::Omit,
                 on_error: None,
             },
         ]);
@@ -260,6 +268,7 @@ mod tests {
             const_value: None,
             transforms: vec!["strip_suffix(\"电子围栏区\")".into(), "trim".into()],
             on_empty: OnEmpty::KeepOriginal,
+            on_null: OnNull::Omit,
             on_error: None,
         }]);
         let out = map(&spec, &json!({"after": {"name": "电子围栏区"}})).unwrap();
@@ -274,6 +283,7 @@ mod tests {
             const_value: None,
             transforms: vec!["wkb_to_wkt".into()],
             on_empty: OnEmpty::Keep,
+            on_null: OnNull::Omit,
             on_error: Some(OnError {
                 verdict: Verdict::Fatal,
                 code: "WKB_INVALID".into(),
@@ -292,11 +302,42 @@ mod tests {
             const_value: None,
             transforms: vec![],
             on_empty: OnEmpty::Keep,
+            on_null: OnNull::Omit,
             on_error: None,
         }]);
         let out = map(&spec, &json!({"after": {}})).unwrap();
-        // 路径不存在 → null → omit_null 生效，字段被省略，但 trace 里留了原因
+        // 路径不存在 → null → 行级 on_null 默认 omit，字段被省略，但 trace 里留了原因
         assert!(!out.body.contains_key("x"));
         assert!(out.trace[0].note.contains("路径不存在"));
+    }
+
+    #[test]
+    fn null_policy_is_per_row() {
+        let spec = spec_with(vec![
+            MappingRow {
+                to: "keep_me".into(),
+                from: Some("$.after.gone".into()),
+                const_value: None,
+                transforms: vec![],
+                on_empty: OnEmpty::Keep,
+                on_null: OnNull::Keep,
+                on_error: None,
+            },
+            MappingRow {
+                to: "drop_me".into(),
+                from: Some("$.after.gone".into()),
+                const_value: None,
+                transforms: vec![],
+                on_empty: OnEmpty::Keep,
+                on_null: OnNull::Omit,
+                on_error: None,
+            },
+        ]);
+        let out = map(&spec, &json!({"after": {}})).unwrap();
+        // 同一份记录、同一个缺失路径，两行给出相反结果：策略是行级的
+        assert_eq!(out.body.get("keep_me"), Some(&Value::Null));
+        assert!(!out.body.contains_key("drop_me"));
+        assert!(out.trace[0].note.contains("null 保留"));
+        assert!(out.trace[1].note.contains("null 省略"));
     }
 }

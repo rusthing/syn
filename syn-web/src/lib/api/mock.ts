@@ -141,7 +141,6 @@ const REGION_SPEC: TaskSpec = {
   target: { service: "dtw-rs-svr", base: "/dtw/region" },
   match: [{ field: "$.op", op: "in", value: ["c", "r", "u", "d"], scope: "record" }],
   mapping: {
-    omit_null: true,
     rows: [
       { to: "id", from: "$.after.id" },
       { to: "name", from: "$.after.name", fn: ["trim"] },
@@ -203,7 +202,6 @@ const PERSON_SPEC: TaskSpec = {
   target: { service: "dtw-rs-svr", base: "/dtw/person" },
   match: [{ field: "$.op", op: "in", value: ["c", "r", "u", "d"], scope: "record" }],
   mapping: {
-    omit_null: true,
     rows: [
       { to: "id", from: "$.after.id" },
       { to: "name", from: "$.after.name", fn: ["trim", "truncate(32)"] },
@@ -238,7 +236,6 @@ const PERSON_ALARM_SPEC: TaskSpec = {
     { field: "$.after.locator_id", op: "exists", scope: "record" },
   ],
   mapping: {
-    omit_null: true,
     rows: [
       { to: "personId", from: "$.after.id" },
       { to: "personName", from: "$.after.name", fn: ["trim"] },
@@ -307,7 +304,6 @@ const BIND_SPEC: TaskSpec = {
   target: { service: "dtw-rs-svr", base: "/dtw/locator/bind" },
   match: [{ field: "$.op", op: "in", value: ["c", "r", "u", "d"], scope: "record" }],
   mapping: {
-    omit_null: true,
     rows: [
       { to: "person_id", from: "$.after.person_id" },
       { to: "locator_id", from: "$.after.locator_id" },
@@ -342,7 +338,6 @@ const ORDERS_SPEC: TaskSpec = {
   target: { service: "oss-rs", base: "/oss/order" },
   match: [],
   mapping: {
-    omit_null: true,
     rows: [
       { to: "orderNo", from: "$.order_no" },
       { to: "amount", from: "$.amount" },

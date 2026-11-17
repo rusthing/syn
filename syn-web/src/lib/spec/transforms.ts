@@ -230,12 +230,22 @@ function readGeometry(r: Reader, depth = 0): string {
   if (!le && endian !== 0) throw new Error(`WKB 字节序非法: ${endian}`);
 
   const rawType = r.u32(le);
-  const hasZ = (rawType & 0x80000000) !== 0;
-  const hasM = (rawType & 0x40000000) !== 0;
+  let hasZ = (rawType & 0x80000000) !== 0;
+  let hasM = (rawType & 0x40000000) !== 0;
   const hasSrid = (rawType & 0x20000000) !== 0;
-  const ty = rawType & 0x0fffffff;
+  let ty = rawType & 0x0fffffff;
   // SRID 读出来就丢：下游的 WKT 不带 SRID，带上去反而可能被拒
   if (hasSrid) r.u32(le);
+  // 维度有两种编法：EWKB 用高位标志（Debezium / ST_AsEWKB），
+  // ISO 编进类型码（1003 = POLYGON Z、2003 = M、3003 = ZM，ST_AsBinary 直出）。
+  // 只认标志位时 3D 区域会被判成「不支持的几何类型 1003」，与 syn-core `wkb.rs` 一样两种都认。
+  if (ty >= 1000) {
+    const dim = Math.floor(ty / 1000);
+    if (dim > 3) throw new Error(`不支持的 WKB 维度码 ${dim}（类型码 ${rawType}）`);
+    ty %= 1000;
+    hasZ = hasZ || (dim & 1) === 1;
+    hasM = hasM || (dim & 2) === 2;
+  }
 
   const dims = 2 + (hasZ ? 1 : 0) + (hasM ? 1 : 0);
   const suffix = hasZ ? " Z" : hasM ? " M" : "";

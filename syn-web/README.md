@@ -40,7 +40,7 @@ pnpm typecheck
   指的是下游**响应体**；
 - 条件数组即 AND，元素可以是 `all` / `any` / `not` 分组（可嵌套）；旧的一层断言数组
   不用迁移；`gt` / `gte` / `lt` / `lte` 只对数字生效；
-- 映射的 `omit_null` 是全局语义，`on_empty` 只处理「变换之后变空」；
+- 映射的 `on_null` 是**行级**语义（`omit` 默认 / `keep` 写 null），`on_empty` 只处理「变换之后变空」；
 - 判定首命中即停，末条必须是不带 `field` 的纯状态码兜底（不能含 any / not 分组），
   没命中任何规则时按 `UNCLASSIFIED` 失败；
 - 变换链遇到非字符串原样返回，解析不了就报错走该行的 `on_error`。

@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Drawer";
 import { Field, Input, Select, Textarea } from "@/components/ui/Field";
 import { SuggestInput } from "@/components/ui/SuggestInput";
-import { Switch } from "@/components/ui/Switch";
 import { Badge } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
 import type { SyncTask, TaskSpec } from "@/lib/api/types";
@@ -275,20 +274,13 @@ export function TaskEditorDrawer({
                 title="映射"
                 body="记录 → 请求体，逐行取字段。没有分支：按来源分变体的逻辑应上移到匹配段拆成任务。"
               />
-              <div className="flex items-center justify-between rounded-lg border border-line bg-sunken/40 px-3 py-2">
-                <div>
-                  <p className="text-[12.5px] font-medium text-ink">来源为 null 时省略整行</p>
-                  <p className="text-[11px] text-muted">关掉则写成 null 保留键；这是全局语义，不逐行配</p>
-                </div>
-                <Switch
-                  checked={spec.mapping.omit_null ?? true}
-                  label="omit_null"
-                  onChange={(omit_null) => patch({ mapping: { ...spec.mapping, omit_null } })}
-                />
-              </div>
+              <p className="text-[11px] leading-snug text-muted">
+                来源为 null（含路径不存在）怎么发，由每行的
+                <span className="font-mono"> null </span>
+                列决定：省略让下游保持原值，写 null 才是要清空字段。
+              </p>
               <MappingEditor
                 rows={spec.mapping.rows}
-                omitNull={spec.mapping.omit_null ?? true}
                 onChange={(rows) => patch({ mapping: { ...spec.mapping, rows } })}
                 pathPrefix="mapping.rows"
                 issues={byPath}

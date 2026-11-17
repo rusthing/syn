@@ -2,6 +2,10 @@
 //!
 //! Debezium 的 PostGIS 转换器给十六进制 WKB（部分版本带 SRID，走 EWKB），
 //! 对 bytea 列则给 base64 —— 线上 `dtw_polygon` 就是后者，两种都要认。
+//!
+//! 维度编码也要两种都认：EWKB 把 Z/M 放在类型码高位标志里，ISO（PostGIS 的
+//! `ST_AsBinary` 直出）把它们编进类型码（`1003` / `2003` / `3003`）。
+//! 自拉链路走的就是 `ST_AsBinary`，只认 EWKB 时 3D 区域会被整条拒掉。
 //! 下游要 WKT 字符串，所以这里做一次转换。
 //!
 //! **为什么自己写而不用现成 crate**：
@@ -12,7 +16,7 @@
 //! 坐标用 `{}` 打印 f64，得到最短且可回读的表示（`116.391` 不会变成
 //! `116.39100000000001`），这与 JTS/GEOS 的 WKT 输出习惯一致。
 
-/// # WKB / EWKB → WKT
+/// # WKB / EWKB / ISO-WKB → WKT
 ///
 /// 两种编码都认：
 /// - 十六进制（PostGIS 转换器、`ST_AsBinary` 直出的常见形态，可带 `\x` / `0x` 前缀）；
@@ -118,13 +122,26 @@ impl<'a> Reader<'a> {
         };
 
         let raw_type = self.u32(le)?;
-        let has_z = raw_type & 0x8000_0000 != 0;
-        let has_m = raw_type & 0x4000_0000 != 0;
+        let mut has_z = raw_type & 0x8000_0000 != 0;
+        let mut has_m = raw_type & 0x4000_0000 != 0;
         let has_srid = raw_type & 0x2000_0000 != 0;
-        let ty = raw_type & 0x0FFF_FFFF;
+        let mut ty = raw_type & 0x0FFF_FFFF;
         if has_srid {
             // SRID 读出来就丢：下游的 WKT 不带 SRID，带上去反而可能被拒
             let _ = self.u32(le)?;
+        }
+        // 维度有两种编法：EWKB 用高位标志（Debezium / `ST_AsEWKB`），
+        // ISO 编进类型码（`1003` = POLYGON Z、`2003` = M、`3003` = ZM，`ST_AsBinary` 直出）。
+        // 只认标志位时，3D 区域会被判成「不支持的几何类型 1003」——
+        // 这两种编码在 PostGIS 里都是一等公民，必须都认。
+        if ty >= 1000 {
+            let dim = ty / 1000;
+            if dim > 3 {
+                return Err(format!("不支持的 WKB 维度码 {dim}（类型码 {raw_type}）"));
+            }
+            ty %= 1000;
+            has_z |= dim & 1 == 1;
+            has_m |= dim & 2 == 2;
         }
         let dims = 2 + usize::from(has_z) + usize::from(has_m);
         let suffix = if has_z {
@@ -395,6 +412,36 @@ mod tests {
             v.extend_from_slice(&c.to_le_bytes());
         }
         assert_eq!(to_wkt(&hex(&v)).unwrap(), "POINT Z (1 2 3)");
+    }
+
+    #[test]
+    fn iso_polygon_z_from_st_asbinary() {
+        // 线上 dtw_polygon（id 1339415198966743040）同一几何的两种直出编码：
+        // ISO（`ST_AsBinary`，类型码 1003）与 EWKB（`ST_AsEWKB`，类型码 3 + Z 标志位）。
+        // ISO 这串以前会被判成「不支持的 WKB 几何类型 1003」，自拉链路一开就整条失败。
+        let iso = "01eb0300000100000005000000000000a0142d37c000000000b1d56c400000000000000000000000c008132d40000000c07d076540000000000000000000000020ace65240000000c0d2d8694000000000000000000000002053434240000000c0a6c570400000000000000000000000a0142d37c000000000b1d56c400000000000000000";
+        let ewkb = "01030000800100000005000000000000a0142d37c000000000b1d56c400000000000000000000000c008132d40000000c07d076540000000000000000000000020ace65240000000c0d2d8694000000000000000000000002053434240000000c0a6c570400000000000000000000000a0142d37c000000000b1d56c400000000000000000";
+        let from_iso = to_wkt(iso).unwrap();
+        assert!(from_iso.starts_with("POLYGON Z (("), "{from_iso}");
+        assert!(from_iso.ends_with("))"), "{from_iso}");
+        // 同一几何的两种编码必须给出同一份 WKT，否则下游会看到两套值
+        assert_eq!(from_iso, to_wkt(ewkb).unwrap());
+        // 环首尾闭合
+        let inner = &from_iso[from_iso.find("((").unwrap() + 2..from_iso.rfind("))").unwrap()];
+        let first = inner.split(',').next().unwrap().trim();
+        let last = inner.rsplit(',').next().unwrap().trim();
+        assert_eq!(first, last, "{from_iso}");
+    }
+
+    #[test]
+    fn iso_dimension_code_out_of_range_rejected() {
+        // 维度码只有 1/2/3（Z / M / ZM），4003 这种要明确报错，不能悄悄当 2D 读。
+        // 走 parse_wkb 而不是 to_wkt：后者 hex 不命中时会落到 base64，
+        // 把这条类型错误盖成「字节序非法」，那是另一层语义。
+        let mut v = vec![1u8];
+        v.extend_from_slice(&4003u32.to_le_bytes());
+        let err = parse_wkb(&v).unwrap_err();
+        assert!(err.contains("维度码 4"), "{err}");
     }
 
     #[test]

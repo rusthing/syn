@@ -372,11 +372,11 @@ pub enum Scope {
 }
 
 /// # 字段映射
+///
+/// 「来源为 null 怎么办」是**逐行**决定的，见 [`MappingRow::on_null`]：同一张表里
+/// 有的字段缺了就该省略（让下游保留原值），有的字段缺了必须显式写 null。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mapping {
-    /// 来源为 null 时整行省略。这是**全局**语义，不逐行配
-    #[serde(default = "default_true")]
-    pub omit_null: bool,
     /// 映射行
     pub rows: Vec<MappingRow>,
 }
@@ -400,14 +400,32 @@ pub struct MappingRow {
     /// 变换后为空时的处理
     #[serde(default)]
     pub on_empty: OnEmpty,
+    /// 来源为 null（含路径不存在）时的处理。**不跑变换链**，直接按这里决定
+    #[serde(default)]
+    pub on_null: OnNull,
     /// 变换失败时的处理。`None` 表示按 fatal 处理（`TRANSFORM_ERROR`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_error: Option<OnError>,
 }
 
+/// # 来源为 null 时怎么处理
+///
+/// 与 [`OnEmpty`] 分开：空值是「有值但为空」，null 是「根本没有值」。取不到值的
+/// 字段往下游发什么，逐字段差异很大，所以这里做成行级策略而不是全局开关。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnNull {
+    /// 省略该字段。默认行为：下游收不到这个键，通常等于「保持原值」
+    #[default]
+    Omit,
+    /// 显式写 null。要让下游清空字段时必须选这个
+    Keep,
+}
+
 /// # 变换结果为空
 ///
-/// 只在「经过变换链之后变成空」时生效；来源本身就是 null 走 [`Mapping::omit_null`]。
+/// 只在「经过变换链之后变成空」时生效；来源本身就是 null 走 [`OnNull`]，
+/// 不会再跑变换链。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OnEmpty {
@@ -1293,7 +1311,6 @@ impl Mapping {
     /// 空映射
     pub fn empty() -> Self {
         Self {
-            omit_null: true,
             rows: Vec::new(),
         }
     }

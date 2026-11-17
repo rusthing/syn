@@ -61,8 +61,11 @@ export function stageSummary(spec: TaskSpec, key: TaskTab): string {
       const n = spec.match?.length ?? 0;
       return n === 0 ? "全收 · 无条件" : `${n} 条条件`;
     }
-    case "mapping":
-      return `${spec.mapping?.rows?.length ?? 0} 行 · ${spec.mapping?.omit_null === false ? "保留 null" : "omit_null"}`;
+    case "mapping": {
+      const rows = spec.mapping?.rows ?? [];
+      const keepNull = rows.filter((row) => row.on_null === "keep").length;
+      return `${rows.length} 行 · ${keepNull > 0 ? `${keepNull} 行 null 保留` : "null 省略"}`;
+    }
     case "guards":
       return `${spec.guards?.length ?? 0} 条守卫`;
     case "actions": {

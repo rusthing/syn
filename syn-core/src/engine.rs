@@ -340,14 +340,47 @@ fn finish(
         verdict: judgement.verdict,
         code: judgement.code.clone(),
         stage: Stage::Verdict,
-        detail: judgement
-            .fallback
-            .then(|| "响应未命中任何规则，按失败处理".to_string()),
+        detail: verdict_detail(&judgement, &response),
         body: Some(body),
         request: Some(request),
         response: Some(response),
         judgement: Some(judgement),
     }
+}
+
+/// 判定段的说明文字
+///
+/// 走兜底时是配置没覆盖到这条响应；命中规则时也不能留空 —— 死信里只剩
+/// `business_error / HTTP 400`，排障必须去翻对端日志才知道是「createrId不能为空」。
+/// 把响应摘要带上，`syn_delivery_log.detail` 与 `syn_cursor.last_error` 才有可读原因。
+///
+/// 成功 / 跳过不写：那两种结论没有排障价值，写了只会把明细表刷满。
+fn verdict_detail(judgement: &Judgement, response: &HttpResponse) -> Option<String> {
+    if judgement.fallback {
+        return Some("响应未命中任何规则，按失败处理".to_string());
+    }
+    if !matches!(judgement.verdict, Verdict::Fatal | Verdict::Retriable) {
+        return None;
+    }
+    Some(format!(
+        "HTTP {}: {}",
+        response.status,
+        body_digest(&response.body)
+    ))
+}
+
+/// 响应体摘要的字符上限。死信是给人看的，不是存档，超长就截断
+const BODY_DIGEST_CHARS: usize = 300;
+
+/// 响应体 → 一行可读摘要；非 JSON 的响应在传输层已包成 `{"raw": "..."}`
+fn body_digest(body: &Value) -> String {
+    let text = body.to_string();
+    if text.chars().count() <= BODY_DIGEST_CHARS {
+        return text;
+    }
+    let mut out: String = text.chars().take(BODY_DIGEST_CHARS).collect();
+    out.push('…');
+    out
 }
 
 fn render(
@@ -537,7 +570,7 @@ mod tests {
             "topic": "dtw.dtw_region", "sort_order": 100, "enabled": true,
             "target": {"service": "dtw-rs-svr", "base": "/dtw/region"},
             "match": [{"field": "$.op", "op": "in", "value": ["c", "r", "u", "d"]}],
-            "mapping": {"omit_null": true, "rows": [
+            "mapping": {"rows": [
                 {"to": "id", "from": "$.after.id"},
                 {"to": "name", "from": "$.after.name", "fn": ["strip_suffix(\"电子围栏区\")", "trim"], "on_empty": "keep_original"},
                 {"to": "geom", "from": "$.after.polygon_location.wkb", "fn": ["wkb_to_wkt"], "on_error": {"verdict": "fatal", "code": "WKB_INVALID"}},
@@ -588,6 +621,28 @@ mod tests {
         let body = req.body.unwrap();
         assert_eq!(body.get("name"), Some(&serde_json::json!("一号")));
         assert_eq!(body.get("tags"), Some(&serde_json::json!("|电子围栏|")));
+    }
+
+    #[tokio::test]
+    async fn rule_hit_failure_keeps_downstream_reason() {
+        // `fk_missing` 是规则命中（不是兜底），detail 以前被判成 None：
+        // 死信里只剩一个 code，排障必须去翻对端日志才知道下游说了什么。
+        let mock = Mock::new(
+            400,
+            serde_json::json!({"result": -1, "extra": {"code": "RTW00002"}, "msg": "createrId不能为空"}),
+        );
+        let ex = execute(&region_spec(), &ok_record(), "http://gw", &mock).await;
+        assert_eq!(ex.verdict, Verdict::Fatal);
+        let detail = ex.detail.expect("规则命中也要留下可读原因");
+        assert!(detail.starts_with("HTTP 400: "), "{detail}");
+        assert!(detail.contains("createrId不能为空"), "{detail}");
+    }
+
+    #[tokio::test]
+    async fn success_has_no_detail() {
+        let mock = Mock::new(200, serde_json::json!({"result": 0}));
+        let ex = execute(&region_spec(), &ok_record(), "http://gw", &mock).await;
+        assert!(ex.detail.is_none(), "{:?}", ex.detail);
     }
 
     #[tokio::test]

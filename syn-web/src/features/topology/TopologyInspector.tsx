@@ -174,7 +174,11 @@ function StageDetail({ spec, stage }: { spec: TaskSpec; stage: TaskStage }) {
             )}
           </Section>
           <Section title="空值">
-            <Row label="来源为 null">{spec.mapping?.omit_null === false ? "写成 null" : "省略整行"}</Row>
+            <Row label="来源为 null">
+              {(spec.mapping?.rows ?? []).some((row) => row.on_null === "keep")
+                ? `${(spec.mapping?.rows ?? []).filter((row) => row.on_null === "keep").length} 行写 null，其余省略`
+                : "全部省略"}
+            </Row>
           </Section>
         </>
       );

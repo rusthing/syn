@@ -272,7 +272,6 @@ function applyOnEmpty(value: unknown, original: unknown, mode: OnEmpty | undefin
 }
 
 export function mapRecord(spec: TaskSpec, record: unknown): MapOutcome {
-  const omitNull = spec.mapping.omit_null ?? true;
   const body: Record<string, unknown> = {};
   const rows: MappedRow[] = [];
 
@@ -280,7 +279,7 @@ export function mapRecord(spec: TaskSpec, record: unknown): MapOutcome {
     const { value, note } = resolveRow(row, record);
 
     if (isNullish(value)) {
-      if (omitNull) {
+      if ((row.on_null ?? "omit") === "omit") {
         rows.push({ to: row.to, note: `${note}（null 省略）`, ok: true, omitted: true });
         continue;
       }

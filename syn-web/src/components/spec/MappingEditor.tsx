@@ -2,8 +2,8 @@ import { Plus, Trash2 } from "lucide-react";
 import { Button, IconButton } from "@/components/ui/Button";
 import { Input, Select } from "@/components/ui/Field";
 import { cn } from "@/lib/utils";
-import type { MappingRow, OnEmpty } from "@/lib/api/types";
-import { ON_EMPTY } from "@/lib/spec/defaults";
+import type { MappingRow, OnEmpty, OnNull } from "@/lib/api/types";
+import { ON_EMPTY, ON_NULL } from "@/lib/spec/defaults";
 import { TRANSFORMS } from "@/lib/spec/transforms";
 import { issuesUnder, type SpecIssue } from "@/lib/spec/validate";
 import { ValueInput } from "./ValueInput";
@@ -17,13 +17,11 @@ import { ValueInput } from "./ValueInput";
  */
 export function MappingEditor({
   rows,
-  omitNull,
   onChange,
   pathPrefix,
   issues,
 }: {
   rows: MappingRow[];
-  omitNull: boolean;
   onChange: (rows: MappingRow[]) => void;
   pathPrefix: string;
   issues?: Map<string, SpecIssue[]>;
@@ -44,8 +42,9 @@ export function MappingEditor({
             <th className="w-[19%] px-2 py-1.5 text-left text-[10.5px] font-medium text-muted">目标字段</th>
             <th className="w-[68px] px-2 py-1.5 text-left text-[10.5px] font-medium text-muted">来源</th>
             <th className="px-2 py-1.5 text-left text-[10.5px] font-medium text-muted">路径 / 常量</th>
-            <th className="w-[21%] px-2 py-1.5 text-left text-[10.5px] font-medium text-muted">变换链</th>
-            <th className="w-[86px] px-2 py-1.5 text-left text-[10.5px] font-medium text-muted">为空</th>
+            <th className="w-[19%] px-2 py-1.5 text-left text-[10.5px] font-medium text-muted">变换链</th>
+            <th className="w-[70px] px-2 py-1.5 text-left text-[10.5px] font-medium text-muted">null</th>
+            <th className="w-[80px] px-2 py-1.5 text-left text-[10.5px] font-medium text-muted">为空</th>
             <th className="w-[96px] px-2 py-1.5 text-left text-[10.5px] font-medium text-muted">失败码</th>
             <th className="w-9 px-1 py-1.5" />
           </tr>
@@ -118,6 +117,24 @@ export function MappingEditor({
                 </td>
                 <td className="px-2 py-1.5">
                   <Select
+                    value={row.on_null ?? "omit"}
+                    aria-label="来源为 null 时"
+                    className="h-8 w-full text-[11px]"
+                    title="来源为 null（含路径不存在）时：省略该字段，还是显式写 null"
+                    onChange={(e) => {
+                      const onNull = e.target.value as OnNull;
+                      update(i, { on_null: onNull === "omit" ? undefined : onNull });
+                    }}
+                  >
+                    {ON_NULL.map((o) => (
+                      <option key={o.value} value={o.value} title={o.hint}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </Select>
+                </td>
+                <td className="px-2 py-1.5">
+                  <Select
                     value={row.on_empty ?? "keep"}
                     aria-label="为空时"
                     className="h-8 w-full text-[11px]"
@@ -164,7 +181,7 @@ export function MappingEditor({
           加一行
         </Button>
         <div className="flex items-center gap-2 text-[10.5px] text-muted">
-          <span>来源为 null 时{omitNull ? "整行省略" : "写成 null"}；可用变换：</span>
+          <span>null 逐行配（省略 / 写 null），为空只作用于变换之后的空值；可用变换：</span>
           <span className="font-mono text-[10px] text-muted/90">{TRANSFORMS.join(" · ")}</span>
         </div>
       </div>

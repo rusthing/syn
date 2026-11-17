@@ -62,12 +62,13 @@ describe("stageSummary / stageFilled", () => {
     expect(stageFilled(spec, "target")).toBe(true);
   });
 
-  it("空匹配写「全收」，omit_null 关掉时不再显示默认值", () => {
+  it("空匹配写「全收」，行级 null 策略按行数计", () => {
     const spec = newTask();
     spec.match = [];
-    spec.mapping.omit_null = false;
     expect(stageSummary(spec, "match")).toBe("全收 · 无条件");
-    expect(stageSummary(spec, "mapping")).toBe("1 行 · 保留 null");
+    expect(stageSummary(spec, "mapping")).toBe("1 行 · null 省略");
+    spec.mapping.rows[0]!.on_null = "keep";
+    expect(stageSummary(spec, "mapping")).toBe("1 行 · 1 行 null 保留");
     expect(stageFilled(spec, "match")).toBe(false);
   });
 

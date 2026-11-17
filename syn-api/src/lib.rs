@@ -36,7 +36,8 @@ pub use issue::{SpecIssue, SpecIssueKind};
 pub use source_spec::{ExtractMode, FieldType, SourceSpec, WrapMode};
 pub use spec::{
     Action, AllGroup, AnyGroup, Assert, Binding, BodyMode, Branch, CaseArm, Condition, DbTarget,
-    Guard, Header, Mapping, MappingRow, Method, NotGroup, OnConflict, OnEmpty, OnError, OnFail, Op,
+    Guard, Header, Mapping, MappingRow, Method, NotGroup, OnConflict, OnEmpty, OnError, OnFail,
+    OnNull, Op,
     Operator, Outcome, Rule, Scope, Target, TargetKind, TaskSpec, Verdict, MAX_CONDITION_DEPTH,
     MAX_CONDITION_NODES, MAX_RULE_DEPTH,
 };
