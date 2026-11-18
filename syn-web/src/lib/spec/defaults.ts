@@ -161,7 +161,7 @@ export function emptyAssert(): Assert {
 }
 
 export function emptyAction(op: Op = "c"): Action {
-  return { op, method: "POST", path: "", body: "mapped", query: [], headers: [] };
+  return { op, method: "POST", path: "", body: "mapped", path_bindings: [], query: [], headers: [] };
 }
 
 /** 新建任务的最小骨架：能通过校验，但不含任何业务字段 */

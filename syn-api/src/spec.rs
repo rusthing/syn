@@ -470,12 +470,19 @@ pub struct Action {
     pub op: Op,
     /// 方法
     pub method: Method,
-    /// 相对 `target.base` 的路径，可为空
+    /// 相对 `target.base` 的路径，可为空。
+    ///
+    /// 路径里可写 `{name}` 占位符，由 [`Action::path_bindings`] 按绑定取值展开；
+    /// 取不到值的占位符保留原样（避免拼出半截 URL），与 query 的「取不到不拼」不同。
     #[serde(default)]
     pub path: String,
     /// 请求体来源
     #[serde(default)]
     pub body: BodyMode,
+    /// 路径参数：把 `path` 里的 `{name}` 展开成记录上的取值（用于 `DELETE /{base}/{id}`
+    /// 这类 Path 取主键的接口）。取值按路径段编码，不进 query。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_bindings: Vec<Binding>,
     /// 查询参数
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub query: Vec<Binding>,
@@ -1024,6 +1031,18 @@ impl TaskSpec {
                     "GET 不应带请求体",
                 ));
             }
+            // 路径占位符必须有同名路径绑定，否则展开时取不到值会把 `{id}` 原样留在 URL 里
+            let declared: std::collections::HashSet<&str> =
+                a.path_bindings.iter().map(|b| b.name.as_str()).collect();
+            for placeholder in extract_path_placeholders(&a.path) {
+                if !declared.contains(placeholder) {
+                    issues.push(SpecIssue::new(
+                        &at,
+                        SpecIssueKind::Invalid,
+                        format!("路径占位符 {{{placeholder}}} 没有在 path_bindings 里绑定取值"),
+                    ));
+                }
+            }
         }
         // 快照重放是最容易被漏掉的一条：漏了它，历史数据永远补不上，而且不报错
         if !seen.contains(&Op::R) {
@@ -1509,6 +1528,24 @@ fn op_name(op: Operator) -> &'static str {
         Operator::Lt => "lt",
         Operator::Lte => "lte",
     }
+}
+
+/// 提取路径里的 `{name}` 占位符名（去重、保持出现顺序）。
+fn extract_path_placeholders(path: &str) -> Vec<&str> {
+    let mut placeholders = Vec::new();
+    let mut rest = path;
+    while let Some(open) = rest.find('{') {
+        let after_open = &rest[open + 1..];
+        let Some(close) = after_open.find('}') else {
+            break;
+        };
+        let name = &after_open[..close];
+        if !name.is_empty() && !placeholders.contains(&name) {
+            placeholders.push(name);
+        }
+        rest = &after_open[close + 1..];
+    }
+    placeholders
 }
 
 #[cfg(test)]

@@ -404,7 +404,8 @@ fn render(
     base_url: &str,
     action: &syn_api::Action,
 ) -> HttpRequest {
-    let mut url = join_url(base_url, &spec.target, &action.path);
+    let expanded_path = expand_path(&action.path, &action.path_bindings, record);
+    let mut url = join_url(base_url, &spec.target, &expanded_path);
 
     let mut query = Vec::new();
     for q in &action.query {
@@ -448,6 +449,37 @@ fn render(
         headers,
         body,
     }
+}
+
+/// # 展开路径占位符
+///
+/// `path` 里的 `{name}` 按 `path_bindings` 同名绑定取记录值并按路径段编码；
+/// 未声明绑定、取不到值或为 null 的占位符保留原样，避免拼出半截 URL。
+fn expand_path(path: &str, bindings: &[syn_api::Binding], record: &Value) -> String {
+    let mut out = String::with_capacity(path.len());
+    let mut rest = path;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after_open = &rest[open + 1..];
+        let Some(close) = after_open.find('}') else {
+            // 没有配对的闭括号：按字面量收尾
+            out.push_str(rest);
+            return out;
+        };
+        let name = &after_open[..close];
+        let resolved = bindings
+            .iter()
+            .find(|b| b.name == name)
+            .and_then(|b| crate::value::get_path(record, &b.from))
+            .filter(|v| !v.is_null());
+        match resolved {
+            Some(v) => out.push_str(&encode(&scalar(v))),
+            None => out.push_str(&rest[open..open + 1 + close + 1]),
+        }
+        rest = &after_open[close + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn join_url(base_url: &str, target: &Target, path: &str) -> String {
@@ -953,5 +985,42 @@ mod tests {
             join_url("http://gw", &t, "sync"),
             "http://gw/dtw/region/sync"
         );
+    }
+
+    #[test]
+    fn path_placeholder_expands_from_record() {
+        let record = serde_json::json!({"op": "d", "before": {"id": 1594890099385042366u64}});
+        let bindings = vec![syn_api::Binding {
+            name: "id".into(),
+            from: "$.before.id".into(),
+        }];
+        let expanded = expand_path("/{id}", &bindings, &record);
+        assert_eq!(expanded, "/1594890099385042366");
+    }
+
+    #[test]
+    fn path_placeholder_missing_value_is_left_intact() {
+        let record = serde_json::json!({"op": "d", "before": {"id": null}});
+        let bindings = vec![syn_api::Binding {
+            name: "id".into(),
+            from: "$.before.id".into(),
+        }];
+        let expanded = expand_path("/{id}", &bindings, &record);
+        assert_eq!(expanded, "/{id}");
+
+        // 未声明绑定的占位符原样保留
+        let expanded = expand_path("/{id}", &[], &record);
+        assert_eq!(expanded, "/{id}");
+    }
+
+    #[test]
+    fn path_placeholder_value_is_encoded() {
+        let record = serde_json::json!({"code": "桂 B/45303"});
+        let bindings = vec![syn_api::Binding {
+            name: "code".into(),
+            from: "$.code".into(),
+        }];
+        let expanded = expand_path("/{code}", &bindings, &record);
+        assert_eq!(expanded, "/%E6%A1%82%20B%2F45303");
     }
 }

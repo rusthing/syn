@@ -126,6 +126,7 @@ export interface Action {
   method: Method;
   path?: string;
   body?: BodyMode;
+  path_bindings?: Binding[];
   query?: Binding[];
   headers?: Header[];
 }
