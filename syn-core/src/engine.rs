@@ -22,8 +22,8 @@ use serde_json::{Map, Value};
 use syn_api::{BodyMode, Condition, Method, Op, Scope, Target, TaskSpec, Verdict};
 
 use crate::assertion::{Context, eval, eval_all, eval_condition};
-use crate::mapping::map;
 use crate::db::DbWriter;
+use crate::mapping::map;
 use crate::transport::{HttpRequest, HttpResponse, Transport};
 use crate::verdict::{Judgement, judge};
 
@@ -204,20 +204,37 @@ pub async fn execute_db<D: DbWriter + ?Sized>(
         );
     };
 
+    // 删除事件没有 after：映射出来的行必然是空的（`on_null` 全走 omit），
+    // 而 `delete ... where <key>` 只能从行里取键。Debezium 的 `before` 在
+    // `REPLICA IDENTITY DEFAULT` 下恰好只带主键，按 `target.key` 补齐即可 ——
+    // 与 http 出口的 `path_bindings`（`$.before.ID`）同源，只是那里拼进 URL。
+    let mut row = prepared.body;
+    if prepared.op == Op::D {
+        if let Some(before) = record.get("before").and_then(Value::as_object) {
+            for key in &target.key {
+                if !row.contains_key(key) {
+                    if let Some(v) = before.get(key) {
+                        row.insert(key.clone(), v.clone());
+                    }
+                }
+            }
+        }
+    }
+
     let preview = HttpRequest {
         method: Method::Post,
         url: format!("db://{}/{}", target.datasource, target.table),
         headers: Vec::new(),
-        body: Some(Value::Object(prepared.body.clone())),
+        body: Some(Value::Object(row.clone())),
     };
 
-    match writer.write(&target, prepared.op, &prepared.body).await {
+    match writer.write(&target, prepared.op, &row).await {
         Ok(affected) => {
             let response = HttpResponse {
                 status: 200,
                 body: serde_json::json!({ "affected": affected }),
             };
-            finish(spec, prepared.body, preview, response)
+            finish(spec, row, preview, response)
         }
         Err(e) => Execution {
             task_id: spec.id,
@@ -230,7 +247,7 @@ pub async fn execute_db<D: DbWriter + ?Sized>(
             code: e.code,
             stage: Stage::Transport,
             detail: Some(e.detail),
-            body: Some(prepared.body),
+            body: Some(row),
             request: Some(preview),
             response: None,
             judgement: None,
@@ -308,9 +325,11 @@ fn prepare(spec: &TaskSpec, record: &Value) -> Result<Prepared, Execution> {
             .iter()
             .find(|c| !eval_condition(c, &guard_ctx, Scope::Record))
         {
-            let message = guard.on_fail.message.clone().unwrap_or_else(|| {
-                format!("{} 不满足", condition_label(failed))
-            });
+            let message = guard
+                .on_fail
+                .message
+                .clone()
+                .unwrap_or_else(|| format!("{} 不满足", condition_label(failed)));
             return Err(Execution::stop(
                 spec,
                 guard.on_fail.verdict,
@@ -521,11 +540,9 @@ fn op_label(a: &syn_api::Assert) -> String {
 /// 说成整条规则失败的原因。
 fn condition_label(c: &Condition) -> String {
     match c {
-        Condition::Assert(a) => format!(
-            "{} {}",
-            a.field.as_deref().unwrap_or("status"),
-            op_label(a)
-        ),
+        Condition::Assert(a) => {
+            format!("{} {}", a.field.as_deref().unwrap_or("status"), op_label(a))
+        }
         Condition::All(_) => "全部分组".into(),
         Condition::Any(_) => "任意分组".into(),
         Condition::Not(_) => "取反分组".into(),
@@ -565,9 +582,9 @@ mod tests {
     use super::*;
     use crate::db::DbError;
     use crate::transport::{HttpResponse, TransportError, TransportErrorKind};
-    use syn_api::DbTarget;
     use async_trait::async_trait;
     use std::sync::Mutex;
+    use syn_api::DbTarget;
 
     /// 记录请求、返回固定响应的传输
     struct Mock {
@@ -900,6 +917,24 @@ mod tests {
         assert_eq!(row.get("tags"), Some(&serde_json::json!("|电子围栏|")));
         // 试跑面板要能显示「写哪儿」
         assert_eq!(ex.request.unwrap().url, "db://dtw/public.dtw_region");
+    }
+
+    #[tokio::test]
+    async fn db_delete_takes_key_from_before() {
+        // 删除事件没有 after：映射出来的行里没有 id，`delete ... where id = $1` 就绑不上参数。
+        // 主键从 `before` 补（Debezium 的 REPLICA IDENTITY DEFAULT 只带主键），
+        // 与 http 出口的 `$.before.id` 同源。
+        let db = MockDb::new(1);
+        let record = serde_json::json!({
+            "op": "d",
+            "before": {"id": 8821_i64},
+            "after": null
+        });
+        let ex = execute_db(&db_spec(), &record, &db).await;
+        assert_eq!(ex.verdict, Verdict::Success);
+        let (_, _, op, row) = db.last.lock().unwrap().clone().unwrap();
+        assert_eq!(op, Op::D);
+        assert_eq!(row.get("id"), Some(&serde_json::json!(8821)));
     }
 
     #[tokio::test]
