@@ -40,26 +40,24 @@ use robotech::api::U64;
 use robotech::db::get_db_conn;
 use robotech::svc::SvcError;
 use sea_orm::{ColumnTrait, Condition, ConnectionTrait, DbBackend, Statement};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use sqlx::Row;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
-use syn_api::{
-    ExtractMode, FieldType, SourceKind, SourceSpec, SynSourcePullVo, Verdict, WrapMode,
-};
+use syn_api::{ExtractMode, FieldType, SourceKind, SourceSpec, SynSourcePullVo, Verdict, WrapMode};
 use syn_core::get_path;
-use sqlx::Row;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 use wheel_rs::time_utils::now_ms;
 
 use crate::config::get_app_config;
 use crate::dao::SynCursorDao;
-use crate::db::dialect_of;
 use crate::db::dialect::Dialect;
+use crate::db::dialect_of;
 use crate::db_sink::DbSinks;
-use crate::mo::syn_cursor::{ActiveModel as CursorActive, Column as CursorColumn};
 use crate::mo::syn_cursor::Model as CursorModel;
+use crate::mo::syn_cursor::{ActiveModel as CursorActive, Column as CursorColumn};
 use crate::mo::syn_source::Model as SourceModel;
 use crate::svc::handle;
 
@@ -97,13 +95,21 @@ async fn pull(id: U64) -> Result<SynSourcePullVo, SvcError> {
     let db = get_db_conn()?;
     let source = load_source(id.value() as i64, db.as_ref()).await?;
     let kind = SourceKind::from_i16(source.kind).unwrap_or_default();
-    let spec = SourceSpec::parse(&source.spec)
-        .map_err(|e| SvcError::Runtime(anyhow::anyhow!("数据抽取 {} 的 spec 不合法: {e}", source.code)))?;
+    let spec = SourceSpec::parse(&source.spec).map_err(|e| {
+        SvcError::Runtime(anyhow::anyhow!(
+            "数据抽取 {} 的 spec 不合法: {e}",
+            source.code
+        ))
+    })?;
     spec.validate(kind).map_err(|issues| {
         SvcError::Runtime(anyhow::anyhow!(
             "数据抽取 {} 的 spec 不合法: {}",
             source.code,
-            issues.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("；")
+            issues
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join("；")
         ))
     })?;
 
@@ -300,7 +306,10 @@ async fn pull_http(
 
     if let HttpCursor::Done { rows } = state {
         // 已完成：直接返回，不去打源接口。手工改库或 reset 才能重跑
-        info!("数据抽取 {} 的全量已完成（{} 行），本轮跳过", source.code, rows);
+        info!(
+            "数据抽取 {} 的全量已完成（{} 行），本轮跳过",
+            source.code, rows
+        );
         out.full_done = Some(true);
         out.duration_ms = started.elapsed().as_millis() as u64;
         return Ok(out);
@@ -372,7 +381,9 @@ async fn pull_http(
             source.code,
             out.rows,
             total,
-            out.position.as_deref().and_then(|p| p.strip_prefix("{\"http\":{\"next\":"))
+            out.position
+                .as_deref()
+                .and_then(|p| p.strip_prefix("{\"http\":{\"next\":"))
         );
     }
     Ok(out)
@@ -480,10 +491,7 @@ async fn fetch_sql(
         .map(|p| serde_json::from_str(p).unwrap_or_else(|_| vec![p.to_string()]))
         .filter(|v| v.len() == 2);
 
-    let extra = vec![
-        format!("{c} as k0"),
-        format!("{t} as k1"),
-    ];
+    let extra = vec![format!("{c} as k0"), format!("{t} as k1")];
     let select_list = build_select_list(dialect, "s", &extra);
     let mut sql = format!("select {select_list} from {from} s");
     let mut conds: Vec<String> = Vec::new();
@@ -564,7 +572,7 @@ async fn fetch_snapshot_page(
             let cols = DbSinks::columns(datasource, &pool, engine, table)
                 .await
                 .map_err(|e| format!("{}: {}", e.code, e.detail))?;
-            let mut ordered: Vec<&String> = cols.iter().collect();
+            let mut ordered: Vec<&String> = cols.keys().collect();
             ordered.sort();
             mysql_row_json(&ordered, dialect)?
         }
@@ -919,17 +927,14 @@ async fn fetch_http_page(
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(format!(
-            "源接口返回 {status}: {}",
-            truncate(&text, 200)
-        ));
+        return Err(format!("源接口返回 {status}: {}", truncate(&text, 200)));
     }
     let body: Value =
         serde_json::from_str(&text).map_err(|e| format!("源接口返回的不是 JSON: {e}"))?;
 
     let data_path = spec.data_path_or_root();
-    let data = get_path(&body, data_path)
-        .ok_or_else(|| format!("响应里没有 {data_path} 指向的数据"))?;
+    let data =
+        get_path(&body, data_path).ok_or_else(|| format!("响应里没有 {data_path} 指向的数据"))?;
     let arr = data
         .as_array()
         .ok_or_else(|| format!("{data_path} 不是数组：http 全量按数组逐行投递"))?;
@@ -938,7 +943,9 @@ async fn fetch_http_page(
     let mut rows = Vec::with_capacity(arr.len());
     for (i, item) in arr.iter().enumerate() {
         if !item.is_object() && wrap == WrapMode::Cdc {
-            return Err(format!("第 {i} 行不是 JSON 对象，wrap=cdc 需要 op/after 形态"));
+            return Err(format!(
+                "第 {i} 行不是 JSON 对象，wrap=cdc 需要 op/after 形态"
+            ));
         }
         let record = match wrap {
             WrapMode::Row => json!({ "op": "r", "after": item }),
@@ -1085,18 +1092,17 @@ async fn advance_cursor(
             cursor.update_ms.into(),
         ],
     );
-    let res = db.execute_raw(statement).await.map_err(|e| SvcError::Runtime(anyhow::anyhow!(e.to_string())))?;
+    let res = db
+        .execute_raw(statement)
+        .await
+        .map_err(|e| SvcError::Runtime(anyhow::anyhow!(e.to_string())))?;
     Ok(res.rows_affected() > 0)
 }
 
 /// # 记一轮错误（或「没有新行」）
 ///
 /// 成功一轮清空 `last_error`，失败一轮留下第一条卡住的原因；总览按它判断数据抽取是否卡住。
-async fn save_error(
-    cursor: CursorModel,
-    run_ms: i64,
-    error: Option<&str>,
-) -> Result<(), SvcError> {
+async fn save_error(cursor: CursorModel, run_ms: i64, error: Option<&str>) -> Result<(), SvcError> {
     let db = get_db_conn()?;
     let statement = Statement::from_sql_and_values(
         DbBackend::Postgres,
@@ -1104,7 +1110,9 @@ async fn save_error(
          updater_id = 0 where id = $4",
         vec![run_ms.into(), error.into(), run_ms.into(), cursor.id.into()],
     );
-    db.execute_raw(statement).await.map_err(|e| SvcError::Runtime(anyhow::anyhow!(e.to_string())))?;
+    db.execute_raw(statement)
+        .await
+        .map_err(|e| SvcError::Runtime(anyhow::anyhow!(e.to_string())))?;
     Ok(())
 }
 
@@ -1194,7 +1202,10 @@ mod tests {
         );
 
         let done = http_done_cursor(1200, 1_764_000_000_000);
-        assert_eq!(parse_http_cursor(Some(&done)), HttpCursor::Done { rows: 1200 });
+        assert_eq!(
+            parse_http_cursor(Some(&done)),
+            HttpCursor::Done { rows: 1200 }
+        );
         assert!(is_http_done(Some(&done)));
         assert!(!is_http_done(Some(&next)));
     }
@@ -1202,7 +1213,10 @@ mod tests {
     #[test]
     fn snapshot_cursor_roundtrip() {
         let done = snapshot_done_cursor(1200, 1_764_000_000_000);
-        assert_eq!(parse_snapshot_cursor(Some(&done)), SnapshotCursor::Done { rows: 1200 });
+        assert_eq!(
+            parse_snapshot_cursor(Some(&done)),
+            SnapshotCursor::Done { rows: 1200 }
+        );
         assert!(is_snapshot_done(Some(&done)));
 
         // 其它形态的进度（http / 游标增量 / 脏值）都当「没开始」：重跑一遍是安全的
@@ -1216,18 +1230,29 @@ mod tests {
             parse_snapshot_cursor(Some(r#"["2026-11-13 00:40:22+00","4"]"#)),
             SnapshotCursor::Start
         );
-        assert!(!is_snapshot_done(Some(r#"{"snapshot":{"offset":100,"rows":100}}"#)));
+        assert!(!is_snapshot_done(Some(
+            r#"{"snapshot":{"offset":100,"rows":100}}"#
+        )));
     }
 
     #[test]
     fn table_and_column_are_quoted_from_whitelisted_idents() {
         let dialect = Dialect::Postgres;
-        assert_eq!(quote_table("dtw_polygon", dialect).unwrap(), "\"dtw_polygon\"");
-        assert_eq!(quote_table("public.dtw_polygon", dialect).unwrap(), "\"public\".\"dtw_polygon\"");
+        assert_eq!(
+            quote_table("dtw_polygon", dialect).unwrap(),
+            "\"dtw_polygon\""
+        );
+        assert_eq!(
+            quote_table("public.dtw_polygon", dialect).unwrap(),
+            "\"public\".\"dtw_polygon\""
+        );
         // 注入尝试直接拒绝，不拼进 SQL
         assert!(quote_table("dtw_polygon; drop table x", dialect).is_err());
         assert!(quote_table("public.a.b", dialect).is_err());
-        assert_eq!(quote_col("s", "update_timestamp", dialect).unwrap(), "s.\"update_timestamp\"");
+        assert_eq!(
+            quote_col("s", "update_timestamp", dialect).unwrap(),
+            "s.\"update_timestamp\""
+        );
         assert!(quote_col("s", "id; --", dialect).is_err());
 
         // 源库里的真实名字带大写：包引号后大小写原样保留，别被折叠成小写
@@ -1236,7 +1261,10 @@ mod tests {
             quote_table("CRM.WS_DEVICE", dialect).unwrap(),
             "\"CRM\".\"WS_DEVICE\""
         );
-        assert_eq!(quote_col("s", "UPDATE_TIME", dialect).unwrap(), "s.\"UPDATE_TIME\"");
+        assert_eq!(
+            quote_col("s", "UPDATE_TIME", dialect).unwrap(),
+            "s.\"UPDATE_TIME\""
+        );
     }
 
     #[test]
@@ -1312,7 +1340,10 @@ mod tests {
             HttpCursor::Start
         );
         assert_eq!(parse_http_cursor(Some("{oops")), HttpCursor::Start);
-        assert_eq!(parse_http_cursor(Some(r#"{"http":{"next":""}}"#)), HttpCursor::Start);
+        assert_eq!(
+            parse_http_cursor(Some(r#"{"http":{"next":""}}"#)),
+            HttpCursor::Start
+        );
     }
 
     #[test]

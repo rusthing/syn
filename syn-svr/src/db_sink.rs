@@ -35,7 +35,7 @@ use sea_orm::{ColumnTrait, Condition};
 use serde_json::{Map, Value};
 use sqlx::Row;
 use sqlx_core::any::AnyPool;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use syn_api::{DbEngine, DbTarget, OnConflict, Op};
 use syn_core::{DbError, DbWriter};
@@ -57,7 +57,13 @@ pub const SYN_DATASOURCE_REFRESH_SUBJECT: RefreshSubject =
 static POOLS: LazyLock<Mutex<HashMap<String, AnyPool>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 /// `数据源|表` → 列名白名单。表结构变了要重启（或等它自己失效，见下）
-static COLUMNS: LazyLock<Mutex<HashMap<String, HashSet<String>>>> =
+/// 列白名单：`数据源|表` → `列名 → 绑定占位符的转换后缀`
+///
+/// 后缀只对 Postgres 有意义：sqlx 的 Any 驱动把参数一律按 text 编码，
+/// 直接绑 `$1` 会被 PG 判成 42804（`column "x" is of type bigint but expression is of type text`），
+/// 所以占位符要按目标列类型补 `::int8` 这类显式转换。MySQL / SQLite 的隐式转换
+/// 本来就够用，后缀留空。
+static COLUMNS: LazyLock<Mutex<HashMap<String, HashMap<String, String>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// # DB 直写执行器
@@ -155,7 +161,7 @@ impl DbSinks {
         pool: &AnyPool,
         engine: DbEngine,
         table: &str,
-    ) -> Result<HashSet<String>, DbError> {
+    ) -> Result<HashMap<String, String>, DbError> {
         let cache_key = format!("{datasource}|{table}");
         if let Some(cols) = COLUMNS.lock().await.get(&cache_key) {
             return Ok(cols.clone());
@@ -169,10 +175,10 @@ impl DbSinks {
             DbEngine::Mysql => {
                 // 未指定 schema 时按当前库兜底：`table_schema = database()`
                 let sql = if schema == "NULL" {
-                    "select column_name from information_schema.columns
+                    "select column_name, data_type from information_schema.columns
                      where table_schema = database() and table_name = ?"
                 } else {
-                    "select column_name from information_schema.columns
+                    "select column_name, data_type from information_schema.columns
                      where table_schema = ? and table_name = ?"
                 };
                 let mut q = sqlx::query(sql);
@@ -182,18 +188,21 @@ impl DbSinks {
                 q.bind(&name).fetch_all(pool).await
             }
             DbEngine::Sqlite => {
-                sqlx::query("select name as column_name from pragma_table_info($1)")
-                    .bind(&name)
-                    .fetch_all(pool)
-                    .await
+                sqlx::query(
+                    "select name as column_name, type as data_type from pragma_table_info($1)",
+                )
+                .bind(&name)
+                .fetch_all(pool)
+                .await
             }
             DbEngine::Postgres => {
-                // `information_schema.columns.column_name` 在 PG 里是 `name` 类型，
-                // 而 sqlx 的 Any 驱动只认 text/varchar/int/float/bool/bytea，
-                // 直接 select 会在解码阶段报「Any driver does not support the Postgres type Name」，
+                // 两个 select 列都是 PG 的 `name` / 域类型，而 sqlx 的 Any 驱动只认
+                // text/varchar/int/float/bool/bytea，直接 select 会在解码阶段报
+                // 「Any driver does not support the Postgres type Name」，
                 // 让每一次 PG 直写都止步于读列信息。这里显式转成 text。
                 sqlx::query(
-                    "select column_name::text as column_name from information_schema.columns
+                    "select column_name::text as column_name, data_type::text as data_type
+                     from information_schema.columns
                      where table_schema = $1 and table_name = $2",
                 )
                 .bind(&schema)
@@ -210,9 +219,18 @@ impl DbSinks {
                 format!("表 {schema}.{name} 不存在或当前账号没有权限"),
             ));
         }
-        let cols: HashSet<String> = rows
+        let cols: HashMap<String, String> = rows
             .iter()
-            .map(|r| r.get::<String, _>("column_name"))
+            .map(|r| {
+                let col: String = r.get::<String, _>("column_name");
+                let ty: Option<String> = r.try_get::<Option<String>, _>("data_type").ok().flatten();
+                let suffix = if engine == DbEngine::Postgres {
+                    ty.as_deref().map(pg_cast_suffix).unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                (col, suffix)
+            })
             .collect();
         COLUMNS.lock().await.insert(cache_key, cols.clone());
         Ok(cols)
@@ -302,7 +320,7 @@ impl DbWriter for DbSinks {
         // 映射的每一列都必须真实存在：拼错一个列名，PG 报的是 42703，
         // 但那已经是「一行数据发出去之后」了，不如在这里就说清楚
         for key in row.keys() {
-            if !columns.contains(key) {
+            if !columns.contains_key(key) {
                 return Err(DbError::fatal(
                     "DB_UNKNOWN_COLUMN",
                     format!(
@@ -323,7 +341,7 @@ impl DbWriter for DbSinks {
 
         let mut cols: Vec<&String> = row.keys().collect();
         cols.sort();
-        let sql = build_sql(target, op, row, engine)?;
+        let sql = build_sql(target, op, row, engine, &columns)?;
         debug!("db sink: {sql}");
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for col in &cols {
@@ -351,8 +369,11 @@ fn build_sql(
     op: Op,
     row: &Map<String, Value>,
     engine: DbEngine,
+    columns: &HashMap<String, String>,
 ) -> Result<String, DbError> {
     let dialect = dialect_of(engine);
+    // 列的绑定转换后缀：PG 的 param 一律是 text，必须补 `::int8` 这类显式转换
+    let cast = |c: &str| columns.get(c).cloned().unwrap_or_default();
     // 列顺序固定，日志与 explain 才好对比
     let mut cols: Vec<&String> = row.keys().collect();
     cols.sort();
@@ -367,20 +388,29 @@ fn build_sql(
         .join(", ");
 
     if op == Op::D {
-        // 按冲突键逐条等值删除：键值由参数绑定，类型由目标表上下文决定
+        // 按冲突键逐条等值删除：键值由参数绑定，PG 侧同样要按键列类型显式转换
         let on = target
             .key
             .iter()
             .zip(1..)
-            .map(|(k, i)| format!("{q} = ${i}", q = quote(k)))
+            .map(|(k, i)| format!("{q} = ${i}{c}", q = quote(k), c = cast(k)))
             .collect::<Vec<_>>()
             .join(" and ");
         return Ok(format!("delete from {table} where {on}"));
     }
 
-    // 占位符：PG / SQLite 用 $n，MySQL 用 ?
-    let placeholders = (1..=cols.len())
-        .map(|i| param_placeholder(engine, i))
+    // 占位符：PG / SQLite 用 $n，MySQL 用 ?；PG 补上按列类型的转换后缀
+    let placeholders = cols
+        .iter()
+        .zip(1..)
+        .map(|(c, i)| {
+            let p = param_placeholder(engine, i);
+            if engine == DbEngine::Postgres {
+                format!("{p}{}", cast(c))
+            } else {
+                p
+            }
+        })
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -464,6 +494,37 @@ fn default_schema(engine: DbEngine, table: &str) -> (String, String) {
     (schema, table.to_string())
 }
 
+/// # PG 列类型 → 占位符的显式转换后缀
+///
+/// sqlx 的 Any 驱动把参数统一按 text 编码（见 [`json_to_bind`]），而 PG 的预处理语句
+/// 会按目标列推断参数类型，两边对不上就是 42804
+/// （`column "create_ms" is of type bigint but expression is of type text`）。
+/// 所以占位符末端按目标列的真实类型补一次转换，让 text 参数在服务端完成解析。
+///
+/// 未列出的类型返回空串：宁可让 PG 自己报类型不匹配，也不猜一个错误的转换。
+fn pg_cast_suffix(data_type: &str) -> String {
+    let cast = match data_type {
+        "bigint" => "::int8",
+        "integer" => "::int4",
+        "smallint" => "::int2",
+        "boolean" => "::bool",
+        "text" | "character varying" | "character" | "citext" => "::text",
+        "numeric" | "decimal" | "money" => "::numeric",
+        "real" => "::float4",
+        "double precision" => "::float8",
+        "date" => "::date",
+        "time without time zone" => "::time",
+        "time with time zone" => "::timetz",
+        "timestamp without time zone" => "::timestamp",
+        "timestamp with time zone" => "::timestamptz",
+        "json" | "jsonb" => "::jsonb",
+        "uuid" => "::uuid",
+        "bytea" => "::bytea",
+        _ => "",
+    };
+    cast.to_string()
+}
+
 /// # JSON 值 → sqlx 绑定值
 ///
 /// 标量直接绑；对象 / 数组序列化成 JSON 文本绑（目标列若是 JSON 类型由驱动/库解析，
@@ -543,6 +604,11 @@ mod tests {
         m
     }
 
+    /// 不补类型转换的列信息：拼 SQL 的形状测试只关心占位符与子句
+    fn no_casts() -> HashMap<String, String> {
+        HashMap::new()
+    }
+
     #[test]
     fn upsert_updates_non_key_columns() {
         let sql = build_sql(
@@ -550,6 +616,7 @@ mod tests {
             Op::U,
             &row(),
             DbEngine::Postgres,
+            &no_casts(),
         )
         .unwrap();
         assert!(sql.starts_with(
@@ -571,6 +638,7 @@ mod tests {
             Op::C,
             &row(),
             DbEngine::Postgres,
+            &no_casts(),
         )
         .unwrap();
         assert!(nothing.ends_with("do nothing"));
@@ -579,6 +647,7 @@ mod tests {
             Op::C,
             &row(),
             DbEngine::Postgres,
+            &no_casts(),
         )
         .unwrap();
         assert!(!error.contains("on conflict"));
@@ -594,6 +663,7 @@ mod tests {
             Op::C,
             &m,
             DbEngine::Postgres,
+            &no_casts(),
         )
         .unwrap();
         assert!(sql.ends_with("do nothing"));
@@ -606,6 +676,7 @@ mod tests {
             Op::D,
             &row(),
             DbEngine::Postgres,
+            &no_casts(),
         )
         .unwrap();
         assert_eq!(
@@ -624,9 +695,53 @@ mod tests {
             Op::D,
             &m,
             DbEngine::Postgres,
+            &no_casts(),
         )
         .unwrap();
         assert!(sql.contains("\"a\" = $1 and \"b\" = $2"));
+    }
+
+    #[test]
+    fn pg_placeholders_carry_column_type_casts() {
+        // Any 驱动把参数按 text 编码，占位符必须按目标列类型补转换，否则 PG 报 42804
+        let mut casts = HashMap::new();
+        casts.insert("id".to_string(), "::int8".to_string());
+        casts.insert("name".to_string(), "::text".to_string());
+        casts.insert("updated_at".to_string(), "::timestamptz".to_string());
+        let sql = build_sql(
+            &t(&["id"], OnConflict::Update),
+            Op::U,
+            &row(),
+            DbEngine::Postgres,
+            &casts,
+        )
+        .unwrap();
+        assert!(sql.contains("values ($1::int8, $2::text, $3::timestamptz)"));
+    }
+
+    #[test]
+    fn pg_delete_key_carries_cast() {
+        let mut casts = HashMap::new();
+        casts.insert("id".to_string(), "::int8".to_string());
+        let sql = build_sql(
+            &t(&["id"], OnConflict::Update),
+            Op::D,
+            &row(),
+            DbEngine::Postgres,
+            &casts,
+        )
+        .unwrap();
+        assert_eq!(
+            sql,
+            "delete from \"public\".\"dtw_person\" where \"id\" = $1::int8"
+        );
+    }
+
+    #[test]
+    fn pg_type_mapping_covers_common_types() {
+        assert_eq!(pg_cast_suffix("bigint"), "::int8");
+        assert_eq!(pg_cast_suffix("timestamp with time zone"), "::timestamptz");
+        assert_eq!(pg_cast_suffix("bad_type"), "");
     }
 
     #[test]
@@ -636,6 +751,7 @@ mod tests {
             Op::U,
             &row(),
             DbEngine::Mysql,
+            &no_casts(),
         )
         .unwrap();
         assert!(sql.contains("values (?, ?, ?)"));
