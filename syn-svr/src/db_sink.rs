@@ -182,16 +182,18 @@ impl DbSinks {
                 q.bind(&name).fetch_all(pool).await
             }
             DbEngine::Sqlite => {
-                sqlx::query(
-                    "select name as column_name from pragma_table_info($1)",
-                )
-                .bind(&name)
-                .fetch_all(pool)
-                .await
+                sqlx::query("select name as column_name from pragma_table_info($1)")
+                    .bind(&name)
+                    .fetch_all(pool)
+                    .await
             }
             DbEngine::Postgres => {
+                // `information_schema.columns.column_name` 在 PG 里是 `name` 类型，
+                // 而 sqlx 的 Any 驱动只认 text/varchar/int/float/bool/bytea，
+                // 直接 select 会在解码阶段报「Any driver does not support the Postgres type Name」，
+                // 让每一次 PG 直写都止步于读列信息。这里显式转成 text。
                 sqlx::query(
-                    "select column_name from information_schema.columns
+                    "select column_name::text as column_name from information_schema.columns
                      where table_schema = $1 and table_name = $2",
                 )
                 .bind(&schema)
@@ -295,8 +297,7 @@ impl DbWriter for DbSinks {
         row: &Map<String, Value>,
     ) -> Result<u64, DbError> {
         let (pool, engine) = Self::pool_for(&target.datasource).await?;
-        let columns = Self::columns(&target.datasource, &pool, engine, &target.table)
-            .await?;
+        let columns = Self::columns(&target.datasource, &pool, engine, &target.table).await?;
 
         // 映射的每一列都必须真实存在：拼错一个列名，PG 报的是 42703，
         // 但那已经是「一行数据发出去之后」了，不如在这里就说清楚
@@ -329,14 +330,13 @@ impl DbWriter for DbSinks {
             let value = row.get(*col).cloned().unwrap_or(Value::Null);
             query = query.bind(json_to_bind(value));
         }
-        let result = query.execute(&pool).await
-            .map_err(|e| {
-                let mapped = classify(&e);
-                if !mapped.retriable {
-                    warn!("db sink 写入 {} 失败: {}", target.table, mapped.detail);
-                }
-                mapped
-            })?;
+        let result = query.execute(&pool).await.map_err(|e| {
+            let mapped = classify(&e);
+            if !mapped.retriable {
+                warn!("db sink 写入 {} 失败: {}", target.table, mapped.detail);
+            }
+            mapped
+        })?;
         Ok(result.rows_affected())
     }
 }
@@ -545,10 +545,16 @@ mod tests {
 
     #[test]
     fn upsert_updates_non_key_columns() {
-        let sql = build_sql(&t(&["id"], OnConflict::Update), Op::U, &row(), DbEngine::Postgres).unwrap();
-        assert!(
-            sql.starts_with("insert into \"public\".\"dtw_person\" (\"id\", \"name\", \"updated_at\")")
-        );
+        let sql = build_sql(
+            &t(&["id"], OnConflict::Update),
+            Op::U,
+            &row(),
+            DbEngine::Postgres,
+        )
+        .unwrap();
+        assert!(sql.starts_with(
+            "insert into \"public\".\"dtw_person\" (\"id\", \"name\", \"updated_at\")"
+        ));
         // 逐列占位符绑定，不再走 jsonb_populate_record 整行 JSON
         assert!(sql.contains("values ($1, $2, $3)"));
         // 键列不参与 set
@@ -560,9 +566,21 @@ mod tests {
 
     #[test]
     fn nothing_and_error_differ() {
-        let nothing = build_sql(&t(&["id"], OnConflict::Nothing), Op::C, &row(), DbEngine::Postgres).unwrap();
+        let nothing = build_sql(
+            &t(&["id"], OnConflict::Nothing),
+            Op::C,
+            &row(),
+            DbEngine::Postgres,
+        )
+        .unwrap();
         assert!(nothing.ends_with("do nothing"));
-        let error = build_sql(&t(&["id"], OnConflict::Error), Op::C, &row(), DbEngine::Postgres).unwrap();
+        let error = build_sql(
+            &t(&["id"], OnConflict::Error),
+            Op::C,
+            &row(),
+            DbEngine::Postgres,
+        )
+        .unwrap();
         assert!(!error.contains("on conflict"));
     }
 
@@ -571,13 +589,25 @@ mod tests {
         // 映射里只有键列时没有可更新的列，不能拼出 `do update set` 空子句
         let mut m = Map::new();
         m.insert("id".into(), serde_json::json!(1));
-        let sql = build_sql(&t(&["id"], OnConflict::Update), Op::C, &m, DbEngine::Postgres).unwrap();
+        let sql = build_sql(
+            &t(&["id"], OnConflict::Update),
+            Op::C,
+            &m,
+            DbEngine::Postgres,
+        )
+        .unwrap();
         assert!(sql.ends_with("do nothing"));
     }
 
     #[test]
     fn delete_uses_key_placeholders() {
-        let sql = build_sql(&t(&["id"], OnConflict::Update), Op::D, &row(), DbEngine::Postgres).unwrap();
+        let sql = build_sql(
+            &t(&["id"], OnConflict::Update),
+            Op::D,
+            &row(),
+            DbEngine::Postgres,
+        )
+        .unwrap();
         assert_eq!(
             sql,
             "delete from \"public\".\"dtw_person\" where \"id\" = $1"
@@ -589,14 +619,28 @@ mod tests {
         let mut m = Map::new();
         m.insert("a".into(), serde_json::json!(1));
         m.insert("b".into(), serde_json::json!(2));
-        let sql = build_sql(&t(&["a", "b"], OnConflict::Update), Op::D, &m, DbEngine::Postgres).unwrap();
+        let sql = build_sql(
+            &t(&["a", "b"], OnConflict::Update),
+            Op::D,
+            &m,
+            DbEngine::Postgres,
+        )
+        .unwrap();
         assert!(sql.contains("\"a\" = $1 and \"b\" = $2"));
     }
 
     #[test]
     fn mysql_uses_question_placeholders_and_duplicate_key() {
-        let sql = build_sql(&t(&["id"], OnConflict::Update), Op::U, &row(), DbEngine::Mysql).unwrap();
+        let sql = build_sql(
+            &t(&["id"], OnConflict::Update),
+            Op::U,
+            &row(),
+            DbEngine::Mysql,
+        )
+        .unwrap();
         assert!(sql.contains("values (?, ?, ?)"));
-        assert!(sql.contains("on duplicate key update `name` = values(`name`), `updated_at` = values(`updated_at`)"));
+        assert!(sql.contains(
+            "on duplicate key update `name` = values(`name`), `updated_at` = values(`updated_at`)"
+        ));
     }
 }
