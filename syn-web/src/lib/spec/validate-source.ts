@@ -13,13 +13,11 @@
 import type { SourceSaveInput, SourceSpec } from "@/lib/api/types";
 
 export interface SourceIssue {
-  /** DTO 字段路径：`code` / `intervalDuration` / `spec.table` … */
+  /** DTO 字段路径：`topic` / `intervalDuration` / `spec.table` … */
   path: string;
   message: string;
 }
 
-/** 编码是 syn 自己的标识（topic、配置名），仍只认小写，避免大小写两份配置并存 */
-const CODE_IDENT = /^[a-z_][a-z0-9_]*$/;
 /**
  * 表名与字段名是**源库**的标识符，跟着源库走：工业库、从别的系统迁过来的库
  * 常有大写列名（`WS_DEVICE` / `UPDATE_TIME`），这里只挡引号、分号这类注入字符。
@@ -41,14 +39,12 @@ export function validateSource(input: SourceSaveInput): SourceIssue[] {
   const push = (path: string, message: string) => issues.push({ path, message });
 
   // 一个字段只报第一条错：空值同时触发「必填」和「格式不对」会把错误数刷成两倍
-  const code = input.code.trim();
-  if (!code) push("code", "编码必填，最长 64 字符");
-  else if (code.length > 64) push("code", "编码最长 64 字符");
-  else if (!CODE_IDENT.test(code)) push("code", "编码只能用小写字母、数字、下划线，且不能以数字开头");
   const name = input.name.trim();
   if (!name) push("name", "名称必填，最长 100 字");
   else if (name.length > 100) push("name", "名称最长 100 字");
-  if ((input.topic ?? "").length > 255) push("topic", "topic 最长 255 字符");
+  const topic = input.topic.trim();
+  if (!topic) push("topic", "虚拟 topic 必填，最长 255 字符");
+  else if (topic.length > 255) push("topic", "topic 最长 255 字符");
   if ((input.remark ?? "").length > 500) push("remark", "备注最长 500 字");
 
   const interval = input.intervalDuration.trim();

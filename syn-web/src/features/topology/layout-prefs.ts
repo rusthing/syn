@@ -2,8 +2,8 @@
  * # 控制面板的版面偏好（纯函数 + localStorage 读写）
  *
  * 两处可调尺寸都是「本机的看图习惯」，不该进库：
- * 1. **泳道四列的宽度**：不同人盯的列不一样 —— 有人只看任务卡（六段写得很长），
- *    有人只看数据源（连接串很长），固定 268/292/220/620 总有一列不够用；
+ * 1. **泳道三列的宽度**：不同人盯的列不一样 —— 有人只看任务卡（六段写得很长），
+ *    有人只看数据源（连接串很长），固定 268/292/620 总有一列不够用；
  * 2. **右侧属性栏的宽度与收起**：248px 装得下概览，装不下一条长连接串；想临时
  *    把画布铺满时又要能收回去。
  *
@@ -21,18 +21,18 @@
  *
  * ## 为什么脏数据一律回落默认
  *
- * localStorage 是用户和别的版本共用的抽屉，谁都能往里塞东西。解析函数只认「四个
+ * localStorage 是用户和别的版本共用的抽屉，谁都能往里塞东西。解析函数只认「三列
  * 有限的正数」，其余（NaN、字符串、长度不对、JSON 坏了、隐私模式读不到）全部按位置
  * 回落默认值：一处脏数据最多让某列变宽窄，不会让控制面板打不开。
  */
 
-/** 泳道四列宽度在 localStorage 的键 */
+/** 泳道三列宽度在 localStorage 的键 */
 export const LANE_COLUMNS_KEY = "syn.panel.lane-cols";
 /** 属性栏宽度与收起状态在 localStorage 的键 */
 export const INSPECTOR_KEY = "syn.panel.inspector";
 
-/** 数据源 → 数据抽取 → 主题 → 任务。与改版前 styles.css 里的固定列宽一字不差 */
-export const DEFAULT_LANE_COLUMNS: readonly number[] = [268, 292, 220, 620];
+/** 数据源 → 数据抽取 → 任务；去掉主题列后其余三列宽度沿用原值 */
+export const DEFAULT_LANE_COLUMNS: readonly number[] = [268, 292, 620];
 
 /**
  * 每列的 [下限, 上限]。
@@ -42,7 +42,6 @@ export const DEFAULT_LANE_COLUMNS: readonly number[] = [268, 292, 220, 620];
 export const LANE_COLUMN_BOUNDS: ReadonlyArray<readonly [number, number]> = [
   [180, 560],
   [200, 640],
-  [150, 420],
   [320, 1600],
 ];
 
@@ -64,8 +63,8 @@ export function clampLaneColumn(index: number, width: number): number {
 }
 
 /**
- * 把 localStorage 里读出来的东西整成「恰好四列的合法宽度」。
- * 长度不足按位置补默认，多出来的忽略 —— 将来加列时旧值也能继续用。
+ * 把 localStorage 里读出来的东西整成「恰好三列的合法宽度」。
+ * 旧版本存的四列值会被当成「多出来的忽略」，主题列的 220px 不会串到任务列。
  */
 export function normalizeLaneColumns(value: unknown): number[] {
   const list = Array.isArray(value) ? value : [];

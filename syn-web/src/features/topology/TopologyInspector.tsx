@@ -44,7 +44,6 @@ import {
 const KIND_LABEL: Record<GraphNode["kind"], string> = {
   datasource: "数据源",
   source: "数据抽取",
-  topic: "主题（虚拟节点）",
   task: "同步任务",
 };
 
@@ -160,7 +159,7 @@ function StageDetail({ spec, stage }: { spec: TaskSpec; stage: TaskStage }) {
             <ConditionList
               conds={spec.match ?? []}
               fallback="record"
-              empty="没有条件：这个主题的所有记录都归本任务。"
+              empty="没有条件：这个 topic 的所有记录都归本任务。"
             />
           </Section>
         </>
@@ -566,12 +565,11 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test, s
             </ul>
           </Section>
 
-          <Section title="四类节点">
+          <Section title="三类节点">
             <div className="py-2">
               {[
                 { label: "数据源", dot: "bg-info", text: "连接配置" },
                 { label: "数据抽取", dot: "bg-violet", text: "周期取数" },
-                { label: "主题", dot: "bg-line-strong", text: "虚拟节点，自动生成" },
                 { label: "任务", dot: "bg-accent", text: "六段流水线" },
               ].map((item) => (
                 <div key={item.label} className="flex items-center gap-2 py-1 text-[11.5px]">
@@ -651,9 +649,6 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test, s
                   {node.key}
                 </Row>
                 <Row label="状态">{node.status}</Row>
-                <Row label="上游 / 下游">
-                  {node.producers} / {node.consumers}
-                </Row>
               </Section>
 
               {node.task && (
@@ -767,15 +762,6 @@ export function TopologyInspector({ node, stage, onSelectStage, onClose, test, s
                 </>
               )}
 
-              {node.kind === "topic" && (
-                <Section title="主题">
-                  <Row label="写入来源">{node.producers}</Row>
-                  <Row label="消费任务">{node.consumers}</Row>
-                  <p className="py-2 text-[11.5px] leading-relaxed text-muted">
-                    主题不是库表实体，由数据抽取写入、被任务消费。要改它请编辑两端的数据抽取或任务。
-                  </p>
-                </Section>
-              )}
 
               {node.source && (
                 <p className="mt-3 rounded-md bg-sunken/70 px-2 py-1.5 text-[11.5px] leading-relaxed text-muted">

@@ -1,7 +1,7 @@
 /**
  * # 泳道画布（学习 uiam 网关配置图的结构）
  *
- * 一张 CSS Grid 泳道：数据源 → 数据抽取 → 主题 → 任务，列的**顺序**固定、**宽度**可调，
+ * 一张 CSS Grid 泳道：数据源 → 数据抽取 → 任务，列的**顺序**固定、**宽度**可调，
  * 行由引用关系决定（见 `lanes.ts`）。节点不再自由拖拽、坐标不再入库 —— 图永远按当前
  * 配置自动排布；唯一可拖的除了任务卡上的把手（同泳道内调匹配顺序 sort_order），就是
  * 题头右缘的列宽把手：拖自己那列、双击复位，结果写 localStorage（见 `layout-prefs.ts`），
@@ -9,7 +9,7 @@
  *
  * ## 为什么连线用「测量 + SVG 贝塞尔」而不是 CSS 直线
  *
- * 真正要表达的是**汇聚**：几条抽取写同一个主题、几个任务读同一个主题、几条抽取
+ * 真正要表达的是**汇聚**：几条抽取写同一个 topic、一个 topic 被多个任务读、几条抽取
  * 共用一个数据源。同名实体只画一个节点，线弯过去汇到它 —— 这正是「谁和谁共用」
  * 这个问句的答案。节点按文档流排（行高自适应内容），坐标渲染后从 DOM 量出来再画。
  * 数据在变化、容器尺寸变化、字体加载完成三种时机重测（`sameBoxes` 抑制亚像素抖动）。
@@ -45,12 +45,7 @@ import {
   type Lane,
   type SwimlaneModel,
 } from "./lanes";
-import {
-  EntityCard,
-  TaskCard,
-  TopicCard,
-  type HintHandler,
-} from "./TopologyCards";
+import { EntityCard, TaskCard, type HintHandler } from "./TopologyCards";
 import {
   clampLaneColumn,
   DEFAULT_LANE_COLUMNS,
@@ -68,7 +63,6 @@ const FIT_PAD = 24;
 const NODE_KIND_LABEL: Record<CanvasNodeKind, string> = {
   datasource: "数据源",
   source: "数据抽取",
-  topic: "主题",
   task: "任务",
 };
 
@@ -168,7 +162,7 @@ export function TopologyCanvas({
   /* -------------------------------- 列宽 -------------------------------- */
 
   /**
-   * 四列的宽度。初值读 localStorage（脏值先被 `normalizeLaneColumns` 收一遍），
+   * 三列的宽度。初值读 localStorage（脏值先被 `normalizeLaneColumns` 收一遍），
    * 拖动题头右侧的把手改，**松手才写回** —— 每帧写一次 localStorage 会拖慢拖拽。
    * 题头与网格共用同一个 `gridTemplate`，两边才不会错位（它们是两个独立的 grid）。
    */
@@ -564,9 +558,7 @@ export function TopologyCanvas({
         onSelect(node.id);
       }}
     >
-      {node.kind === "topic" ? (
-        <TopicCard node={node} selected={node.id === selectedId} onHint={showHint} />
-      ) : node.kind === "task" ? (
+      {node.kind === "task" ? (
         <TaskCard
           node={node}
           selected={node.id === selectedId}
@@ -646,9 +638,8 @@ export function TopologyCanvas({
         <div className="tl-stage" style={{ zoom, width: view.w || undefined }}>
           <div className="tl-head" style={{ gridTemplateColumns: gridTemplate }}>
             {columnHead(0, "数据源", "数据源", "datasource")}
-            {columnHead(1, "数据抽取 · 拉到主题", "数据抽取", "source")}
-            {columnHead(2, "主题 · 数据总线", "主题")}
-            {columnHead(3, "任务 · 按匹配顺序，命中即停（可拖动排序）", "任务", "task")}
+            {columnHead(1, "数据抽取 · 按 topic 直连任务", "数据抽取", "source")}
+            {columnHead(2, "任务 · 按匹配顺序，命中即停（可拖动排序）", "任务", "task")}
           </div>
 
           <div className={cn("tl-wrap", drag && "dragging")} ref={wrapRef}>
@@ -701,14 +692,12 @@ export function TopologyCanvas({
                     })
                     .map((slot) => cell(slot.node, slot.row, 1, cn("tl-cell-ds", slot.refs > 1 && "shared")))}
 
-                  {lane.topic && cell(lane.topic, lane.startRow, 3, "tl-cell-topic-span", undefined, lane.rowCount)}
-
                   {lane.sources.map((node, i) => cell(node, lane.startRow + i, 2))}
                   {lane.tasks.map((node, i) =>
                     cell(
                       node,
                       lane.startRow + i,
-                      4,
+                      3,
                       drag?.taskId === node.task?.id ? "dragging" : undefined,
                       onReorderTasks ? onGripDown(lane, node.task!.id) : undefined,
                     ),
@@ -814,7 +803,6 @@ const MAP_H = 104;
 const MAP_TONE: Record<CanvasNodeKind, string> = {
   datasource: "ds",
   source: "src",
-  topic: "topic",
   task: "task",
 };
 
@@ -839,9 +827,9 @@ function MiniMap({
   const mh = Math.max(18, size.h * s);
   const kindOf = (key: string): CanvasNodeKind => {
     const head = key.split(":")[0];
-    return (head === "datasource" || head === "source" || head === "topic" || head === "task"
+    return (head === "datasource" || head === "source" || head === "task"
       ? head
-      : "topic") as CanvasNodeKind;
+      : "task") as CanvasNodeKind;
   };
   const jump = (e: React.MouseEvent<SVGSVGElement>) => {
     const r = e.currentTarget.getBoundingClientRect();

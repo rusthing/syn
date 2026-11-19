@@ -118,7 +118,7 @@ export function PanelImportDialog({
           <div>
             <div className="text-[12.5px] font-medium text-ink">已存在的组件怎么处理</div>
             <div className="mt-0.5 text-[11.5px] text-muted">
-              数据源 / 数据抽取按 code 识别，任务按「主题 + 名称」识别（同名多条按排序值就近匹配）
+              数据源按 code 识别、数据抽取按 topic 识别，任务按「topic + 名称」识别（同名多条按排序值就近匹配）
             </div>
           </div>
           <div className="flex shrink-0 rounded-lg border border-line bg-surface p-0.5">
@@ -227,10 +227,9 @@ export function PanelImportDialog({
           {plan.sources.map((row) => {
             const item = archive.sources[row.index];
             return (
-              <Row key={row.code} action={row.action}>
+              <Row key={row.topic || row.index} action={row.action}>
                 <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                  <span className="font-mono text-[12.5px] text-ink">{row.code}</span>
-                  <span className="min-w-0 truncate text-[12.5px] text-ink-soft">{row.name}</span>
+                  <span className="min-w-0 truncate text-[12.5px] text-ink">{row.name}</span>
                   <Badge tone={item.kind === "http" ? "info" : "accent"}>
                     {item.kind === "http" ? "HTTP" : "SQL"}
                   </Badge>

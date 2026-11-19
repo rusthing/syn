@@ -96,7 +96,6 @@ export interface DatasourcePlanRow {
 export interface SourcePlanRow {
   index: number;
   action: ImportAction;
-  code: string;
   name: string;
   topic: string;
   existingId?: string;
@@ -118,7 +117,7 @@ export interface ImportPlan {
   tasks: TaskPlanRow[];
   /** 不阻断导入，但值得在预览里看一眼 */
   warnings: string[];
-  /** 必须处理才能导入（引用缺失、主题冲突） */
+  /** 必须处理才能导入（引用缺失、topic 缺失） */
   blockers: string[];
 }
 
@@ -165,7 +164,7 @@ export function deriveStructure(
       topic,
       sources: sources
         .filter((s) => s.topic === topic)
-        .map((s) => s.code)
+        .map((s) => s.topic)
         .sort((a, b) => a.localeCompare(b)),
       tasks: tasks
         .filter((t) => t.topic === topic)
@@ -178,7 +177,7 @@ export function deriveStructure(
     orphans: {
       sources: sources
         .filter((s) => !s.topic)
-        .map((s) => s.code)
+        .map((s) => s.name)
         .sort((a, b) => a.localeCompare(b)),
       tasks: tasks.filter((t) => !t.topic).map(taskRef).sort(compareTaskRef),
     },
@@ -216,7 +215,6 @@ function cloneDatasource(d: PanelDatasource): PanelDatasource {
 
 function cloneSource(s: PanelSource): PanelSource {
   return {
-    code: s.code,
     name: s.name,
     kind: s.kind,
     topic: s.topic,
@@ -376,17 +374,16 @@ function parseSources(raw: unknown, errors: string[]): PanelSource[] {
       errors.push(`${path} 不是对象`);
       return;
     }
-    const code = reqStr(row.code, `${path}.code`, errors).trim();
-    if (code && seen.has(code)) errors.push(`${path}.code ${code} 在文件里重复`);
-    seen.add(code);
     const name = reqStr(row.name, `${path}.name`, errors).trim();
     const kind = parseSourceKind(row.kind, `${path}.kind`, errors);
     const spec = reqRecord(row.spec, `${path}.spec`, errors);
+    const topic = reqStr(row.topic, `${path}.topic`, errors).trim();
+    if (topic && seen.has(topic)) errors.push(`${path}.topic ${topic} 在文件里重复`);
+    seen.add(topic);
     out.push({
-      code,
       name,
       kind,
-      topic: str(row.topic)?.trim() ?? "",
+      topic,
       enabled: bool(row.enabled, true),
       interval_duration: str(row.interval_duration)?.trim() || "1m",
       batch_size: intField(row.batch_size, `${path}.batch_size`, 100, 1, 5000, errors),
@@ -445,7 +442,7 @@ function parseTasks(raw: unknown, errors: string[]): PanelTask[] {
  *
  * 阻断项只放「无论用户怎么选都会失败」的问题：
  * - 抽取 / db 任务引用的数据源在「当前环境 + 文件」里都不存在；
- * - 新建 / 改主题后的抽取会撞上库里另一条抽取的主题（后端有唯一约束）。
+ * - 抽取缺 topic（topic 必填且唯一，是关联键与身份键）。
  * 「新增数据源缺连接串」不在这里阻断：连接串由用户在预览里现填，填完即可导。
  */
 export function planImport(
@@ -475,39 +472,24 @@ export function planImport(
   });
 
   /* ----------------------------- 数据抽取 ----------------------------- */
-  const currentSrc = new Map(current.sources.map((s) => [s.code, s]));
-  // 覆盖模式会改主题的抽取先腾出旧主题，否则「A 从 a 改到 b、B 接管 a」
-  // 会被误判成冲突；后端是一个事务里顺序写的，最终态才是判据
-  const replaced = new Set(
-    archive.sources
-      .filter((s) => currentSrc.has(s.code) && mode === "overwrite")
-      .map((s) => s.code),
-  );
-  const topicOwner = new Map<string, string>();
-  for (const s of current.sources) {
-    if (s.topic && !replaced.has(s.code)) topicOwner.set(s.topic, s.code);
-  }
-
+  // 去掉 code 后 topic 是数据抽取的唯一身份：既是导入识别键，也是关联键
+  const currentSrc = new Map(current.sources.map((s) => [s.topic, s]));
   const sources: SourcePlanRow[] = archive.sources.map((s, index) => {
-    const existing = currentSrc.get(s.code);
+    const topic = s.topic.trim();
+    const existing = topic ? currentSrc.get(topic) : undefined;
     const action: ImportAction = existing ? (mode === "skip" ? "skip" : "update") : "create";
-    const topic = s.topic.trim() || `source:${s.code}`;
 
     if (action !== "skip") {
-      const owner = topicOwner.get(topic);
-      if (owner && owner !== s.code) {
-        blockers.push(`数据抽取 ${s.code} 的主题「${topic}」已被 ${owner} 占用（主题必须唯一）`);
-      } else {
-        topicOwner.set(topic, s.code);
+      if (!topic) {
+        blockers.push(`数据抽取「${s.name}」没有填 topic（topic 必填且必须唯一）`);
       }
-
       const ds = s.spec.datasource?.trim();
       if (ds && !finalDsCodes.has(ds)) {
-        blockers.push(`数据抽取 ${s.code} 引用的数据源 ${ds} 既不在文件里、也不在当前环境`);
+        blockers.push(`数据抽取 ${topic || s.name} 引用的数据源 ${ds} 既不在文件里、也不在当前环境`);
       }
     }
 
-    return { index, action, code: s.code, name: s.name, topic, existingId: existing?.id };
+    return { index, action, name: s.name, topic, existingId: existing?.id };
   });
 
   /* ------------------------------- 任务 ------------------------------- */

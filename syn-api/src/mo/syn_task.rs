@@ -26,7 +26,7 @@ pub struct Model {
     pub id: i64,
     /// 名称
     pub name: String,
-    /// topic：push 入口是 Kafka topic，poll 入口是 `source:{code}`
+    /// topic：push 入口是 Kafka topic，poll 入口是数据抽取定义的虚拟 topic
     pub topic: String,
     /// 同一主题内的排序值，升序；数字小的先试
     pub sort_order: i32,

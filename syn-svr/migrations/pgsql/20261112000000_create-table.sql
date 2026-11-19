@@ -35,7 +35,7 @@ create table syn_task (
 );
 
 comment on table syn_task is
-'同步任务：五段规则的载体。';
+'同步任务：规则与投递的载体。';
 
 comment on column syn_task.id is
 'ID
@@ -65,8 +65,10 @@ comment on column syn_task.exclusive is
 false 表示这条记录还要继续喂给后面的任务（一分多）';
 
 comment on column syn_task.spec is
-'五段规则（match / mapping / actions / guards / outcomes）
+'任务规则（target / match / mapping / guards / actions / rules）
 嵌套结构，整体被执行器消费，没有任何一列参与检索，所以按 JSONB 存
+target.kind=http 时 actions 是四态调用矩阵；kind=db 时 actions 必须为空：op 由记录自带，写库形状由 target.on_conflict 决定
+判定段的输入跟着出口走：http 是下游响应，db 是合成响应 { "affected": n }，所以 db 只能看 $.affected
 topic / sort_order / enabled / exclusive 以本表的列为准，spec 里的同名字段只是导入来源';
 
 comment on column syn_task.version is
@@ -137,7 +139,7 @@ comment on column syn_task_version.version is
 @range 1..=2147483647';
 
 comment on column syn_task_version.spec is
-'该版本的完整五段规则';
+'该版本的完整任务规则（target / 五段 / 判定）';
 
 comment on column syn_task_version.remark is
 '发布说明（这一版改了什么）
@@ -255,7 +257,6 @@ create_ms
 /*==============================================================*/
 create table syn_source (
    id                   INT8                 not null,
-   code                 VARCHAR(64)          not null,
    name                 VARCHAR(100)         not null,
    kind                 INT2                 not null,
    topic                VARCHAR(255)         not null,
@@ -270,7 +271,6 @@ create table syn_source (
    updater_id           INT8                 not null,
    update_ms            INT8                 not null,
    constraint PK_SYN_SOURCE primary key (id),
-   constraint AK_CODE_SYN_SOURCE unique (code),
    constraint AK_TOPIC_SYN_SOURCE unique (topic)
 );
 
@@ -280,11 +280,6 @@ comment on table syn_source is
 comment on column syn_source.id is
 'ID
 由 idworker 生成，全局唯一';
-
-comment on column syn_source.code is
-'抽取编码
-如 adm_person_full；虚拟 topic 由它拼出
-@len 1..=64';
 
 comment on column syn_source.name is
 '名称
@@ -548,12 +543,11 @@ comment on column syn_canvas_layout.node_type is
 @enum CanvasNodeType default=Task
   1=Datasource  数据源
   2=Source      数据抽取
-  3=Topic       主题
   4=Task        任务';
 
 comment on column syn_canvas_layout.node_key is
 '节点标识
-数据源 / 数据抽取填各自的 code，任务填主键 id，主题填 topic 名
+数据源填 code，数据抽取填 topic，任务填主键 id
 @len 1..=128';
 
 comment on column syn_canvas_layout.x is
@@ -724,4 +718,3 @@ alter table syn_cursor
    add constraint fk_source_id__from__syn_source foreign key (source_id)
       references syn_source (id)
       on delete cascade on update restrict;
-

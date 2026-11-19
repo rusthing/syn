@@ -11,22 +11,20 @@ use validator::Validate;
 
 /// # 保存数据抽取（新增与修改共用）
 ///
-/// `topic` 留空时由服务端按 `source:{code}` 拼：虚拟 topic 的命名是**约定**，
-/// 让人手填只会填出三种写法。
+/// `topic` 是数据抽取的唯一业务键，必填：它就是任务侧精确匹配的那条虚拟 topic，
+/// 也是画布上数据抽取节点的标识。去掉 `code` 后没有可推导的来源，留空就等于
+/// 没有关联键，所以这里直接收字符串、不再做 `source:{code}` 的兜底。
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, Validate)]
 #[serde(rename_all = "camelCase")]
 pub struct SynSourceSaveDto {
-    /// 抽取编码
-    #[validate(length(min = 1, max = 64, message = "编码长度需在 1..=64 之间"))]
-    pub code: String,
     /// 名称
     #[validate(length(min = 1, max = 100, message = "名称长度需在 1..=100 之间"))]
     pub name: String,
     /// 抽取方式
     pub kind: SourceKind,
-    /// 虚拟 topic，留空则由 `source:{code}` 生成
-    #[validate(length(max = 255, message = "topic 最长 255"))]
-    pub topic: Option<String>,
+    /// 虚拟 topic：任务按它精确匹配，必须唯一
+    #[validate(length(min = 1, max = 255, message = "topic 长度需在 1..=255 之间"))]
+    pub topic: String,
     /// 是否参与调度
     pub enabled: bool,
     /// 期望调度间隔（Duration 字符串）
@@ -54,7 +52,7 @@ pub struct SynSourceEnabledDto {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SynSourceQueryDto {
-    /// 关键字，匹配 `code` / `name` / `topic`
+    /// 关键字，匹配 `name` / `topic`
     pub keyword: Option<String>,
     /// 按抽取方式筛
     pub kind: Option<SourceKind>,

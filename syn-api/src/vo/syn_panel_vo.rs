@@ -43,8 +43,6 @@ pub struct SynPanelDatasourceVo {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SynPanelSourceVo {
-    /// 抽取编码
-    pub code: String,
     /// 名称
     pub name: String,
     /// 抽取方式

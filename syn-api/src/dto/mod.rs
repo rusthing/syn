@@ -6,7 +6,7 @@
 //! |---|---|---|
 //! | `POST /syn/task`、`PUT /syn/task/{id}` | `{ name, spec, remark? }` | `topic/sort_order/enabled/exclusive` 四个列由 `spec` 派生，不让调用方填两遍 |
 //! | `PUT /syn/task/{id}/enabled` | `{ enabled }` | 只动一列，改的是开关不是规则 |
-//! | `POST /syn/source`、`PUT /syn/source/{id}` | 表形状（`code/name/kind/...`） | 这个**是**表形状，但 `spec` 是 JSONB，`#[crud_dto]` 会把它当查询条件处理 |
+//! | `POST /syn/source`、`PUT /syn/source/{id}` | 表形状（`name/kind/topic/...`） | 这个**是**表形状，但 `spec` 是 JSONB，`#[crud_dto]` 会把它当查询条件处理 |
 //!
 //! `spec` 一律用 [`serde_json::Value`] 原样收发：结构由
 //! [`TaskSpec::validate`](crate::spec::TaskSpec::validate) 把关，不在 DTO 层套强类型。

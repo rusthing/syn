@@ -47,10 +47,9 @@ function panelDs(code: string, over: Partial<PanelDatasource> = {}): PanelDataso
   };
 }
 
-function panelSrc(code: string, topic: string, over: Partial<PanelSource> = {}): PanelSource {
+function panelSrc(name: string, topic: string, over: Partial<PanelSource> = {}): PanelSource {
   return {
-    code,
-    name: `${code} 抽取`,
+    name: `${name} 抽取`,
     kind: "sql",
     topic,
     enabled: true,
@@ -114,11 +113,10 @@ function currentDs(code: string): DatasourceInfo {
   };
 }
 
-function currentSrc(code: string, topic: string, spec: SourceSpec = { datasource: "iot" }): SyncSource {
+function currentSrc(name: string, topic: string, spec: SourceSpec = { datasource: "iot" }): SyncSource {
   return {
-    id: `src-${code}`,
-    code,
-    name: `${code} 抽取`,
+    id: `src-${name}`,
+    name: `${name} 抽取`,
     kind: "sql",
     topic,
     enabled: true,
@@ -172,7 +170,7 @@ describe("buildArchive", () => {
     expect(archive.summary).toEqual({ datasources: 2, sources: 2, tasks: 2, topics: 2 });
     expect(archive.panel.lanes.map((l) => l.topic)).toEqual(["adm.people", "dtw.region"]);
     const lane = archive.panel.lanes.find((l) => l.topic === "dtw.region")!;
-    expect(lane.sources).toEqual(["s1", "s2"]);
+    expect(lane.sources).toEqual(["dtw.region", "dtw.region"]);
     expect(lane.tasks).toEqual([{ name: "t1", topic: "dtw.region", sort_order: 20 }]);
 
     const t1 = archive.tasks.find((t) => t.name === "t1")!;
@@ -191,7 +189,7 @@ describe("buildArchive", () => {
       0,
     );
     expect(archive.panel.lanes).toEqual([]);
-    expect(archive.panel.orphans.sources).toEqual(["s1"]);
+    expect(archive.panel.orphans.sources).toEqual(["s1 抽取"]);
     expect(archive.panel.orphans.tasks).toHaveLength(1);
   });
 });
@@ -277,9 +275,9 @@ describe("planImport", () => {
       ["iot", "update", false],
       ["adm", "create", true],
     ]);
-    expect(plan.sources.map((r) => [r.code, r.action])).toEqual([
-      ["s1", "update"],
-      ["s2", "create"],
+    expect(plan.sources.map((r) => [r.topic, r.action])).toEqual([
+      ["dtw.region", "update"],
+      ["adm.people", "create"],
     ]);
     expect(plan.tasks.map((r) => [r.name, r.action])).toEqual([
       ["t1", "update"],
@@ -295,18 +293,18 @@ describe("planImport", () => {
     expect(plan.tasks[0].action).toBe("skip");
   });
 
-  it("改主题把旧主题让给文件里另一条抽取，不算冲突", () => {
-    const takeover = buildArchive(
+  it("topic 不同的两条抽取不会产生冲突", () => {
+    const fresh = buildArchive(
       exportPayload(
         [],
         [panelSrc("s1", "fresh"), panelSrc("s2", "dtw.region")],
         [],
       ),
     );
-    expect(planImport(takeover, current, "overwrite").blockers).toEqual([]);
+    expect(planImport(fresh, current, "overwrite").blockers).toEqual([]);
   });
 
-  it("文件内两条抽取争同一主题仍然阻断", () => {
+  it("文件内两条抽取争同一 topic 在解析阶段就报错", () => {
     const clash = buildArchive(
       exportPayload(
         [panelDs("iot")],
@@ -314,16 +312,18 @@ describe("planImport", () => {
         [],
       ),
     );
-    const plan = planImport(clash, { datasources: [], sources: [], tasks: [] }, "overwrite");
-    expect(plan.blockers.join()).toContain("已被 s2 占用");
+    const parsed = parseArchive(JSON.stringify(clash));
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) expect(parsed.errors.join()).toContain("sources[1].topic dup 在文件里重复");
   });
 
-  it("主题被另一条抽取占用时阻断", () => {
-    const clash = buildArchive(
+  it("同 topic 的文件抽取匹配为更新，不报冲突", () => {
+    const same = buildArchive(
       exportPayload([], [panelSrc("s2", "dtw.region")], []),
     );
-    const plan = planImport(clash, current, "overwrite");
-    expect(plan.blockers.join()).toContain("已被 s1 占用");
+    const plan = planImport(same, current, "overwrite");
+    expect(plan.sources[0].action).toBe("update");
+    expect(plan.blockers).toEqual([]);
   });
 
   it("抽取引用不存在的数据源 / db 任务引用不存在的数据源都阻断", () => {

@@ -237,10 +237,9 @@ describe("liveSources", () => {
   });
 
   const saveInput: SourceSaveInput = {
-    code: "adm_person",
     name: "人员表",
     kind: "sql",
-    topic: "",
+    topic: "source:adm_person",
     enabled: true,
     intervalDuration: "30s",
     batchSize: 500,
@@ -268,7 +267,7 @@ describe("liveSources", () => {
     expect(body.spec.table).toBe("adm.person"); // JSONB 内部保持 snake_case
     expect(body.spec.cursor_field).toBe("updated_at");
     expect(body).not.toHaveProperty("id");
-    expect(body).not.toHaveProperty("topic");
+    expect(body.topic).toBe("source:adm_person");
     expect(body).not.toHaveProperty("remark");
   });
 

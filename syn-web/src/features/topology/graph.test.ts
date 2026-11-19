@@ -2,7 +2,7 @@
  * 拓扑建图的单测。
  *
  * 这一层是纯函数，值得锁死的只有三件事：
- * 1. 连线的方向和归属（数据源 → 数据抽取 → 主题 → 任务）—— 画错了图就是错的；
+ * 1. 连线的方向和归属（数据源 → 数据抽取 → 任务，按 topic 直连）—— 画错了图就是错的；
  * 2. 状态与问题的判定口径（停用、拉取失败、目标服务未注册、配置不完整）；
  * 3. 默认布局与持久化坐标的合并规则（孤儿坐标必须丢掉，否则换库后节点会飞到画布外）。
  *
@@ -39,7 +39,6 @@ function ds(code: string, over: Partial<DatasourceInfo> = {}): DatasourceInfo {
 function src(code: string, topic: string, over: Partial<SyncSource> = {}): SyncSource {
   return {
     id: code,
-    code,
     name: `${code} 抽取`,
     kind: "sql",
     topic,
@@ -104,7 +103,7 @@ function task(code: string, topic: string, over: Partial<SyncTask> = {}, specOve
 }
 
 describe("buildGraph", () => {
-  it("按数据流连出 数据源 → 数据抽取 → 主题 → 任务", () => {
+  it("按数据流连出 数据源 → 数据抽取 → 任务，抽取按 topic 直连任务", () => {
     const graph = buildGraph({
       datasources: [ds("iot")],
       sources: [src("region_incr", "source:region_incr")],
@@ -112,45 +111,33 @@ describe("buildGraph", () => {
       services: ["dtw-rs-svr"],
     });
 
-    expect(graph.nodes.map((n) => n.kind)).toEqual(["datasource", "source", "topic", "task"]);
+    expect(graph.nodes.map((n) => n.kind)).toEqual(["datasource", "source", "task"]);
+    // 数据抽取节点的 key 就是 topic，连线也从它出发
     expect(graph.edges).toEqual([
       {
-        id: `e:${nodeId("datasource", "iot")}->${nodeId("source", "region_incr")}`,
+        id: `e:${nodeId("datasource", "iot")}->${nodeId("source", "source:region_incr")}`,
         from: nodeId("datasource", "iot"),
-        to: nodeId("source", "region_incr"),
+        to: nodeId("source", "source:region_incr"),
         muted: false,
       },
       {
-        id: `e:${nodeId("source", "region_incr")}->${nodeId("topic", "source:region_incr")}`,
-        from: nodeId("source", "region_incr"),
-        to: nodeId("topic", "source:region_incr"),
-        muted: false,
-      },
-      {
-        id: `e:${nodeId("topic", "source:region_incr")}->${nodeId("task", "dtw-region")}`,
-        from: nodeId("topic", "source:region_incr"),
+        id: `e:${nodeId("source", "source:region_incr")}->${nodeId("task", "dtw-region")}`,
+        from: nodeId("source", "source:region_incr"),
         to: nodeId("task", "dtw-region"),
         muted: false,
       },
     ]);
-
-    const topic = graph.nodes.find((n) => n.kind === "topic")!;
-    expect(topic.producers).toBe(1);
-    expect(topic.consumers).toBe(1);
-    expect(topic.tone).toBe("ok");
   });
 
-  it("数据抽取和任务引用同一个主题时只生成一个主题节点", () => {
+  it("一个 topic 多抽取多任务：每条抽取直连每个任务，不生成主题节点", () => {
     const graph = buildGraph({
       datasources: [ds("iot")],
       sources: [src("a", "dtw.region"), src("b", "dtw.region")],
       tasks: [task("t1", "dtw.region"), task("t2", "dtw.region")],
       services: [],
     });
-    const topics = graph.nodes.filter((n) => n.kind === "topic");
-    expect(topics).toHaveLength(1);
-    expect(topics[0].producers).toBe(2);
-    expect(topics[0].consumers).toBe(2);
+    expect(graph.nodes.map((n) => n.kind)).toEqual(["datasource", "source", "source", "task", "task"]);
+    expect(graph.edges.filter((e) => e.from.startsWith("source:") && e.to.startsWith("task:"))).toHaveLength(4);
   });
 
   it("停在停用数据抽取上的连线画成虚线，节点判为 muted", () => {
@@ -186,7 +173,7 @@ describe("buildGraph", () => {
     });
     const node = graph.nodes.find((n) => n.kind === "source")!;
     expect(node.issues.join()).toContain("iot");
-    expect(graph.edges).toHaveLength(1); // 只剩 数据抽取 → 主题
+    expect(graph.edges).toHaveLength(0); // 数据源不存在，没有连线；也没有任务可连
   });
 
   it("目标服务不在注册中心时判为待修正；注册中心没数据时不冤枉人", () => {
@@ -208,17 +195,17 @@ describe("buildGraph", () => {
     expect(noServices.nodes.find((n) => n.kind === "task")!.issues).toEqual([]);
   });
 
-  it("没有任务消费的主题给黄色提示而不是错误", () => {
+  it("没有任务消费的数据抽取给黄色提示而不是错误", () => {
     const graph = buildGraph({
       datasources: [ds("iot")],
       sources: [src("region_incr", "source:region_incr")],
       tasks: [],
       services: [],
     });
-    const topic = graph.nodes.find((n) => n.kind === "topic")!;
-    expect(topic.tone).toBe("warn");
-    expect(topic.hints.join()).toContain("没有任务消费");
-    expect(topic.issues).toEqual([]);
+    const source = graph.nodes.find((n) => n.kind === "source")!;
+    expect(source.tone).toBe("ok");
+    expect(source.hints.join()).toContain("没有任务消费");
+    expect(source.issues).toEqual([]);
   });
 });
 
@@ -282,7 +269,7 @@ describe("taskSegments", () => {
 });
 
 describe("布局", () => {
-  it("默认位置按类型分四列，同列按 key 递增", () => {
+  it("默认位置按类型分三列，同列按 key 递增", () => {
     const graph = buildGraph({
       datasources: [ds("b"), ds("a")],
       sources: [src("s", "t")],
@@ -294,8 +281,8 @@ describe("布局", () => {
     const b = pos[nodeId("datasource", "b")];
     expect(a.x).toBe(b.x);
     expect(a.y).toBeLessThan(b.y);
-    expect(pos[nodeId("source", "s")].x).toBeGreaterThan(a.x);
-    expect(pos[nodeId("task", "t")].x).toBeGreaterThan(pos[nodeId("source", "s")].x);
+    expect(pos[nodeId("source", "t")].x).toBeGreaterThan(a.x);
+    expect(pos[nodeId("task", "t")].x).toBeGreaterThan(pos[nodeId("source", "t")].x);
   });
 
   it("持久化坐标覆盖默认值，孤儿坐标被丢弃", () => {

@@ -23,7 +23,6 @@ import { useDatasources, useSourceMutations } from "@/hooks/use-sources";
 
 function newSource(): SourceSaveInput {
   return {
-    code: "",
     name: "",
     kind: "sql",
     topic: "",
@@ -48,7 +47,6 @@ function newSource(): SourceSaveInput {
 function fromSource(s: SyncSource): SourceSaveInput {
   return {
     id: s.id,
-    code: s.code,
     name: s.name,
     kind: s.kind,
     topic: s.topic,
@@ -129,7 +127,7 @@ export function SourceEditorDrawer({
         } else {
           toast.success(
             source ? "数据抽取已更新" : "数据抽取已创建",
-            `${saved.code} · 游标保留在 ${saved.topic}`,
+            `topic ${saved.topic} · 游标保留在上次水位`,
           );
         }
         onSaved?.();
@@ -144,7 +142,7 @@ export function SourceEditorDrawer({
       open={open}
       onClose={onClose}
       width={760}
-      title={source ? `编辑 ${source.code}` : "新增数据抽取"}
+      title={source ? `编辑 ${source.topic}` : "新增数据抽取"}
       subtitle="配完点「立即拉取」先验一轮；保存不会推进游标"
       badge={
         <Badge tone={issues.length > 0 ? "danger" : "success"} dot>
@@ -179,17 +177,8 @@ export function SourceEditorDrawer({
     >
       <div className="space-y-5">
         <section className="space-y-3">
-          <SectionTitle title="基本" hint="编码建好后不能改：虚拟 topic 和游标都按它指代" />
+          <SectionTitle title="基本" hint="topic 是任务关联键，也是画布上数据抽取节点的标识" />
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="编码" required error={err("code")} hint="小写字母 / 数字 / 下划线">
-              <Input
-                value={draft.code}
-                disabled={!!source}
-                placeholder="dtw_src_region"
-                className="font-mono text-[12.5px]"
-                onChange={(e) => patch({ code: e.target.value })}
-              />
-            </Field>
             <Field label="名称" required error={err("name")}>
               <Input value={draft.name} placeholder="区域增量拉取" onChange={(e) => patch({ name: e.target.value })} />
             </Field>
@@ -202,10 +191,10 @@ export function SourceEditorDrawer({
                 <option value="http">http — 分页拉接口</option>
               </Select>
             </Field>
-            <Field label="虚拟 topic" error={err("topic")} hint={<>留空自动生成 <code className="font-mono">source:{draft.code || "编码"}</code></>}>
+            <Field label="虚拟 topic" required error={err("topic")} hint="任务按它精确关联；形如 source:dtw_region，须唯一">
               <Input
-                value={draft.topic ?? ""}
-                placeholder="留空自动生成"
+                value={draft.topic}
+                placeholder="source:dtw_region"
                 className="font-mono text-[12.5px]"
                 onChange={(e) => patch({ topic: e.target.value })}
               />
@@ -482,7 +471,7 @@ export function SourceEditorDrawer({
         <div className="flex items-start gap-2 rounded-lg bg-sunken/70 px-3 py-2 text-[11px] leading-relaxed text-muted">
           <DatabaseZap className="mt-0.5 size-3.5 shrink-0" />
           <span>
-            数据抽取把行包进虚拟 topic <code className="font-mono">{draft.topic?.trim() || `source:${draft.code || "编码"}`}</code>；
+            数据抽取把行包进虚拟 topic <code className="font-mono">{draft.topic.trim() || "source:…"}</code>；
             要真正投递，还得有一个监听这个 topic 的同步任务。改抽取配置不会让执行器立刻生效，任务那边保存时会自动通知各副本刷新快照。
           </span>
         </div>
@@ -545,7 +534,7 @@ export function RemoveSourceDialog({
   return (
     <ConfirmDialog
       open={!!source}
-      title={`删除数据抽取 ${source?.code ?? ""}？`}
+      title={`删除数据抽取 ${source?.topic ?? ""}？`}
       description="配置与游标会一起删掉（syn_cursor 级联）。已经投递到下游的数据不受影响；下次用同名重建会从零水位重跑。"
       confirmText="删除"
       loading={remove.isPending}
@@ -554,7 +543,7 @@ export function RemoveSourceDialog({
         if (!source) return;
         remove.mutate(source.id, {
           onSuccess: () => {
-            toast.success("数据抽取已删除", `${source.code} 的配置与游标已清除`);
+            toast.success("数据抽取已删除", `${source.topic} 的配置与游标已清除`);
             onClose();
           },
           onError: (e: Error) => toast.error("删除失败", e.message),

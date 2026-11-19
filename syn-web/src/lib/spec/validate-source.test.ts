@@ -11,10 +11,9 @@ import type { SourceSaveInput } from "@/lib/api/types";
 import { validateSource } from "./validate-source";
 
 const valid = (): SourceSaveInput => ({
-  code: "adm_person",
   name: "人员表",
   kind: "sql",
-  topic: "",
+  topic: "source:adm_person",
   enabled: true,
   intervalDuration: "60s",
   batchSize: 500,
@@ -44,9 +43,9 @@ describe("validateSource", () => {
     expect(validateSource(input)).toEqual([]);
   });
 
-  it("空编码只报一条错，不把必填与格式错误叠加", () => {
-    const issues = validateSource({ ...valid(), code: "" });
-    expect(issues.filter((i) => i.path === "code")).toHaveLength(1);
+  it("空 topic 只报一条错，不把必填与格式错误叠加", () => {
+    const issues = validateSource({ ...valid(), topic: "" });
+    expect(issues.filter((i) => i.path === "topic")).toHaveLength(1);
   });
 
   it("缺数据源 / 表名 / 主游标 / 决胜字段各自定位到 spec 字段", () => {

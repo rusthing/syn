@@ -32,9 +32,9 @@
 `kind = db` 时 `actions` 必须为空（留着就是永远不会被读的配置），判定段也只许出现
 `$.affected`（`syn-api::validate_actions` / `validate_db_verdict`，前端 `validateSpec` 同构）。
 
-关键：`poll` 把一批数据写成**虚拟 topic** `source:{code}`（`code` 是 `syn_source.code`）。
-任务通过 `topic` 关联，所以**匹配 / 映射 / 校验完全不需要知道这条记录是推来的还是拉来的**。
-这是整个设计里最省事的一刀。
+关键：`poll` 把一批数据写进数据抽取自己声明的**虚拟 topic**（形如 `source:dtw_region`，
+`topic` 是 `syn_source` 必填且唯一的业务键）。任务通过 `topic` 关联，所以**匹配 / 映射 /
+校验完全不需要知道这条记录是推来的还是拉来的**。这是整个设计里最省事的一刀。
 
 ---
 
@@ -194,7 +194,8 @@ db 与 http 有两处**不是同一份语义**，照抄会写出恒真/恒假的
 | `syn_cursor` | 每个数据抽取的水位 + 最近一次错误 |
 | `syn_idem` | 幂等记账（task_id + idem_key） |
 
-`syn_source.topic` = `source:{id}`，任务照常按 topic 关联，规则段不用改。
+`syn_source.topic` 由配置人填写（形如 `source:dtw_region`），既作任务关联键，也作
+数据抽取在控制面板上的节点标识；任务照常按 topic 关联，规则段不用改。
 
 ---
 

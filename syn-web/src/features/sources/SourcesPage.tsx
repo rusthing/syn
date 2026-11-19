@@ -61,7 +61,7 @@ export function SourcesPage() {
     <>
       <PageHeader
         title="数据抽取"
-        subtitle="没有 CDC 的表靠自拉：全量快照或复合游标增量，写进虚拟 topic source:{code}，五段完全不知道数据是推来的还是拉来的。"
+        subtitle="没有 CDC 的表靠自拉：全量快照或复合游标增量，写进各自的虚拟 topic，五段完全不知道数据是推来的还是拉来的。"
         actions={
           <Button
             variant="primary"
@@ -205,7 +205,7 @@ function SourceCard({
         }
         subtitle={
           <span className="font-mono">
-            {source.code} → {source.topic}
+            {source.topic}
           </span>
         }
         actions={

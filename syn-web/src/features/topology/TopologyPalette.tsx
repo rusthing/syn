@@ -5,11 +5,9 @@
  * 不用先跑到数据源 / 数据抽取 / 任务的维护页。保存成功后节点按默认位置上图
  * （坐标落在本类列的第一个空位，之后可拖）。
  *
- * 主题不放进来：它是虚拟节点，由数据抽取写入、被任务消费，没有「新建」可言 ——
- * 但仍列出来置灰，告诉用户图里那列灰色药丸是什么。
  */
 
-import { Database, Layers, MousePointerClick, Radio, Workflow } from "lucide-react";
+import { Database, MousePointerClick, Radio, Workflow } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /** 可新建的三类；颜色与卡片 tone 一致（info / violet / accent） */
@@ -70,15 +68,6 @@ export function TopologyPalette({
           {item.label}
         </button>
       ))}
-      {/* 主题不是「被禁用的按钮」：它压根没有新建动作，用虚线说明块表达，
-          键盘不必 Tab 到一个永远点不动的 disabled button 上 */}
-      <div
-        title="主题是虚拟节点：由数据抽取写入、被任务消费，图上自动生成，不需要手动添加"
-        className="flex flex-col items-center gap-1 rounded-lg border border-dashed border-line px-1 py-2.5 text-[11.5px] text-muted"
-      >
-        <Layers className="size-4" />
-        主题
-      </div>
       {/* 窄窗口下组件栏只有 76px，这行说明硬塞会把字拆得七零八落 */}
       <p className="mt-auto hidden px-1 pt-1 text-[11px] leading-relaxed text-muted xl:block">
         点选新建 · 保存即上图

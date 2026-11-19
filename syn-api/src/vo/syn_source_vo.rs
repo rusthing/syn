@@ -46,8 +46,6 @@ impl From<CursorModel> for SynCursorVo {
 pub struct SynSourceVo {
     /// ID
     pub id: U64,
-    /// 抽取编码
-    pub code: String,
     /// 名称
     pub name: String,
     /// 抽取方式
@@ -93,7 +91,6 @@ impl From<SourceModel> for SynSourceVo {
     fn from(m: SourceModel) -> Self {
         Self {
             id: U64::from(m.id),
-            code: m.code,
             name: m.name,
             kind: SourceKind::from_i16(m.kind).unwrap_or_default(),
             topic: m.topic,

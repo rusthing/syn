@@ -19,7 +19,7 @@
  *
  * 任务卡另有两个额外约定：
  * - 六段可点，但**点了不弹窗**，只把右侧属性栏切到那一段的详情（`onOpenStage`）；
- * - 独占开关钉在主题连线落进卡片的位置（顶边中点），语义就是「命中即止 / 分叉继续」。
+ * - 独占开关钉在数据抽取连线落进卡片的位置（顶边中点），语义就是「命中即止 / 分叉继续」。
  *
  * 颜色只区分「哪一类节点」，状态只用标签表达 —— 一屏几十张卡时，颜色一多就
  * 分不清哪个是错误色、哪个是类型色。
@@ -29,7 +29,6 @@ import {
   ArrowDownToLine,
   Database,
   GripVertical,
-  Layers,
   Pencil,
   Play,
   Plug,
@@ -65,7 +64,6 @@ export const NO_DRAG_ATTR = "data-no-drag";
 export const CARD_SIZE: Record<CanvasNodeKind, { w: number; h: number }> = {
   datasource: { w: 268, h: 140 },
   source: { w: 292, h: 140 },
-  topic: { w: 220, h: 56 },
   task: { w: 620, h: 178 },
 };
 
@@ -79,7 +77,6 @@ export const GRIP_ATTR = "data-grip";
 const KIND_META: Record<CanvasNodeKind, { label: string; icon: typeof Database; accent: string }> = {
   datasource: { label: "数据源", icon: Database, accent: "text-info" },
   source: { label: "数据抽取", icon: Radio, accent: "text-violet" },
-  topic: { label: "主题", icon: Layers, accent: "text-muted" },
   task: { label: "任务", icon: Workflow, accent: "text-accent" },
 };
 
@@ -314,7 +311,7 @@ const EXCLUSIVE_HINT = {
 } as const;
 
 /**
- * 独占开关：钉在主题连线落进卡片的位置（顶边中点）。
+ * 独占开关：钉在数据抽取连线落进卡片的位置（顶边中点）。
  *
  * 图标就是语义：独占 = 命中即止（箭头落地，数据到这张卡为止）；非独占 = 分叉继续
  * （数据还会流给后面的任务）。点击直接改 spec.exclusive 保存，不用进窗体。
@@ -619,7 +616,9 @@ export function TaskCard({
 
       <div className="mt-0.5 flex items-center gap-1.5">
         <span className="truncate text-[13.5px] font-medium text-ink">{node.title}</span>
-        <span className="ml-auto shrink-0 font-mono text-[11.5px] text-muted">{node.key}</span>
+        <span className="ml-auto shrink-0 truncate font-mono text-[11.5px] text-muted">
+          {task?.topic ?? ""}
+        </span>
       </div>
 
       <div className="mt-1.5 flex items-stretch gap-1">
@@ -688,34 +687,3 @@ export function TaskCard({
   );
 }
 
-/* --------------------------------- 主题 --------------------------------- */
-
-export function TopicCard({
-  node,
-  selected,
-  onHint,
-}: {
-  node: GraphNode;
-  selected: boolean;
-  onHint?: HintHandler;
-}) {
-  const detail = [...node.issues, ...node.hints].filter(Boolean).join("\n");
-  return (
-    <div
-      onMouseEnter={(e) => detail && onHint?.(e, detail)}
-      onMouseLeave={() => onHint?.(null, "")}
-      className={cn(
-        "flex h-14 w-full cursor-pointer flex-col justify-center rounded-full border bg-sunken px-4",
-        selected ? "border-accent ring-2 ring-accent/25" : "border-line hover:border-line-strong",
-        node.tone === "warn" && "bg-warn-soft",
-      )}
-    >
-      <div className="flex items-center gap-1.5">
-        <Layers className="size-3 shrink-0 text-muted" />
-        <span className="truncate font-mono text-[12.5px] text-ink">{node.title}</span>
-        <Flags node={node} onHint={onHint} />
-      </div>
-      <span className="mt-0.5 truncate pl-4 text-[11.5px] text-muted">{node.subtitle}</span>
-    </div>
-  );
-}

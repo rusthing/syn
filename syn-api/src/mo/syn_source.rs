@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 /// # 数据抽取（poll）
 ///
 /// 一个抽取定义的一批数据可以喂给多个任务，任务侧不需要知道数据是推来的还是拉来的：
-/// `topic` 写成虚拟 topic `source:{code}`，五段规则照常按 topic 匹配。
+/// `topic` 是数据抽取与任务关联的唯一键（形如 `source:adm_person_full`），
+/// 五段规则照常按 topic 匹配。
 ///
 /// `kind` 决定 `spec` 的形状（sql 的全量快照 / 游标增量 / http 的地址与分页），
 /// 三种都产出行 JSON，形态一致。
@@ -17,14 +18,11 @@ pub struct Model {
     /// 主键
     #[sea_orm(primary_key, auto_increment = false, unique)]
     pub id: i64,
-    /// 数据抽取编码，虚拟 topic 由它拼出
-    #[sea_orm(unique)]
-    pub code: String,
     /// 名称
     pub name: String,
     /// 抽取方式，见 `SourceKind`
     pub kind: i16,
-    /// 虚拟 topic，形如 `source:adm_person_full`
+    /// 虚拟 topic，形如 `source:adm_person_full`；任务按它精确关联
     #[sea_orm(unique)]
     pub topic: String,
     /// 是否参与调度（停用不影响已配的游标，重新启用从原水位继续）

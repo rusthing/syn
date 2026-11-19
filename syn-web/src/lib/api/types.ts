@@ -219,15 +219,15 @@ export interface TaskSpec {
 /* ---------- 拓扑画布 ---------- */
 
 /**
- * 画布节点类型，与后端 `CanvasNodeType`（`syn_canvas_layout.node_type`，INT2 1..4）
- * 一一对应。字符串只在适配层出现，落库与接口一律用整数。
+ * 画布节点类型，与后端 `CanvasNodeType`（`syn_canvas_layout.node_type`）一一对应。
+ * 字符串只在适配层出现，落库与接口一律用整数（1 数据源 / 2 数据抽取 / 4 任务）。
  */
-export type CanvasNodeKind = "datasource" | "source" | "topic" | "task";
+export type CanvasNodeKind = "datasource" | "source" | "task";
 
 /** 一个节点的世界坐标（与缩放无关） */
 export interface CanvasNodePos {
   kind: CanvasNodeKind;
-  /** 数据源 / 数据抽取填 code，任务填 id，主题填 topic 名 */
+  /** 数据源填 code，数据抽取填 topic，任务填 id */
   key: string;
   x: number;
   y: number;
@@ -319,11 +319,10 @@ export interface SourceSpec {
 export interface SourceSaveInput {
   /** 有 id 走 PUT 修改，没有走 POST 新增；不会发给后端，仅给门面选路由 */
   id?: string;
-  code: string;
   name: string;
   kind: SourceKind;
-  /** 留空由服务端按 `source:{code}` 生成 */
-  topic?: string;
+  /** 必填：任务按它精确关联，也是画布上数据抽取节点的标识 */
+  topic: string;
   enabled: boolean;
   intervalDuration: string;
   batchSize: number;
@@ -416,7 +415,6 @@ export interface ServiceOption {
 
 export interface SyncSource extends Audit {
   id: string;
-  code: string;
   name: string;
   kind: SourceKind;
   topic: string;
@@ -532,7 +530,6 @@ export interface PanelDatasource {
 
 /** 导出的数据抽取：只有配置，不含游标与运行结果 */
 export interface PanelSource {
-  code: string;
   name: string;
   kind: SourceKind;
   topic: string;

@@ -1,12 +1,12 @@
 /**
  * 泳道布局的单测。只锁三件会画错图的事：
- * 1. 一个主题一条泳道，主题节点跨行居中、抽取/任务各占一行；
+ * 1. 一个 topic 一条泳道，抽取/任务各占一行（topic 只作分组键，不再是节点）；
  * 2. 共用数据源去重、落在第一条引用它的那一行，其余连线弯过去；
  * 3. 没有主题 / 没被引用的孤儿节点不丢，落进最后一条泳道。
  */
 import { describe, expect, it } from "vitest";
 import type { DatasourceInfo, SyncSource, SyncTask, TaskSpec } from "@/lib/api/types";
-import { buildGraph, nodeId } from "./graph";
+import { buildGraph } from "./graph";
 import { buildLanes, ORPHAN_LANE, orderedTaskIds } from "./lanes";
 
 const audit = {
@@ -34,7 +34,6 @@ function ds(code: string): DatasourceInfo {
 function src(code: string, topic: string, datasource = "iot"): SyncSource {
   return {
     id: code,
-    code,
     name: `${code} 抽取`,
     kind: "sql",
     topic,
@@ -89,7 +88,7 @@ function task(id: string, topic: string, sortOrder = 100): SyncTask {
 }
 
 describe("buildLanes", () => {
-  it("一个主题一条泳道：抽取在左、主题跨行居中、任务在右", () => {
+  it("一个 topic 一条泳道：抽取在左、任务在右，topic 只作分组键", () => {
     const graph = buildGraph({
       datasources: [ds("iot")],
       sources: [src("a", "dtw.region"), src("b", "dtw.region")],
@@ -101,8 +100,7 @@ describe("buildLanes", () => {
     expect(model.lanes).toHaveLength(1);
     const lane = model.lanes[0];
     expect(lane.key).toBe("dtw.region");
-    expect(lane.topic?.id).toBe(nodeId("topic", "dtw.region"));
-    expect(lane.sources.map((n) => n.key)).toEqual(["a", "b"]);
+    expect(lane.sources.map((n) => n.key)).toEqual(["dtw.region", "dtw.region"]);
     // 任务按 sort_order 升序，即匹配优先级
     expect(lane.tasks.map((n) => n.key)).toEqual(["t2", "t1"]);
     expect(orderedTaskIds(lane)).toEqual(["t2", "t1"]);
@@ -167,7 +165,7 @@ describe("buildLanes", () => {
 
     const orphan = model.lanes.find((l) => l.key === ORPHAN_LANE);
     expect(orphan).toBeDefined();
-    expect(orphan!.sources.map((n) => n.key)).toEqual(["no-topic"]);
+    expect(orphan!.sources.map((n) => n.key)).toEqual([""]);
     expect(orphan!.tasks.map((n) => n.key)).toEqual(["no-topic-task"]);
     expect(model.datasources.map((s) => s.node.key)).toEqual(["orphan-ds"]);
   });

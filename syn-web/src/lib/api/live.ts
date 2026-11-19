@@ -90,7 +90,6 @@ interface WireCursor {
 
 interface WireSource {
   id: string;
-  code: string;
   name: string;
   /** 字典枚举，`#[dic]` 序列化成 INT2：0 = sql，1 = http */
   kind: number;
@@ -143,7 +142,7 @@ interface WireDatasourceTest {
 }
 
 /** `GET /syn/registry/services` 的候选项，已是 camelCase 的简单结构 */
-/** `syn_canvas_layout` 的行：`nodeType` 是 `#[dic]` 的 INT2（1..4） */
+/** `syn_canvas_layout` 的行：`nodeType` 是 `#[dic]` 的 INT2（1 / 2 / 4） */
 interface WireCanvasNode {
   nodeType: number;
   nodeKey: string;
@@ -287,7 +286,6 @@ function toSource(v: WireSource): SyncSource {
   const cursor = v.cursor;
   return {
     id: v.id,
-    code: v.code,
     name: v.name,
     kind: (v.kind === 1 ? "http" : "sql") as SourceKind,
     topic: v.topic,
@@ -550,14 +548,12 @@ export const liveDatasources = {
 const CANVAS_KIND_OF: Record<number, CanvasNodeKind> = {
   1: "datasource",
   2: "source",
-  3: "topic",
   4: "task",
 };
 
 const CANVAS_TYPE_OF: Record<CanvasNodeKind, number> = {
   datasource: 1,
   source: 2,
-  topic: 3,
   task: 4,
 };
 
@@ -702,7 +698,6 @@ interface WirePanelDatasource {
 }
 
 interface WirePanelSource {
-  code: string;
   name: string;
   kind?: number;
   topic?: string;
@@ -760,7 +755,6 @@ function toPanelDatasource(v: WirePanelDatasource): PanelDatasource {
 
 function toPanelSource(v: WirePanelSource): PanelSource {
   return {
-    code: v.code,
     name: v.name,
     kind: (v.kind === 1 ? "http" : "sql") as SourceKind,
     topic: v.topic ?? "",
@@ -843,10 +837,9 @@ export const livePanel = {
           ...(d.remark?.trim() ? { remark: d.remark.trim() } : {}),
         })),
         sources: input.sources.map((s) => ({
-          code: s.code,
           name: s.name,
           kind: s.kind === "http" ? 1 : 0,
-          topic: s.topic.trim() || undefined,
+          topic: s.topic.trim(),
           enabled: s.enabled,
           intervalDuration: s.interval_duration,
           batchSize: s.batch_size,

@@ -6,11 +6,11 @@
  * 库里只存节点坐标（`syn_canvas_layout`）。这样「图」永远和业务表一致 ——
  * 不可能出现「任务已经删了、图上还挂着」或者「改了引用关系、线还连着老的」。
  *
- * 主题（topic）是拼出来的虚拟节点：CDC 直接产 topic（没有抽取记录），数据抽取
- * 写 `source:{code}` 虚拟 topic。所以 topic 节点的生产者集合 = 写了它的抽取，
- * 消费者集合 = 匹配它的任务；两边都为空的 topic 不存在，不会被画出来。
+ * topic 不再画成节点：它只是数据抽取与任务之间的关联键。数据抽取写的 topic
+ * 与任务监听的 topic 相同就连一条线（一个抽取可喂多个任务）。CDC 直接产
+ * topic（没有本地抽取记录），这些任务就没有入边 —— 图上照常显示。
  *
- * 方向就是数据流：数据源 → 数据抽取 → 主题 → 任务。投递不画成节点 ——
+ * 方向就是数据流：数据源 → 数据抽取 → 任务。投递不画成节点 ——
  * 它是任务的第四段（第 5 段动作的 path 相对它的 base，第 6 段判定看的是它换来的响应），画到卡里（见 `Card`），
  * 否则多个任务投同一个服务时会连出一堆交叉线，还把「投递目标」误当成共享实体。
  */
@@ -63,9 +63,9 @@ export interface GraphNode {
   datasource?: DatasourceInfo;
   /** 任务卡的规则段 */
   segments?: TaskSegment[];
-  /** 主题节点：写它的数据抽取数 / 消费它的任务数 */
-  producers: number;
-  consumers: number;
+  /** 数据源：被几条抽取引用（属性栏展示用）；其它类型不需要 */
+  producers?: number;
+  consumers?: number;
 }
 
 export interface GraphEdge {
@@ -238,66 +238,33 @@ export function buildGraph({
 
     const modeLabel =
       src.kind === "http" ? "http 分页" : (src.spec.mode ?? "cursor") === "snapshot" ? "全量快照" : "游标增量";
+    // 没有任务监听这个 topic，拉到的事件就没人消费 —— 原来挂在主题节点上的
+    // 警告挪到抽取卡片上，免得去掉主题节点后这条真实风险消失
+    if (src.enabled && !tasks.some((t) => t.topic === src.topic)) {
+      hints.push("没有任务消费这个 topic，拉到的事件会被丢掉");
+    }
+
     nodes.push({
-      id: nodeId("source", src.code),
+      id: nodeId("source", src.topic),
       kind: "source",
-      key: src.code,
+      key: src.topic,
       title: src.name,
-      subtitle: `${modeLabel} · ${src.interval_duration} · ${src.topic}`,
+      subtitle: `${modeLabel} · ${src.interval_duration}`,
       tone: !src.enabled ? "muted" : issues.length ? "bad" : "ok",
       status: !src.enabled ? "停用" : src.last_error ? "异常" : "运行中",
       issues,
       hints,
       source: src,
-      producers: 0,
-      consumers: 0,
     });
 
     if (dsCode) {
       edges.push({
-        id: `e:${nodeId("datasource", dsCode)}->${nodeId("source", src.code)}`,
+        id: `e:${nodeId("datasource", dsCode)}->${nodeId("source", src.topic)}`,
         from: nodeId("datasource", dsCode),
-        to: nodeId("source", src.code),
+        to: nodeId("source", src.topic),
         muted: !src.enabled,
       });
     }
-  }
-
-  /* 主题：数据抽取与任务两边的 topic 求并集 */
-  const topicNames = new Set<string>();
-  for (const s of sources) if (s.topic) topicNames.add(s.topic);
-  for (const t of tasks) if (t.topic) topicNames.add(t.topic);
-
-  for (const topic of topicNames) {
-    const producers = sources.filter((s) => s.topic === topic).length;
-    const consumers = tasks.filter((t) => t.topic === topic).length;
-    const hints: string[] = [];
-    if (producers === 0) hints.push("没有在本控制台登记的数据抽取（走 CDC 推来的可忽略）");
-    if (consumers === 0 && producers > 0) hints.push("没有任务消费这个主题，拉到的事件会被丢掉");
-
-    nodes.push({
-      id: nodeId("topic", topic),
-      kind: "topic",
-      key: topic,
-      title: topic,
-      subtitle: `${producers} 个数据抽取写入 · ${consumers} 个任务消费`,
-      tone: consumers === 0 ? "warn" : "ok",
-      status: consumers === 0 ? "无消费" : "正常",
-      issues: [],
-      hints,
-      producers,
-      consumers,
-    });
-  }
-
-  for (const src of sources) {
-    if (!src.topic) continue;
-    edges.push({
-      id: `e:${nodeId("source", src.code)}->${nodeId("topic", src.topic)}`,
-      from: nodeId("source", src.code),
-      to: nodeId("topic", src.topic),
-      muted: !src.enabled,
-    });
   }
 
   /* 任务 + 投递段 */
@@ -335,16 +302,19 @@ export function buildGraph({
       hints,
       task,
       segments,
-      producers: 0,
-      consumers: 0,
     });
+  }
 
-    if (task.topic) {
+  /* 数据抽取 → 任务：topic 相等就连一条（一个抽取可喂多个任务） */
+  for (const src of sources) {
+    if (!src.topic) continue;
+    for (const task of tasks) {
+      if (!task.topic || task.topic !== src.topic) continue;
       edges.push({
-        id: `e:${nodeId("topic", task.topic)}->${nodeId("task", task.id)}`,
-        from: nodeId("topic", task.topic),
+        id: `e:${nodeId("source", src.topic)}->${nodeId("task", task.id)}`,
+        from: nodeId("source", src.topic),
         to: nodeId("task", task.id),
-        muted: !task.enabled,
+        muted: !src.enabled || !task.enabled,
       });
     }
   }
@@ -360,7 +330,7 @@ export function buildGraph({
 /* -------------------------------- 布局 -------------------------------- */
 
 /** 列序即数据流方向 */
-const KIND_ORDER: CanvasNodeKind[] = ["datasource", "source", "topic", "task"];
+const KIND_ORDER: CanvasNodeKind[] = ["datasource", "source", "task"];
 
 /** 同列纵向间距：要容下最高的一种卡（任务卡 178：类型行 + 名称 + 六段 + 状态栏 + 操作行）与呼吸 */
 const ROW_GAP = 198;
@@ -378,7 +348,6 @@ const PER_COLUMN = 12;
 const COLUMN_W: Record<CanvasNodeKind, number> = {
   datasource: 268,
   source: 292,
-  topic: 220,
   task: 620,
 };
 
@@ -397,7 +366,6 @@ export function defaultPositions(nodes: GraphNode[]): Record<string, CanvasNodeP
   const byKind: Record<CanvasNodeKind, GraphNode[]> = {
     datasource: [],
     source: [],
-    topic: [],
     task: [],
   };
   for (const node of nodes) byKind[node.kind].push(node);

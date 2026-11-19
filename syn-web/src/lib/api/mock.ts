@@ -409,7 +409,6 @@ const MOCK_HTTP_PAGES = new Map<string, number>();
 let SOURCES: SyncSource[] = [
   {
     id: "1900000000000000011",
-    code: "dtw_src_region",
     name: "区域增量拉取",
     kind: "sql",
     topic: "source:dtw_region",
@@ -437,7 +436,6 @@ let SOURCES: SyncSource[] = [
   },
   {
     id: "1900000000000000012",
-    code: "dtw_src_locator",
     name: "定位器绑定增量拉取",
     kind: "sql",
     topic: "source:dtw_locator_bind",
@@ -465,7 +463,6 @@ let SOURCES: SyncSource[] = [
   },
   {
     id: "1900000000000000013",
-    code: "adt_src_person",
     name: "人员主数据（HTTP 分页）",
     kind: "http",
     topic: "source:adt_person",
@@ -908,21 +905,21 @@ export const mockSources = {
 
   async save(input: SourceSaveInput): Promise<SyncSource> {
     const now = String(Date.now());
-    const code = input.code.trim();
-    if (!input.id && SOURCES.some((s) => s.code === code)) {
-      throw new Error(`数据抽取编码 ${code} 已存在`);
+    const topic = input.topic.trim();
+    if (!topic) throw new Error("虚拟 topic 必填");
+    if (!input.id && SOURCES.some((s) => s.topic === topic)) {
+      throw new Error(`虚拟 topic ${topic} 已被占用`);
     }
     const current = input.id ? SOURCES.find((s) => s.id === input.id) : undefined;
     if (input.id && !current) throw new Error(`数据抽取 ${input.id} 不存在`);
-    if (current && current.code !== code) {
-      throw new Error("数据抽取编码不可修改：虚拟 topic 与游标都按它指代");
+    if (current && current.topic !== topic && SOURCES.some((s) => s.topic === topic)) {
+      throw new Error(`虚拟 topic ${topic} 已被占用`);
     }
     const next: SyncSource = {
       id: current?.id ?? String(19_0000_0000 + (idSeq += 1)),
-      code,
       name: input.name.trim(),
       kind: input.kind,
-      topic: input.topic?.trim() || `source:${code}`,
+      topic,
       enabled: input.enabled,
       interval_duration: input.intervalDuration.trim(),
       batch_size: input.batchSize,
@@ -1127,7 +1124,6 @@ export const mockPanel = {
         target: d.target ?? null,
       })),
       sources: SOURCES.map((s) => ({
-        code: s.code,
         name: s.name,
         kind: s.kind,
         topic: s.topic,
@@ -1192,7 +1188,7 @@ export const mockPanel = {
 
     const sc = { created: 0, updated: 0, skipped: 0 };
     for (const row of input.sources) {
-      const existing = SOURCES.find((s) => s.code === row.code);
+      const existing = SOURCES.find((s) => s.topic === row.topic);
       if (existing) {
         if (mode === "skip") {
           sc.skipped += 1;
@@ -1200,7 +1196,6 @@ export const mockPanel = {
         }
         await mockSources.save({
           id: existing.id,
-          code: row.code,
           name: row.name,
           kind: row.kind,
           topic: row.topic,
@@ -1213,7 +1208,6 @@ export const mockPanel = {
         sc.updated += 1;
       } else {
         await mockSources.save({
-          code: row.code,
           name: row.name,
           kind: row.kind,
           topic: row.topic,

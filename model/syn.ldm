@@ -2334,19 +2334,6 @@ topic / sort_order / enabled / exclusive 以本表的列为准，spec 里的同�
 <o:EntityAttribute Ref="o52"/>
 </c:Identifier.Attributes>
 </o:Identifier>
-<o:Identifier Id="o68">
-<a:ObjectID>340E6EE8-EF1E-562F-A462-E54064999D33</a:ObjectID>
-<a:Name>数据源编码</a:Name>
-<a:Code>code</a:Code>
-<a:CreationDate>1794481012</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794481012</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<c:Identifier.Attributes>
-<o:EntityAttribute Ref="o53"/>
-</c:Identifier.Attributes>
-</o:Identifier>
 <o:Identifier Id="o69">
 <a:ObjectID>E8C6C3C4-2860-5C11-84C7-ED7A4F70C0A6</a:ObjectID>
 <a:Name>虚拟topic</a:Name>
@@ -2376,22 +2363,6 @@ topic / sort_order / enabled / exclusive 以本表的列为准，spec 里的同�
 <a:Comment>ID
 由 idworker 生成，全局唯一</a:Comment>
 <a:DataType>LI</a:DataType>
-<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
-<a:GlobalObjectID/>
-</o:EntityAttribute>
-<o:EntityAttribute Id="o53">
-<a:ObjectID>6DD2DD27-AEF3-598B-8B01-9D08A2ACDC27</a:ObjectID>
-<a:Name>抽取编码</a:Name>
-<a:Code>code</a:Code>
-<a:CreationDate>1794481012</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794481012</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:Comment>抽取编码
-如 adm_person_full；虚拟 topic 由它拼出
-@len 1..=64</a:Comment>
-<a:DataType>VA64</a:DataType>
-<a:Length>64</a:Length>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
 <a:GlobalObjectID/>
 </o:EntityAttribute>

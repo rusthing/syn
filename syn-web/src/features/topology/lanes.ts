@@ -5,14 +5,14 @@
  * 「监听器 → 路由 → 目标 → 后端」图的结构：
  *
  * ```
- * 数据源(col1) → 数据抽取(col2) → 主题(col3) → 任务(col4)
+ * 数据源(col1) → 数据抽取(col2) → 任务(col3)
  * ```
  *
  * ## 行由「主题」决定
  *
- * 一个主题 = 一条泳道。写它的抽取排在 col2、读它的任务排在 col4，各占一行；
- * 主题节点在 col3 跨这几行并垂直居中 —— 视觉上就是一根「数据总线」，几条抽取
- * 汇进来、几个任务分出去。行数是 `max(抽取数, 任务数, 1)`，多出来的一侧留空。
+ * 一个 topic = 一条泳道。写它的抽取排在 col2、读它的任务排在 col3，各占一行；
+ * topic 本身不再画成节点，只作为泳道的分组键（一条线从抽取直连任务）。
+ * 行数是 `max(抽取数, 任务数, 1)`，多出来的一侧留空。
  *
  * ## 为什么数据源去重
  *
@@ -40,9 +40,7 @@ export interface Lane {
   key: string;
   /** 写这个主题的抽取（col2），每行一个 */
   sources: GraphNode[];
-  /** 跨行居中的主题节点（col3）；孤儿泳道没有 */
-  topic?: GraphNode;
-  /** 读这个主题的任务（col4），按 sort_order 排，每行一个 */
+  /** 读这个 topic 的任务（col3），按 sort_order 排，每行一个 */
   tasks: GraphNode[];
   /** 该泳道第一行在 grid 里的行号（1 基） */
   startRow: number;
@@ -72,7 +70,6 @@ const bySort = (a: GraphNode, b: GraphNode) =>
   (a.task?.sort_order ?? 0) - (b.task?.sort_order ?? 0) || a.id.localeCompare(b.id);
 
 interface Bucket {
-  topic?: GraphNode;
   sources: GraphNode[];
   tasks: GraphNode[];
 }
@@ -80,17 +77,19 @@ interface Bucket {
 export function buildLanes(graph: TopologyGraph): SwimlaneModel {
   const datasources = graph.nodes.filter((n) => n.kind === "datasource");
   const sources = graph.nodes.filter((n) => n.kind === "source");
-  const topics = graph.nodes.filter((n) => n.kind === "topic");
   const tasks = graph.nodes.filter((n) => n.kind === "task");
   const dsByCode = new Map(datasources.map((d) => [d.key, d]));
 
-  /* 先按主题分桶；孤儿先归拢好，后面才知道要不要留最后一道间隔 */
+  /* 先按 topic 分桶：抽取与任务两边的 topic 求并集；孤儿先归拢好 */
+  const topicNames = new Set<string>();
+  for (const s of sources) if (s.source?.topic) topicNames.add(s.source.topic);
+  for (const t of tasks) if (t.task?.topic) topicNames.add(t.task.topic);
   const buckets: Array<{ key: string; bucket: Bucket }> = [];
   const bucketByTopic = new Map<string, Bucket>();
-  for (const topic of topics.slice().sort(byKey)) {
-    const bucket: Bucket = { topic, sources: [], tasks: [] };
-    bucketByTopic.set(topic.key, bucket);
-    buckets.push({ key: topic.key, bucket });
+  for (const topic of [...topicNames].sort()) {
+    const bucket: Bucket = { sources: [], tasks: [] };
+    bucketByTopic.set(topic, bucket);
+    buckets.push({ key: topic, bucket });
   }
 
   const orphan: Bucket = { sources: [], tasks: [] };
@@ -133,7 +132,6 @@ export function buildLanes(graph: TopologyGraph): SwimlaneModel {
     const rowCount = Math.max(bucket.sources.length, bucket.tasks.length, 1);
     lanes.push({
       key,
-      topic: bucket.topic,
       sources: bucket.sources,
       tasks: bucket.tasks,
       startRow: row,

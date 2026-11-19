@@ -4,8 +4,8 @@
 //!
 //! 1. **`spec` 的形状按 `kind` / `mode` 分支校验**（sql 必须有表名，游标增量还要
 //!    主游标 + 决胜字段；http 必须有 url），拼错的配置不应该等调度器跑起来才炸；
-//! 2. **虚拟 topic 由服务端拼**：`source:{code}` 是约定，让调用方手填会填出三种写法，
-//!    而任务侧是按 topic 精确匹配的。
+//! 2. **topic 必填且唯一**：它是任务侧精确匹配的关联键，也是画布上数据抽取节点的
+//!    标识；两个抽取共用同一个 topic 会串数据，保存前先查占用者。
 //!
 //! 水位放在 `syn_cursor` 里，改配置不动它：停用再启用应该从原水位继续，不是从头重跑。
 
@@ -40,7 +40,6 @@ impl SynSourceSvc {
         if let Some(kw) = dto.keyword.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             cond = cond.add(
                 Condition::any()
-                    .add(Column::Code.contains(kw))
                     .add(Column::Name.contains(kw))
                     .add(Column::Topic.contains(kw)),
             );
@@ -53,7 +52,7 @@ impl SynSourceSvc {
         }
         let (page_num, total, rows) = SynSourceDao::page_by_condition::<_, Model>(
             cond,
-            &Some("code:asc".to_string()),
+            &Some("topic:asc".to_string()),
             U64(dto.page_num()),
             U64(dto.page_size()),
             db.as_ref(),
@@ -77,7 +76,7 @@ impl SynSourceSvc {
         let db = get_db_conn()?;
         let rows = SynSourceDao::list_by_condition::<_, Model>(
             Condition::all(),
-            &Some("code:asc".to_string()),
+            &Some("topic:asc".to_string()),
             db.as_ref(),
         )
         .await?;
@@ -111,23 +110,11 @@ impl SynSourceSvc {
         let parsed = parse_spec(&dto)?;
         let topic = topic_of(&dto);
         let db = get_db_conn()?;
-        if SynSourceDao::get_by_condition::<_, Model>(
-            Condition::all().add(Column::Code.eq(dto.code.trim())),
-            db.as_ref(),
-        )
-        .await?
-        .is_some()
-        {
-            return Err(invalid(
-                "code",
-                format!("数据抽取编码 {} 已存在", dto.code.trim()),
-            ));
-        }
         // 库里对 topic 有唯一约束，但撞约束只会回一个 500；先查一遍，把冲突对象说清楚
         ensure_topic_available(&topic, None, db.as_ref()).await?;
         let model = SynSourceDao::insert(build_model(&dto, parsed, topic, None, user), db.as_ref())
             .await?;
-        info!("数据抽取 {} 已创建（id={}）", model.code, model.id);
+        info!("数据抽取 {} 已创建（id={}）", model.topic, model.id);
         Ok(SynSourceVo::from(model))
     }
 
@@ -143,16 +130,6 @@ impl SynSourceSvc {
         let existing = SynSourceDao::get_by_id::<_, Model>(id, db.as_ref())
             .await?
             .ok_or_else(|| SvcError::NotFound(format!("数据抽取 {id} 不存在")))?;
-        if existing.code != dto.code.trim() {
-            return Err(invalid(
-                "code",
-                format!(
-                    "数据抽取编码不可修改（当前 {}，提交 {}）：虚拟 topic 与游标都按它指代",
-                    existing.code,
-                    dto.code.trim()
-                ),
-            ));
-        }
         // 水位只对「当初那套抽取定义」有意义：定义一换，旧值可能把历史数据整段跳过
         // （例如主游标从 updated_at 换成 created_at，类型都一样，但含义全变）。
         // 这里只判「要不要清」，真正清在更新成功之后做，避免保存失败也把水位弄丢。
@@ -169,11 +146,11 @@ impl SynSourceSvc {
             db.as_ref(),
         )
         .await?;
-        info!("数据抽取 {} 已更新到 v{}", model.code, model.version);
+        info!("数据抽取 {} 已更新到 v{}", model.topic, model.version);
         if reset_water_level {
-            let code = model.code.clone();
+            let topic = model.topic.clone();
             poll::reset_full(id).await?;
-            info!("数据抽取 {code} 的抽取定义变更，水位已清空，下一轮从起点重跑");
+            info!("数据抽取 {topic} 的抽取定义变更，水位已清空，下一轮从起点重跑");
         }
         // 改配置不动水位，但响应里也要把它带上：PUT 返回 `cursor: null` 会让调用方
         // 以为「还没跑过」，与 list / get 的形状不一致。
@@ -220,9 +197,9 @@ impl SynSourceSvc {
         let model = SynSourceDao::get_by_id::<_, Model>(id, db.as_ref())
             .await?
             .ok_or_else(|| SvcError::NotFound(format!("数据抽取 {id} 不存在")))?;
-        let code = model.code.clone();
+        let topic = model.topic.clone();
         SynSourceDao::delete(model.into_active_model(), db.as_ref()).await?;
-        info!("数据抽取 {code} 已删除");
+        info!("数据抽取 {topic} 已删除");
         Ok(())
     }
 
@@ -286,21 +263,16 @@ pub(crate) async fn ensure_topic_available<C: ConnectionTrait>(
             "topic",
             format!(
                 "虚拟 topic {} 已被数据抽取 {}（{}）占用；任务按 topic 精确匹配，两个数据抽取不能共用一个",
-                topic, other.code, other.name
+                topic, other.topic, other.name
             ),
         ));
     }
     Ok(())
 }
 
-/// 虚拟 topic：留空由服务端按约定拼
+/// 虚拟 topic：必填，去掉首尾空白（校验阶段已拦空串）
 pub(crate) fn topic_of(dto: &SynSourceSaveDto) -> String {
-    dto.topic
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("source:{}", dto.code.trim()))
+    dto.topic.trim().to_string()
 }
 
 /// # 由 DTO 推导实体
@@ -332,7 +304,6 @@ pub(crate) fn build_model(
             am
         }
     };
-    am.code = sea_orm::ActiveValue::Set(dto.code.trim().to_string());
     am.name = sea_orm::ActiveValue::Set(dto.name.trim().to_string());
     am.kind = sea_orm::ActiveValue::Set(i16::from(dto.kind));
     am.topic = sea_orm::ActiveValue::Set(topic);
@@ -437,7 +408,7 @@ pub async fn enabled_sources() -> Result<Vec<Model>, SvcError> {
     let db = get_db_conn()?;
     Ok(SynSourceDao::list_by_condition::<_, Model>(
         Condition::all().add(Column::Enabled.eq(true)),
-        &Some("code:asc".to_string()),
+        &Some("topic:asc".to_string()),
         db.as_ref(),
     )
     .await?)

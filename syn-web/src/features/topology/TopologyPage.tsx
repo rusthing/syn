@@ -2,12 +2,12 @@
  * # 控制面板
  *
  * 一张泳道图看清「数据从哪来、经过哪些任务、投到哪去」（学习 uiam 网关配置图）：
- * 数据源 → 数据抽取 → 主题 → 任务，一条泳道就是一个主题；节点按引用关系自动排布，
+ * 数据源 → 数据抽取 → 任务，一条泳道就是一个 topic；节点按引用关系自动排布，
  * **不再自由拖拽、坐标不再入库**。投递是任务卡里的一段（判定看投递响应），不单独建节点。
  *
  * 图不落库：节点来自三张业务表，连线来自它们之间的引用。所以图不可能和真实配置
  * 不一致 —— 这也意味着 **不能在这里直接改引用关系**：改「数据抽取用哪个数据源」
- * 要回表单，图只负责呈现与跳转。唯一可拖的是任务卡把手，在同一主题泳道内调整
+ * 要回表单，图只负责呈现与跳转。唯一可拖的是任务卡把手，在同一 topic 泳道内调整
  * 匹配顺序（写 `spec.sort_order`，与任务表单保存同一条路径）。
  *
  * 操作都在卡片上，属性栏只读：
@@ -396,7 +396,7 @@ export function TopologyPage() {
   const selectedNode = graph.nodes.find((n) => n.id === selectedId) ?? null;
 
   const issueNodes = graph.nodes.filter((n) => n.issues.length > 0);
-  // 只有「主题没人消费」这种会真丢数据的才上条；「没登记生产者」走 CDC 时是常态，
+  // 只有「没有任务消费这个 topic」这种会真丢数据的才上条；CDC 源没有本地抽取是常态，
   // 全列出来会把条占满，反而盖住真问题（它仍写在卡片 tip 里）
   const warnNodes = graph.nodes.filter(
     (n) => !n.issues.length && n.hints.some((h) => h.includes("没有任务消费")),
@@ -423,7 +423,6 @@ export function TopologyPage() {
     if (node.task) return setEditing({ kind: "task", task: node.task, tab: "match" });
     if (node.source) return setEditing({ kind: "source", source: node.source });
     if (node.datasource) return setEditing({ kind: "datasource", datasource: node.datasource });
-    toast.info("主题是虚拟节点", "它由数据抽取写入、被任务消费；改两端的卡片即可。");
   };
 
   /** 卡里点某一段：只切属性栏，不弹窗体 */
@@ -437,7 +436,6 @@ export function TopologyPage() {
     if (node.task) return setRemoving({ kind: "task", task: node.task });
     if (node.source) return setRemoving({ kind: "source", source: node.source });
     if (node.datasource) return setRemoving({ kind: "datasource", datasource: node.datasource });
-    toast.info("主题是虚拟节点", "它不由本页维护。");
   };
 
   const confirmRemove = () => {
@@ -478,7 +476,7 @@ export function TopologyPage() {
     <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader
         title="控制面板"
-        subtitle="一个主题一条泳道：数据源 → 数据抽取 → 主题 → 任务。图按引用关系自动排布；题头右缘拖动可调列宽（本机记住、双击复位），拖动任务把手改匹配顺序，双击卡片进编辑。"
+        subtitle="一个 topic 一条泳道：数据源 → 数据抽取 → 任务，抽取按 topic 直连任务。图按引用关系自动排布；题头右缘拖动可调列宽（本机记住、双击复位），拖动任务把手改匹配顺序，双击卡片进编辑。"
         actions={
           <>
             <Button
@@ -688,7 +686,7 @@ export function TopologyPage() {
   );
 }
 
-/** 警示条只放节点名：主题节点的 `source:` 前缀在四列图里是冗余信息 */
+/** 警示条只放节点名：topic 的 `source:` 前缀在三列图里是冗余信息 */
 function shortNodeName(title: string): string {
   return title.replace(/^source:/, "");
 }

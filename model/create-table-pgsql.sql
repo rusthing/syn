@@ -247,7 +247,6 @@ create_ms
 /*==============================================================*/
 create table syn_source (
    id                   INT8                 not null,
-   code                 VARCHAR(64)          not null,
    name                 VARCHAR(100)         not null,
    kind                 INT2                 not null,
    topic                VARCHAR(255)         not null,
@@ -262,7 +261,6 @@ create table syn_source (
    updater_id           INT8                 not null,
    update_ms            INT8                 not null,
    constraint PK_SYN_SOURCE primary key (id),
-   constraint AK_CODE_SYN_SOURCE unique (code),
    constraint AK_TOPIC_SYN_SOURCE unique (topic)
 );
 
@@ -272,11 +270,6 @@ comment on table syn_source is
 comment on column syn_source.id is
 'ID
 由 idworker 生成，全局唯一';
-
-comment on column syn_source.code is
-'抽取编码
-如 adm_person_full；虚拟 topic 由它拼出
-@len 1..=64';
 
 comment on column syn_source.name is
 '名称
@@ -537,12 +530,11 @@ comment on column syn_canvas_layout.node_type is
 @enum CanvasNodeType default=Task
   1=Datasource  数据源
   2=Source      数据抽取
-  3=Topic       主题
   4=Task        任务';
 
 comment on column syn_canvas_layout.node_key is
 '节点标识
-数据源 / 数据抽取填各自的 code，任务填主键 id，主题填 topic 名
+数据源填 code，数据抽取填 topic，任务填主键 id
 @len 1..=128';
 
 comment on column syn_canvas_layout.x is

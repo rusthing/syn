@@ -17,35 +17,35 @@ import {
 } from "./layout-prefs";
 
 describe("泳道列宽", () => {
-  it("没存过（null / 非数组）就是默认四列", () => {
+  it("没存过（null / 非数组）就是默认三列", () => {
     expect(normalizeLaneColumns(null)).toEqual([...DEFAULT_LANE_COLUMNS]);
     expect(normalizeLaneColumns({ a: 1 })).toEqual([...DEFAULT_LANE_COLUMNS]);
     expect(normalizeLaneColumns("268,292")).toEqual([...DEFAULT_LANE_COLUMNS]);
   });
 
-  it("按位置补齐：只存了两列，后两列回默认", () => {
-    expect(normalizeLaneColumns([300, 400])).toEqual([300, 400, 220, 620]);
+  it("按位置补齐：只存了两列，最后一列回默认", () => {
+    expect(normalizeLaneColumns([300, 400])).toEqual([300, 400, 620]);
   });
 
-  it("多余的列忽略，不改变前四列", () => {
-    expect(normalizeLaneColumns([300, 400, 250, 700, 999])).toEqual([300, 400, 250, 700]);
+  it("多余的列忽略，不改变前三列", () => {
+    expect(normalizeLaneColumns([300, 400, 400, 700, 999])).toEqual([300, 400, 400]);
   });
 
   it("单列越界收进该列区间", () => {
     expect(clampLaneColumn(0, 100)).toBe(180);
     expect(clampLaneColumn(0, 5000)).toBe(560);
-    expect(clampLaneColumn(3, 100)).toBe(320);
-    expect(clampLaneColumn(3, 2400)).toBe(1600);
+    expect(clampLaneColumn(2, 100)).toBe(320);
+    expect(clampLaneColumn(2, 2400)).toBe(1600);
   });
 
   it("非数字 / 0 / 负数回落到该列默认，而不是压成 0 宽", () => {
-    expect(clampLaneColumn(2, Number.NaN)).toBe(220);
-    expect(clampLaneColumn(2, 0)).toBe(220);
+    expect(clampLaneColumn(1, Number.NaN)).toBe(292);
+    expect(clampLaneColumn(1, 0)).toBe(292);
     expect(clampLaneColumn(1, -40)).toBe(292);
   });
 
   it("存进去的值本身就是越界的（比如手改了 localStorage）也照样收", () => {
-    expect(normalizeLaneColumns([12, 900, 40, 8000])).toEqual([180, 640, 150, 1600]);
+    expect(normalizeLaneColumns([12, 900, 3200])).toEqual([180, 640, 1600]);
   });
 });
 

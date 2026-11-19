@@ -22,7 +22,7 @@ pub struct Model {
     pub id: i64,
     /// 节点类型，见 `CanvasNodeType`
     pub node_type: i16,
-    /// 节点标识：数据源 / 数据抽取 / 任务填 code，主题填 topic 名
+    /// 节点标识：数据源填 code，数据抽取填 topic，任务填 id
     pub node_key: String,
     /// 画布横坐标（世界坐标）
     pub x: i32,

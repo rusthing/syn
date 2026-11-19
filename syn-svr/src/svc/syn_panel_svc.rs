@@ -57,8 +57,8 @@ impl SynPanelSvc {
     /// # 导出整张面板的配置
     ///
     /// 只读三张业务表，不读 `syn_cursor`：运行状态不进文件。
-    /// 数据源按 `code` 升序、任务按 `sort_order, id` 升序 —— 文件里的顺序稳定，
-    /// 两次导出可以直接 diff。
+    /// 数据源按 `code` 升序、数据抽取按 `topic` 升序、任务按 `sort_order, id` 升序 ——
+    /// 文件里的顺序稳定，两次导出可以直接 diff。
     pub async fn export() -> Result<SynPanelExportVo, SvcError> {
         let db = get_db_conn()?;
         let datasources = SynDatasourceDao::list_by_condition::<_, DatasourceModel>(
@@ -69,7 +69,7 @@ impl SynPanelSvc {
         .await?;
         let sources = SynSourceDao::list_by_condition::<_, SourceModel>(
             Condition::all(),
-            &Some("code:asc".to_string()),
+            &Some("topic:asc".to_string()),
             db.as_ref(),
         )
         .await?;
@@ -126,7 +126,7 @@ struct Dirty {
 
 /// # 事务内写入三类组件
 ///
-/// 顺序固定为 数据源 → 数据抽取 → 任务：后者按 `code` / 数据源名引用前者，
+/// 顺序固定为 数据源 → 数据抽取 → 任务：后者按 `topic` / 数据源名引用前者，
 /// 先写引用方会在事务里读到「引用的数据源不存在」。
 async fn write_panel(
     tx: &DatabaseTransaction,
@@ -199,30 +199,30 @@ async fn write_panel(
 
     let existing_sources = SynSourceDao::list_by_condition::<_, SourceModel>(
         Condition::all(),
-        &Some("code:asc".to_string()),
+        &Some("topic:asc".to_string()),
         tx,
     )
     .await?;
-    let mut src_by_code: HashMap<String, SourceModel> = existing_sources
+    // 去掉 code 后，topic 是数据抽取的唯一业务键：既是关联键，也是导入识别身份
+    let mut src_by_topic: HashMap<String, SourceModel> = existing_sources
         .into_iter()
-        .map(|m| (m.code.clone(), m))
+        .map(|m| (m.topic.clone(), m))
         .collect();
-    unique_codes(sources.iter().map(|s| s.code.as_str()), "数据抽取")?;
+    unique_codes(sources.iter().map(|s| s.topic.as_str()), "数据抽取")?;
 
     let mut src_counts = SynPanelImportCounts::default();
     let mut watermarks_reset = 0u32;
     for s in sources {
-        let code = s.code.trim().to_string();
+        s.validate()?;
+        let parsed = parse_source_spec(&s)
+            .map_err(|e| invalid("sources", format!("数据抽取 {} 的 spec 不合法：{e}", s.topic.trim())))?;
+        let topic = topic_of(&s);
         // 仅补缺模式：已存在的抽取连 spec 都不解析，避免一条坏配置拖垮整批
-        if mode == SynPanelImportMode::Skip && src_by_code.contains_key(&code) {
+        if mode == SynPanelImportMode::Skip && src_by_topic.contains_key(&topic) {
             src_counts.skipped += 1;
             continue;
         }
-        s.validate()?;
-        let parsed = parse_source_spec(&s)
-            .map_err(|e| invalid("sources", format!("数据抽取 {} 的 spec 不合法：{e}", code)))?;
-        let topic = topic_of(&s);
-        let existing = src_by_code.get(&code).cloned();
+        let existing = src_by_topic.get(&topic).cloned();
 
         // 引用检查放在写入前：抽引用一个文件里没带、库里也没有的数据源，
         // 保存能过但下一轮取数必失败，属于导入阶段就该拦下的错
@@ -237,7 +237,7 @@ async fn write_panel(
         {
             return Err(invalid(
                 "datasources",
-                format!("数据抽取 {code} 引用的数据源 {name} 既不在导入文件里、也不在当前环境"),
+                format!("数据抽取 {topic} 引用的数据源 {name} 既不在导入文件里、也不在当前环境"),
             ));
         }
 
@@ -252,7 +252,7 @@ async fn write_panel(
                 let new_spec = SourceSpec::parse(&s.spec).unwrap_or_default();
                 let reset = cursor_basis_changed(old_kind, &old_spec, s.kind, &new_spec);
 
-                let am = build_source_model(&s, parsed, topic, Some(existing), user);
+                let am = build_source_model(&s, parsed, topic.clone(), Some(existing), user);
                 let model = SynSourceDao::update(am, tx).await?;
                 if reset {
                     // 定义一变，旧水位可能把历史数据整段跳过：删游标行，下一轮 load_cursor
@@ -267,14 +267,14 @@ async fn write_panel(
                         watermarks_reset += 1;
                     }
                 }
-                src_by_code.insert(code, model);
+                src_by_topic.insert(topic.clone(), model);
                 src_counts.updated += 1;
             }
             (None, _) => {
                 ensure_topic_available(&topic, None, tx).await?;
-                let am = build_source_model(&s, parsed, topic, None, user);
+                let am = build_source_model(&s, parsed, topic.clone(), None, user);
                 let model = SynSourceDao::insert(am, tx).await?;
-                src_by_code.insert(code, model);
+                src_by_topic.insert(topic.clone(), model);
                 src_counts.created += 1;
             }
         }
@@ -394,7 +394,6 @@ fn export_datasource(m: DatasourceModel) -> SynPanelDatasourceVo {
 
 fn export_source(m: SourceModel) -> SynPanelSourceVo {
     SynPanelSourceVo {
-        code: m.code,
         name: m.name,
         kind: SourceKind::from_i16(m.kind).unwrap_or_default(),
         topic: m.topic,

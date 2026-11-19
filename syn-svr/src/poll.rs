@@ -98,13 +98,13 @@ async fn pull(id: U64) -> Result<SynSourcePullVo, SvcError> {
     let spec = SourceSpec::parse(&source.spec).map_err(|e| {
         SvcError::Runtime(anyhow::anyhow!(
             "数据抽取 {} 的 spec 不合法: {e}",
-            source.code
+            source.topic
         ))
     })?;
     spec.validate(kind).map_err(|issues| {
         SvcError::Runtime(anyhow::anyhow!(
             "数据抽取 {} 的 spec 不合法: {}",
-            source.code,
+            source.topic,
             issues
                 .iter()
                 .map(|i| i.to_string())
@@ -151,7 +151,7 @@ async fn pull_sql(
     let fetched = match fetch_sql(source, spec, cursor.cursor_value.as_deref()).await {
         Ok(v) => v,
         Err(e) => {
-            warn!("数据抽取 {} 拉取失败: {e}", source.code);
+            warn!("数据抽取 {} 拉取失败: {e}", source.topic);
             save_error(cursor, run_ms, Some(e.as_str())).await?;
             out.duration_ms = started.elapsed().as_millis() as u64;
             return Ok(with_stalled(out, e));
@@ -181,7 +181,7 @@ async fn pull_sql(
             // 另一轮已经推进过水位：本轮投递已发生，但水位以对方为准，不回写
             warn!(
                 "数据抽取 {} 的游标被并发更新，本轮不回写（下游重复由幂等吸收）",
-                source.code
+                source.topic
             );
             out.position = None;
             out.duration_ms = started.elapsed().as_millis() as u64;
@@ -196,7 +196,7 @@ async fn pull_sql(
     out.duration_ms = started.elapsed().as_millis() as u64;
     info!(
         "数据抽取 {} 拉取完成：{} 行，成功 {} / 跳过 {} / 失败 {} / 重试 {}，水位 {:?}",
-        source.code, out.rows, out.success, out.skip, out.fatal, out.retriable, out.position
+        source.topic, out.rows, out.success, out.skip, out.fatal, out.retriable, out.position
     );
     Ok(out)
 }
@@ -218,7 +218,7 @@ async fn pull_snapshot(
     if let SnapshotCursor::Done { rows } = state {
         info!(
             "数据抽取 {} 的全量快照已完成（{} 行），本轮跳过",
-            source.code, rows
+            source.topic, rows
         );
         out.full_done = Some(true);
         out.duration_ms = started.elapsed().as_millis() as u64;
@@ -233,7 +233,7 @@ async fn pull_snapshot(
         let rows = match fetch_snapshot_page(source, spec, offset).await {
             Ok(v) => v,
             Err(e) => {
-                warn!("数据抽取 {} 拉取失败: {e}", source.code);
+                warn!("数据抽取 {} 拉取失败: {e}", source.topic);
                 save_error(cursor, run_ms, Some(e.as_str())).await?;
                 out.duration_ms = started.elapsed().as_millis() as u64;
                 out.full_done = Some(false);
@@ -260,7 +260,7 @@ async fn pull_snapshot(
             if !advance_cursor(cursor, Some(&value), out.rows as i64, run_ms, None).await? {
                 warn!(
                     "数据抽取 {} 的游标被并发更新，本轮不回写（下游重复由幂等吸收）",
-                    source.code
+                    source.topic
                 );
                 out.position = None;
                 out.full_done = Some(false);
@@ -272,7 +272,7 @@ async fn pull_snapshot(
             out.duration_ms = started.elapsed().as_millis() as u64;
             info!(
                 "数据抽取 {} 全量快照完成：累计 {} 行（本轮 {} 行）",
-                source.code, total, out.rows
+                source.topic, total, out.rows
             );
             return Ok(out);
         }
@@ -308,7 +308,7 @@ async fn pull_http(
         // 已完成：直接返回，不去打源接口。手工改库或 reset 才能重跑
         info!(
             "数据抽取 {} 的全量已完成（{} 行），本轮跳过",
-            source.code, rows
+            source.topic, rows
         );
         out.full_done = Some(true);
         out.duration_ms = started.elapsed().as_millis() as u64;
@@ -331,7 +331,7 @@ async fn pull_http(
     let page = match fetch_http_page(source, spec, &start_cursor).await {
         Ok(p) => p,
         Err(e) => {
-            warn!("数据抽取 {} 拉取失败: {e}", source.code);
+            warn!("数据抽取 {} 拉取失败: {e}", source.topic);
             save_error(cursor, run_ms, Some(e.as_str())).await?;
             out.duration_ms = started.elapsed().as_millis() as u64;
             out.full_done = Some(false);
@@ -359,7 +359,7 @@ async fn pull_http(
     if !advance_cursor(cursor, Some(&new_value), out.rows as i64, run_ms, None).await? {
         warn!(
             "数据抽取 {} 的游标被并发更新，本轮不回写（下游重复由幂等吸收）",
-            source.code
+            source.topic
         );
         out.position = None;
         out.full_done = Some(false);
@@ -373,12 +373,12 @@ async fn pull_http(
     if done {
         info!(
             "数据抽取 {} 全量同步完成：累计 {} 行（本轮 {} 行）",
-            source.code, total, out.rows
+            source.topic, total, out.rows
         );
     } else {
         info!(
             "数据抽取 {} 全量同步推进：本轮 {} 行，累计 {} 行，下一页游标 {:?}",
-            source.code,
+            source.topic,
             out.rows,
             total,
             out.position
@@ -1180,7 +1180,7 @@ pub async fn poll_due_sources() -> (usize, usize) {
         let id = U64::from(s.id);
         match pull_once(id).await {
             Ok(_) => pulled += 1,
-            Err(e) => warn!("调度器拉取数据抽取 {} 失败: {e}", s.code),
+            Err(e) => warn!("调度器拉取数据抽取 {} 失败: {e}", s.topic),
         }
     }
     (scanned, pulled)
