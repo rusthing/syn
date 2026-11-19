@@ -1,0 +1,9 @@
+-- syn 数据库迁移基线：create-index（PD 表达不了的补充对象）
+--
+-- syn 目前没有 PowerDesigner 表达不了的索引（部分索引 / 表达式索引）。
+-- 三个非主键查询索引（idx_syn_idem_create_ms、idx_syn_delivery_log_create_ms、
+-- idx_syn_delivery_log_task_id）由 model/create-table-pgsql.sql 生成、已随
+-- create-table.sql 落地，本文件不重复创建，避免「同一索引建两次」。
+-- 将来出现部分 / 表达式 / 手工性能索引时，再补进本文件。
+--
+-- 保留这个文件是为了让基线保持「建表 / 建索引 / 初始化数据」的固定结构。
