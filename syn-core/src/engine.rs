@@ -204,18 +204,17 @@ pub async fn execute_db<D: DbWriter + ?Sized>(
         );
     };
 
-    // 删除事件没有 after：映射出来的行必然是空的（`on_null` 全走 omit），
-    // 而 `delete ... where <key>` 只能从行里取键。Debezium 的 `before` 在
-    // `REPLICA IDENTITY DEFAULT` 下恰好只带主键，按 `target.key` 补齐即可 ——
-    // 与 http 出口的 `path_bindings`（`$.before.ID`）同源，只是那里拼进 URL。
+    // 删除事件没有 after：映射出来的行要么缺键、要么全是 null（`on_null: keep` 会把
+    // `$.after.id` 落成 null），而 `delete ... where <key>` 只能从行里取键。
+    // Debezium 的 `before` 在 `REPLICA IDENTITY DEFAULT` 下恰好只带主键，
+    // **只要 before 里有这个键就以它为准**，不能因为行里有个 null 就放过 ——
+    // 否则拼出 `where id = $1::int8` 绑 null，删不到任何行还报成功。
     let mut row = prepared.body;
     if prepared.op == Op::D {
         if let Some(before) = record.get("before").and_then(Value::as_object) {
             for key in &target.key {
-                if !row.contains_key(key) {
-                    if let Some(v) = before.get(key) {
-                        row.insert(key.clone(), v.clone());
-                    }
+                if let Some(v) = before.get(key).filter(|v| !v.is_null()) {
+                    row.insert(key.clone(), v.clone());
                 }
             }
         }
@@ -585,6 +584,7 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Mutex;
     use syn_api::DbTarget;
+    use syn_api::OnNull;
 
     /// 记录请求、返回固定响应的传输
     struct Mock {
@@ -931,6 +931,28 @@ mod tests {
             "after": null
         });
         let ex = execute_db(&db_spec(), &record, &db).await;
+        assert_eq!(ex.verdict, Verdict::Success);
+        let (_, _, op, row) = db.last.lock().unwrap().clone().unwrap();
+        assert_eq!(op, Op::D);
+        assert_eq!(row.get("id"), Some(&serde_json::json!(8821)));
+    }
+
+    #[tokio::test]
+    async fn db_delete_key_from_before_even_when_mapping_keeps_null() {
+        // 生产里的 db 任务用 `on_null: keep`：删除事件映射出来的行是「id=null」而不是「没 id」。
+        // 如果只在「缺键」时补 before，就会拼出 `where id = $1::int8` 绑 null ——
+        // 一行都删不掉还报成功，投影永远停在旧值。
+        let db = MockDb::new(1);
+        let mut spec = db_spec();
+        for row in &mut spec.mapping.rows {
+            row.on_null = OnNull::Keep;
+        }
+        let record = serde_json::json!({
+            "op": "d",
+            "before": {"id": 8821_i64},
+            "after": null
+        });
+        let ex = execute_db(&spec, &record, &db).await;
         assert_eq!(ex.verdict, Verdict::Success);
         let (_, _, op, row) = db.last.lock().unwrap().clone().unwrap();
         assert_eq!(op, Op::D);
