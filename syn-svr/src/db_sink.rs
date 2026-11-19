@@ -339,8 +339,7 @@ impl DbWriter for DbSinks {
             }
         }
 
-        let mut cols: Vec<&String> = row.keys().collect();
-        cols.sort();
+        let cols = bind_columns(target, op, row);
         let sql = build_sql(target, op, row, engine, &columns)?;
         debug!("db sink: {sql}");
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
@@ -357,6 +356,24 @@ impl DbWriter for DbSinks {
         })?;
         Ok(result.rows_affected())
     }
+}
+
+/// # 绑定哪些列、按什么顺序
+///
+/// 占位符顺序必须与 [`build_sql`] 完全一致：upsert 按行内列名字典序，删除**只按冲突键**
+/// 的顺序。删除语句只有一个 `where id = $1`，若还照整行绑，`$1` 拿到的就是字典序第一列
+/// （通常是 create_ms），删的是 `id = create_ms`，一行都删不掉却报成功。
+fn bind_columns<'a>(
+    target: &'a DbTarget,
+    op: Op,
+    row: &'a Map<String, Value>,
+) -> Vec<&'a String> {
+    if op == Op::D {
+        return target.key.iter().collect();
+    }
+    let mut cols: Vec<&String> = row.keys().collect();
+    cols.sort();
+    cols
 }
 
 /// # 拼 SQL
@@ -735,6 +752,22 @@ mod tests {
             sql,
             "delete from \"public\".\"dtw_person\" where \"id\" = $1::int8"
         );
+    }
+
+    #[test]
+    fn delete_binds_only_key_columns() {
+        // 删除语句只有一个占位符（冲突键），绑定时也必须只给这几个键。
+        // 照整行绑会把字典序第一列（这里 create_ms）绑成 $1，删的是 `id = create_ms`。
+        let mut m = Map::new();
+        m.insert("id".into(), serde_json::json!(8821));
+        m.insert("create_ms".into(), serde_json::json!(0));
+        m.insert("mobile".into(), serde_json::json!("13800000000"));
+        let target = t(&["id"], OnConflict::Update);
+        let cols = bind_columns(&target, Op::D, &m);
+        assert_eq!(cols, vec![&"id".to_string()]);
+        // upsert 相反：整行按字典序，与 values 列表一一对应
+        let cols = bind_columns(&target, Op::C, &m);
+        assert_eq!(cols, vec![&"create_ms".to_string(), &"id".to_string(), &"mobile".to_string()]);
     }
 
     #[test]
