@@ -20,8 +20,10 @@ port = 9008
 
 # 同步执行器自身配置（对应 AppConfig::syn）
 [syn]
-# 取数超时：拉一页数据的最长等待
+# 取数超时：拉一页数据的最长等待（单个源可用 spec.timeout_duration 覆盖）
 # pull-timeout = "30s"
+# 一轮心跳里同时拉几个源：缺省 4，1 等于退回串行
+# pull-concurrency = 4
 # 启动是否预加载任务快照
 # load-on-start = true
 
