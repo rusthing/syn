@@ -2840,6 +2840,21 @@ sql：mode（cursor 游标增量 / snapshot 全量快照）、table、sql（可�
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
 <a:GlobalObjectID/>
 </o:EntityAttribute>
+<o:EntityAttribute Id="o217">
+<a:ObjectID>FDB867E3-2E4E-487D-9A72-104D660959E1</a:ObjectID>
+<a:Name>engine</a:Name>
+<a:Code>engine</a:Code>
+<a:CreationDate>1795141024</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1795141024</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>engine</a:Comment>
+<a:History>ORG {70EBEF1F-A229-45A2-8AB9-E80CCC773051}
+DAT 1795141024</a:History>
+<a:DataType>SI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
 <o:EntityAttribute Id="o99">
 <a:ObjectID>DA5CD18D-8ADB-4E02-935C-767F96C32A77</a:ObjectID>
 <a:Name>连接串</a:Name>
@@ -3321,6 +3336,52 @@ match / mapping / guard / action / transport / verdict
 @len 0..=1000</a:Comment>
 <a:DataType>VA1000</a:DataType>
 <a:Length>1000</a:Length>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o218">
+<a:ObjectID>4DD74B94-89BA-4440-9D91-BA0593229AAD</a:ObjectID>
+<a:Name>'变更操作</a:Name>
+<a:Code>op</a:Code>
+<a:CreationDate>1795141024</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1795141024</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>'变更操作
+c / r / u / d；记录缺 op 或取值不合法时为空'</a:Comment>
+<a:History>ORG {39D3964E-0A1C-4F7D-BDC4-E2F167447332}
+DAT 1795141024</a:History>
+<a:DataType>VA8</a:DataType>
+<a:Length>8</a:Length>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o219">
+<a:ObjectID>982F8367-AB09-4509-9E54-7DAD8FE1D8C9</a:ObjectID>
+<a:Name>'实际发出的请求体快照（映射后的 JSON）</a:Name>
+<a:Code>request_body</a:Code>
+<a:CreationDate>1795141024</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1795141024</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>'实际发出的请求体快照（映射后的 JSON）
+映射段之前短路时为空；超长截断'</a:Comment>
+<a:History>ORG {D038266A-4CB4-4FC0-8E74-1BBDB27D14BC}
+DAT 1795141024</a:History>
+<a:DataType>TXT</a:DataType>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o220">
+<a:ObjectID>57F54DC6-6AE2-495D-8D75-7257D4A3F9C2</a:ObjectID>
+<a:Name>'下游响应体快照（JSON）</a:Name>
+<a:Code>response_body</a:Code>
+<a:CreationDate>1795141024</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1795141024</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>'下游响应体快照（JSON）
+传输失败 / DB 直写失败时为空；超长截断'</a:Comment>
+<a:History>ORG {C4E8CB3F-D50D-49F7-94C5-CF53960BE638}
+DAT 1795141024</a:History>
+<a:DataType>TXT</a:DataType>
 <a:GlobalObjectID/>
 </o:EntityAttribute>
 <o:EntityAttribute Id="o211">

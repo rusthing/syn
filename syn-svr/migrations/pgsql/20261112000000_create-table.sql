@@ -463,7 +463,8 @@ comment on column syn_datasource.name is
 @len 1..=100';
 
 comment on column syn_datasource.engine is
-'数据库引擎：0 PostgreSQL / 1 MySQL / 2 SQLite';
+'数据库引擎
+0 PostgreSQL / 1 MySQL / 2 SQLite';
 
 comment on column syn_datasource.url is
 '连接串

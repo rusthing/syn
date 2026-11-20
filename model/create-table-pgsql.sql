@@ -452,6 +452,11 @@ comment on column syn_datasource.name is
 '名称
 @len 1..=100';
 
+comment on column syn_datasource.engine is
+'数据库引擎
+0 PostgreSQL / 1 MySQL / 2 SQLite';
+
+
 comment on column syn_datasource.url is
 '连接串
 含账号密码；明文只写不回显，列表与详情一律脱敏，编辑时留空表示不修改
