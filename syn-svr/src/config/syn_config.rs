@@ -34,9 +34,16 @@ pub struct SynConfig {
     /// 是否启动时预加载快照（关掉方便空库启动）
     #[serde(default = "default_true")]
     pub load_on_start: bool,
-    /// 拉取数据源时的单次查询超时
+    /// 拉取数据源时的单次查询超时。单个源可以在 `spec.timeout_duration` 里覆盖它
     #[serde(default = "default_pull_timeout")]
     pub pull_timeout: String,
+    /// 一轮心跳里同时拉取的源数上限
+    ///
+    /// 单心跳扫所有源，但**不是串行**：一次到点的多个源按这个上限并发拉，
+    /// 一个慢源（全量快照、慢接口）不会把同拍的其它源一起压住。
+    /// 1 等于退回原来的串行行为；调大要留意源库连接数与 `[syn.datasources.X] max-connections`。
+    #[serde(default = "default_pull_concurrency")]
+    pub pull_concurrency: u32,
     /// 取数心跳计划。**默认就注册**，不需要在配置里出现：
     /// 周期取数归 jobx 管（多副本下一轮只跑一次），缺省一套参数即可跑。
     /// 只有想改参数或显式关掉时才写 `[syn.pull-job]`，见 [`PullJobConfig`]。
@@ -55,10 +62,10 @@ pub struct SynConfig {
 /// | 项 | 默认值 |
 /// |----|--------|
 /// | `enabled` | `true` |
-/// | `name` | `syn 取数心跳` |
+/// | `name` | `同步台取数心跳` |
 /// | `executor-code` | `syn.pull` |
 /// | `interval-duration` | `5s` |
-/// | `group-name` | `syn` |
+/// | `group-name` | `同步台` |
 /// | `task-expire-duration` | `1h` |
 ///
 /// 一个计划扫**所有**启用的数据源，而不是一个数据抽取一个计划：抽取定义是控制台随时增删的
@@ -66,9 +73,15 @@ pub struct SynConfig {
 /// `interval-duration` 最小 1s，jobx 的计划粒度撑不住。所以这里只负责「隔一会儿打一拍」，
 /// 「哪个源到点了」由 `poll::poll_due_sources` 判断。
 ///
+/// 一拍里到点的多个源**并发拉**（上限 `[syn] pull-concurrency`，缺省 4），
+/// 每个源还能用自己的 `spec.timeout_duration` 覆盖全局超时：慢源只拖慢自己，
+/// 不会把同拍其它源排在自己后面。
+///
 /// 因此**实际精度 = max(interval-duration, 每个源的 interval-duration)**；计划是 5s 时，
-/// 源配 1s 也只会 5s 拉一次。要更快就把这里的间隔调小，但高频计划的 `jobx_task`
-/// 会按「每天 86400 / 秒数」增长，所以 `task-expire-duration` 必须配。
+/// 源配 1s 也只会 5s 拉一次。要更快就调小这里的间隔：jobx 完全支持 1s —— 低于
+/// `high-freq-threshold`（默认 60s）的 FixedRate 计划会被判成高频，一次分派批成一段
+/// 连续执行（`jobx_task` 一段一行、段长 `high-freq-assign-interval` 默认 5 分钟），
+/// 段内按本间隔循环。代价是每一拍都要读一遍所有源的水位，1s × N 个源的空转查询不划算。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct PullJobConfig {
@@ -102,10 +115,10 @@ pub struct PullJobConfig {
 /// | 项 | 默认值 |
 /// |----|--------|
 /// | `enabled` | `true` |
-/// | `name` | `syn 过期数据清理` |
+/// | `name` | `同步台过期数据清理` |
 /// | `executor-code` | `syn.cleanup` |
 /// | `interval-duration` | `24h` |
-/// | `group-name` | `syn` |
+/// | `group-name` | `同步台` |
 /// | `task-expire-duration` | `1h` |
 /// | `retention-days` | `7` |
 /// | `batch-size` | `5000` |
@@ -173,6 +186,7 @@ impl Default for SynConfig {
             datasources: HashMap::new(),
             load_on_start: true,
             pull_timeout: default_pull_timeout(),
+            pull_concurrency: default_pull_concurrency(),
             pull_job: PullJobConfig::default(),
             cleanup_job: CleanupJobConfig::default(),
         }
@@ -214,6 +228,18 @@ impl SynConfig {
     pub fn pull_timeout(&self) -> Duration {
         humantime::parse_duration(&self.pull_timeout).unwrap_or(Duration::from_secs(30))
     }
+
+    /// 一轮心跳的并发取数上限。钳在 `1..=64`：0 会让到点的源一个都不拉
+    pub fn pull_concurrency(&self) -> usize {
+        (self.pull_concurrency as usize).clamp(1, 64)
+    }
+}
+
+/// 并发取数的缺省上限。4 是个保守值：够让慢源不挡住别人，又不会把源库连接打满
+pub const DEFAULT_PULL_CONCURRENCY: u32 = 4;
+
+fn default_pull_concurrency() -> u32 {
+    DEFAULT_PULL_CONCURRENCY
 }
 
 fn default_pull_timeout() -> String {
@@ -221,7 +247,7 @@ fn default_pull_timeout() -> String {
 }
 
 fn default_pull_job_name() -> String {
-    "syn 取数心跳".to_string()
+    "同步台取数心跳".to_string()
 }
 
 fn default_pull_job_executor() -> String {
@@ -229,13 +255,15 @@ fn default_pull_job_executor() -> String {
 }
 
 fn default_pull_job_interval() -> String {
-    // 不取 1s：jobx 每个周期落一行 jobx_task，1s 就是每天 8.6 万行，
-    // 而 syn 的源最小间隔本来也是 1s，5s 的误差对「5 秒重叠窗口」无影响
+    // 5s 是省空转的折中，不是 jobx 撑不住：高频计划一次分派批成一段连续执行，
+    // 段内按本间隔循环，`jobx_task` 一段一行（5 分钟一段），配 1s 一天也只多 288 行。
+    // 每一拍都要读一遍所有源的水位（N 次查询），1s × N 个源的空转查询不划算；
+    // 真要 1s 级取数，给那个源单独一条计划/执行器更合适。
     "5s".to_string()
 }
 
 fn default_pull_job_group() -> String {
-    "syn".to_string()
+    "同步台".to_string()
 }
 
 fn default_pull_job_expire() -> String {
@@ -243,7 +271,7 @@ fn default_pull_job_expire() -> String {
 }
 
 fn default_cleanup_job_name() -> String {
-    "syn 过期数据清理".to_string()
+    "同步台过期数据清理".to_string()
 }
 
 fn default_cleanup_job_executor() -> String {

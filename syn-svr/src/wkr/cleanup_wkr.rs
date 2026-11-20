@@ -102,7 +102,7 @@ async fn register(
 ) -> anyhow::Result<()> {
     init_jobx_executor(exec, Arc::new(CleanupHandler)).await?;
 
-    let group_id = ensure_job_group(&cfg.group_name, Some("syn 通用同步服务的周期任务")).await?;
+    let group_id = ensure_job_group(&cfg.group_name, Some("同步台通用同步服务的周期任务")).await?;
     let client = get_jobx_api_client()?;
     let mut add_dto: jobx_api::dto::JobxJobAddDto = job.into();
     add_dto.group_id = Some(Some(robotech::api::U64::from(group_id)));

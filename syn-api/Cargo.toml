@@ -15,6 +15,7 @@ strum = { workspace = true, features = ["derive"] }
 utoipa = { workspace = true }
 derive_setters = { workspace = true }
 typed-builder = { workspace = true }
+humantime = { workspace = true }
 wheel-rs = { workspace = true }
 robotech = { workspace = true, features = ["macros", "openapi"] }
 

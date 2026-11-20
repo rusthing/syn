@@ -72,6 +72,7 @@
 //! `{"http":{"done":true}}`，此后调度跳过；要重跑得显式 reset。
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -191,6 +192,12 @@ pub struct SourceSpec {
     /// 单页条数（http）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_size: Option<i32>,
+    /// 单源拉取超时（humantime，如 `10s` / `1m`）。留空用全局 `[syn] pull-timeout`
+    ///
+    /// 慢源（大表全量、慢接口）单独放宽，**不拖累同一次心跳里的其它源**；
+    /// 写错的值不会生效，保存时由 [`Self::validate`] 报出来。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_duration: Option<String>,
 }
 
 impl SourceSpec {
@@ -215,6 +222,18 @@ impl SourceSpec {
             .map(str::trim)
             .map(|s| s.trim_end_matches(';').trim())
             .filter(|s| !s.is_empty())
+    }
+
+    /// # 这个源自己的拉取超时
+    ///
+    /// 留空或写错都返回 `None`：调用方回落到全局 `[syn] pull-timeout`，
+    /// 不因为一个手滑的值让整轮取数无限等下去。
+    pub fn timeout(&self) -> Option<Duration> {
+        self.timeout_duration
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .and_then(|s| humantime::parse_duration(s).ok())
     }
 
     /// # 复合游标的两列：`[主游标, 决胜字段]`（已去空白，缺失的省略）
@@ -258,6 +277,22 @@ impl SourceSpec {
     /// 只查自相矛盾，不查「这条 SQL 跑不跑得通」—— 那要连源库，放在「立即拉取」里做。
     pub fn validate(&self, kind: SourceKind) -> Result<(), Vec<SpecIssue>> {
         let mut issues = Vec::new();
+
+        // 单源超时是可选项，但写了就必须能解析：写错值运行时只会静默回落全局值，
+        // 界面却显示「已经单独配过」，属于最难查的那类不一致，所以在保存时就拦下
+        if let Some(raw) = self
+            .timeout_duration
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            && humantime::parse_duration(raw).is_err()
+        {
+            issues.push(SpecIssue::new(
+                "spec.timeout_duration",
+                SpecIssueKind::Invalid,
+                "拉取超时要写成 humantime 形式，例如 10s / 1m / 500ms",
+            ));
+        }
 
         match kind {
             SourceKind::Sql => {

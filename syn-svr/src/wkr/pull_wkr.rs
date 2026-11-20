@@ -3,13 +3,57 @@
 //! ## 一个计划，不是一源一计划
 //!
 //! 数据源是控制台随时增删的配置行，`interval-duration` 最小 1s。如果按数据抽取注册计划，
-//! 每建一个源就要在写业务库的同时调一次 jobx，失败还得补偿；删源要反向停用；jobx
-//! 的计划粒度也撑不住 1s。所以这里只注册**一个**「心跳」计划，handler 每次调用
-//! `poll::poll_due_sources()` —— 读启用的源、看各自水位、到点的才拉。
+//! 每建一个源就要在写业务库的同时调一次 jobx，失败还得补偿；删源要反向停用；几十上百个源
+//! 就是几十上百条计划，jobx 的计划表与扫描窗口都被无谓撑大。所以这里只注册**一个**
+//! 「心跳」计划，handler 每次调用 `poll::poll_due_sources()` —— 读启用的源、看各自水位、
+//! 到点的才拉。
 //!
-//! 代价是精度：实际间隔 = `max(计划间隔, 源的 interval-duration)`。源配 1s、计划配 5s，
-//! 就是 5s 一次。想要更快就调小计划间隔，但必须同时配 `task-expire-duration`。注意
-//! `jobx_task` 是**批次**不是「每拍一行」：5s 间隔下每 5 分钟一条、内部跑 60 拍。
+//! 一拍里到点的多个源是**并发**拉的（上限 `[syn] pull-concurrency`，缺省 4），
+//! 每个源还能用 `spec.timeout_duration` 覆盖全局超时：一个慢源只占自己那份时间，
+//! 不会把同拍的其它源排在它后面。
+//!
+//! ## 精度
+//!
+//! **实际精度 = max(计划 interval, 每个源的 interval)**。源配 1s、计划配 5s，就是 5s
+//! 拉一次。
+//!
+//! jobx 本身**不限制** 1s：间隔小于 `high-freq-threshold`（默认 60s）的 FixedRate /
+//! FixedDelay 计划会被判成高频，一次分派批成**一段**连续执行（`jobx_task` 一段一行，
+//! 段长 `high-freq-assign-interval`，默认 5 分钟），执行器在段内按 `interval-duration`
+//! 循环，段终点 `exec_deadline_ms = 预定开始 + 段长`，下一段正好接上。所以这里配 1s
+//! 也能跑，`jobx_task` 一天只多 288 行。缺省用 5s 是省空转——每一拍都要读一遍所有源的
+//! 水位（N 次查询），1s × N 个源的空转查询不划算；真要 1s 级取数，给那个源单独一条
+//! 计划、单独一个 `executor-code` 更合适（一个执行器编码只能绑一个处理器，共用会让先
+//! 注册的那个静默失效）。
+//!
+//! ## 分布式：同一段只在一个副本上跑
+//!
+//! 执行器用消费者组（`XREADGROUP ... ">"`，消费者名=实例 id）订阅 Stream，一条消息只投给
+//! 组内**一个**消费者；`take` 成功即 ACK，配合 `jobx_task` 的
+//! `unique (job_id, scheduled_exec_start_ms)` 与 take/recalc 同事务，多个 jobx-svr 副本
+//! 重复发布同一计划也不会重复执行。所以同一段心跳只会落在一个 syn 副本上。
+//!
+//! syn 侧自己的保护只有两层：进程内 `IN_FLIGHT`（跨副本无效）和游标推进的
+//! `update_ms` 乐观锁（只保证水位不回退，**不阻止**另一个副本先把行投出去）。跨副本
+//! 重叠只可能来自「两条计划落到了不同副本」（例如改名前的旧计划没停用）、段交界处
+//! 上一段最后一个拍子跑过 `exec_deadline_ms`、以及手工 `POST /pull` 打到另一个副本——
+//! 这几种情况下重复行靠**下游 upsert** 吸收，pull 路径不带 `X-Idempotency-Key`，
+//! `syn_idem` 帮不上忙。
+//!
+//! **不需要再加一层分布式锁**：正常路径已经由 jobx 的消费者组保证「一段只在一个副本」，
+//! 剩下的窗口要么是配置错误（旧计划，启动时自动停用），要么是窄到一次拍子尾巴、
+//! 会被源自己的 `last_run_ms` 跳过的重拍。为这点重叠把 Redis 塞进取数路径，换来的是
+//! 一个新的故障面（锁 TTL 与源超时打架、Redis 抖动直接挡住取数），不划算。
+//!
+//! 这套结论依赖两个前提，配置时别改：执行器 `noack = false`、`last_only = false`，
+//! 且**一个 `executor-code` 只注册一条计划**。
+//!
+//! ## 计划名与分组名
+//!
+//! 缺省是 `同步台取数心跳` / 分组 `同步台`（历史版本叫 `syn 取数心跳` / 分组 `syn`）。
+//! 执行器编码仍是 `syn.pull`：它是 jobx 侧 Stream 的路由键，改它等于让**所有**旧计划
+//! 分派到没人订阅的 Stream，比改名更糟。旧名字的计划在启动时会被**自动停用**（只改
+//! `enabled`，计划和历史都留着），避免新旧两条计划打同一拍。
 //!
 //! ## 注册是幂等的
 //!
@@ -37,6 +81,7 @@ use jobx_wkr::{
     JobxExecutorConfig, JobxJobConfig, JobxTaskHandler,
 };
 use robotech::api::RO_CODE_WARNING_DUPLICATE_KEY;
+use robotech::cst::user_id_cst::SYS_OPERATOR_USER_ID;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -102,8 +147,64 @@ pub async fn setup_pull_wkr(
             "取数心跳未注册，本次启动不启用自动取数（sink 推送不受影响，\
              `POST /syn/source/{{id}}/pull` 仍可手工触发）：{e:#}"
         );
+    } else {
+        // 改名后 jobx 里可能还留着旧的同名同周期计划，直接停用，避免两条计划打同一拍
+        retire_legacy_jobs().await;
     }
     Ok(())
+}
+
+/// 改名前的计划名。启动时若发现仍启用，直接停用（只改 enabled，计划和历史都保留）
+const LEGACY_JOB_NAMES: [&str; 2] = ["syn 取数心跳", "syn 过期数据清理"];
+
+/// # 停用改名前的旧计划
+///
+/// 计划名从「syn …」改成「同步台…」后，jobx 里那条旧计划仍然是**启用**的：它照样按周期
+/// 分派，和新计划打同一拍。同一个执行器的消息走消费者组、一条只投给一个副本，正常情况下
+/// 不会双跑；但两条计划完全可能落在**不同副本**上 —— 那时 syn 只有「游标 CAS + 下游 upsert」
+/// 兜底，下游会收到重复行。所以这里把旧的直接停用。
+///
+/// 用 `modify` 只改 `enabled`，其余字段一个不动：计划、分组、执行历史都还在控制台里，
+/// 只是不再分派；要恢复也只是点一下启用。
+async fn retire_legacy_jobs() {
+    let Ok(client) = get_jobx_api_client() else {
+        return;
+    };
+    for name in LEGACY_JOB_NAMES {
+        let query = jobx_api::dto::JobxJobQueryDto {
+            name: Some(name.to_string()),
+            ..Default::default()
+        };
+        match client
+            .job
+            .get_by_query_dto(&query, SYS_OPERATOR_USER_ID)
+            .await
+        {
+            Ok(ro) if ro.is_ok() => {
+                let Some(job) = ro.extra else { continue };
+                if !job.enabled {
+                    continue;
+                }
+                let dto = jobx_api::dto::JobxJobModifyDto {
+                    id: Some(job.id),
+                    enabled: Some(false),
+                    _current_user_id: SYS_OPERATOR_USER_ID.into(),
+                    ..Default::default()
+                };
+                match client.job.modify(&dto).await {
+                    Ok(ro) if ro.is_ok() => info!(
+                        "已停用改名前的旧计划「{name}」(id={})，避免与「同步台…」计划重复分派",
+                        job.id
+                    ),
+                    Ok(ro) => warn!("停用旧计划「{name}」(id={}) 失败: {ro:?}", job.id),
+                    Err(e) => warn!("停用旧计划「{name}」(id={}) 失败: {e:?}", job.id),
+                }
+            }
+            // 「没查到」在 jobx 里用非 0 code 表达，不是错误：旧计划已经清干净了
+            Ok(_) => {}
+            Err(e) => warn!("检查旧计划「{name}」是否残留失败（不影响取数）：{e:?}"),
+        }
+    }
 }
 
 /// 起执行器 + 建分组 + 注册计划。容忍「已存在」，其余一律返回错误由调用方降级
@@ -114,7 +215,7 @@ async fn register(
 ) -> anyhow::Result<()> {
     init_jobx_executor(exec, Arc::new(PullTickHandler)).await?;
 
-    let group_id = ensure_job_group(&cfg.group_name, Some("syn 通用同步服务的周期任务")).await?;
+    let group_id = ensure_job_group(&cfg.group_name, Some("同步台通用同步服务的周期任务")).await?;
     let client = get_jobx_api_client()?;
     let mut add_dto: jobx_api::dto::JobxJobAddDto = job.into();
     add_dto.group_id = Some(Some(robotech::api::U64::from(group_id)));

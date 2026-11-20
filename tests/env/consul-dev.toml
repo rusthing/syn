@@ -22,7 +22,7 @@ url = "postgresql://syn:syn@pgsql:5432/syn"
 # 本机调试时改完任务想立刻看到结果，拉一页也别等太久
 pull-timeout = "10s"
 
-# 取数心跳不用配：默认就有（name=「syn 取数心跳」、executor-code=syn.pull、
+# 取数心跳不用配：默认就有（name=「同步台取数心跳」、executor-code=syn.pull、
 # interval=5s、group=syn、保留 1h），启动即注册。踩坑见 syn-开发规范 §5.1。
 
 # jobx 客户端。**本机用 Simple 直连**：这套开发环境的 consul 里，每个 rs 服务都挂了一个

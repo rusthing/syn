@@ -43,15 +43,17 @@ use sea_orm::{ColumnTrait, Condition, ConnectionTrait, DbBackend, Statement};
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use syn_api::{ExtractMode, FieldType, SourceKind, SourceSpec, SynSourcePullVo, Verdict, WrapMode};
 use syn_core::get_path;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
+use tokio::task::JoinSet;
 use tracing::{info, warn};
 use wheel_rs::time_utils::now_ms;
 
-use crate::config::get_app_config;
+use crate::config::{DEFAULT_PULL_CONCURRENCY, get_app_config};
 use crate::dao::SynCursorDao;
 use crate::db::dialect::Dialect;
 use crate::db::dialect_of;
@@ -69,6 +71,22 @@ const OVERLAP_SECONDS: u32 = 5;
 
 /// 页码模式的安全上限：接口若忽略 `{cursor}`，取数会永远「有数据」
 const MAX_PAGES: u32 = 100_000;
+
+/// # 这个源该等多久
+///
+/// `spec.timeout_duration` 优先；留空或写错回落全局 `[syn] pull-timeout`（默认 30s）。
+/// 慢源单独放宽超时，就不会在同一个心跳里把其它源一起占住。
+fn pull_timeout(spec: &SourceSpec) -> Duration {
+    let global = get_app_config()
+        .map(|c| c.syn.pull_timeout())
+        .unwrap_or(Duration::from_secs(30));
+    resolve_timeout(spec, global)
+}
+
+/// 纯逻辑版：把「源自带超时 / 全局超时」的取舍单独拿出来，测试不必依赖全局配置
+fn resolve_timeout(spec: &SourceSpec, global: Duration) -> Duration {
+    spec.timeout().unwrap_or(global)
+}
 
 /// # 拉一轮
 ///
@@ -516,7 +534,7 @@ async fn fetch_sql(
         source.batch_size.max(1)
     ));
 
-    let rows = fetch_rows(datasource, &sql, values.as_deref()).await?;
+    let rows = fetch_rows(datasource, &sql, values.as_deref(), pull_timeout(spec)).await?;
 
     let wrap = spec.wrap;
     let mut out = Vec::with_capacity(rows.len());
@@ -587,7 +605,7 @@ async fn fetch_snapshot_page(
         format!("select {row_expr} from {from} s")
     };
 
-    let rows = fetch_rows(datasource, &sql, None).await?;
+    let rows = fetch_rows(datasource, &sql, None, pull_timeout(spec)).await?;
     let wrap = spec.wrap;
     let mut out = Vec::with_capacity(rows.len());
     for r in &rows {
@@ -649,13 +667,11 @@ async fn fetch_rows(
     datasource: &str,
     sql: &str,
     binds: Option<&[String]>,
+    timeout: Duration,
 ) -> Result<Vec<sqlx::any::AnyRow>, String> {
     let (pool, _) = DbSinks::pool_for(datasource)
         .await
         .map_err(|e| format!("{}: {}", e.code, e.detail))?;
-    let timeout = get_app_config()
-        .map(|c| c.syn.pull_timeout())
-        .unwrap_or(Duration::from_secs(30));
 
     let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
     if let Some(values) = binds {
@@ -903,9 +919,7 @@ async fn fetch_http_page(
     let method_name = spec.method_or_get().to_ascii_uppercase();
     let method = reqwest::Method::from_bytes(method_name.as_bytes())
         .map_err(|e| format!("spec.method 不合法: {e}"))?;
-    let timeout = get_app_config()
-        .map(|c| c.syn.pull_timeout())
-        .unwrap_or(Duration::from_secs(30));
+    let timeout = pull_timeout(spec);
 
     let mut req = crate::transport::client()
         .request(method, &url)
@@ -1133,8 +1147,11 @@ pub async fn poll_due_sources() -> (usize, usize) {
         }
     };
     let scanned = sources.len();
-    let mut pulled = 0;
     let now = now_ms() as i64;
+
+    // 先筛「这一拍到点的」再并发拉：筛选只读水位，很便宜；真正会阻塞的是一个源在取数。
+    // 收成 `(id, topic)`，并发任务里还能打出是哪个源失败。
+    let mut due: Vec<(i64, String)> = Vec::with_capacity(scanned);
     for s in sources {
         let period = humantime::parse_duration(&s.interval_duration)
             .unwrap_or(Duration::from_secs(60))
@@ -1177,10 +1194,36 @@ pub async fn poll_due_sources() -> (usize, usize) {
                 continue;
             }
         }
-        let id = U64::from(s.id);
-        match pull_once(id).await {
-            Ok(_) => pulled += 1,
-            Err(e) => warn!("调度器拉取数据抽取 {} 失败: {e}", s.topic),
+        due.push((s.id, s.topic));
+    }
+
+    // 单心跳、多源并发：一个慢源（全量快照、慢接口）不再把同一拍里其它源一起拖住。
+    // 并发上限来自 `[syn] pull-concurrency`；每源另有 `IN_FLIGHT` 锁，同一源不会被并发拉两次。
+    let concurrency = get_app_config()
+        .map(|c| c.syn.pull_concurrency())
+        .unwrap_or(DEFAULT_PULL_CONCURRENCY as usize);
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let mut set = JoinSet::new();
+    for (id, topic) in due {
+        // 先拿到许可再 spawn：到点的源很多时，任务数也不会超过并发上限
+        let permit = match sem.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => break,
+        };
+        set.spawn(async move {
+            let _permit = permit;
+            let ret = pull_once(U64::from(id)).await;
+            (topic, ret)
+        });
+    }
+
+    let mut pulled = 0;
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok((_, Ok(_))) => pulled += 1,
+            Ok((topic, Err(e))) => warn!("调度器拉取数据抽取 {topic} 失败: {e}"),
+            // 任务 panic / 被取消：不影响其它源，但要让运维看得见
+            Err(e) => warn!("调度器取数任务异常结束: {e}"),
         }
     }
     (scanned, pulled)
@@ -1233,6 +1276,27 @@ mod tests {
         assert!(!is_snapshot_done(Some(
             r#"{"snapshot":{"offset":100,"rows":100}}"#
         )));
+    }
+
+    /// 单源超时：配了就用自己的，留空或写错都回落全局值
+    #[test]
+    fn spec_timeout_overrides_global() {
+        let global = Duration::from_secs(30);
+        let plain = SourceSpec::default();
+        assert_eq!(resolve_timeout(&plain, global), global);
+
+        let own = SourceSpec {
+            timeout_duration: Some("10s".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_timeout(&own, global), Duration::from_secs(10));
+
+        // 写错的值不生效：保存时 validate 会报出来，运行到这一步只能回落
+        let bad = SourceSpec {
+            timeout_duration: Some("十秒".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_timeout(&bad, global), global);
     }
 
     #[test]
