@@ -1,0 +1,45 @@
+/*
+ * 联邦模式的暗色令牌。
+ *
+ * syn 独立站只有亮色；嵌进 uiam 后宿主会传 theme，这里只在联邦根节点上
+ * 覆盖 @theme 的变量，不影响独立站。Portal 出去的 toast 挂在 document.body，
+ * 拿不到这层作用域，仍走亮色——POC 阶段接受这个已知差异。
+ */
+.syn-federated {
+  min-height: 100%;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+.syn-federated[data-theme='dark'] {
+  --color-canvas: #17191c;
+  --color-surface: #212429;
+  --color-sunken: #1c1f23;
+  --color-line: #343a41;
+  --color-line-strong: #4a525c;
+
+  --color-ink: #eef0f2;
+  --color-ink-soft: #c3c9d0;
+  --color-muted: #9aa3ad;
+
+  --color-accent: #5fd0b0;
+  --color-accent-strong: #9ae6cf;
+  --color-accent-soft: #173b32;
+
+  --color-success: #5ad39a;
+  --color-success-soft: #17392a;
+  --color-danger: #ff8e82;
+  --color-danger-soft: #43211e;
+  --color-warn: #e8b45a;
+  --color-warn-soft: #3d2f16;
+  --color-stage: #f0b45f;
+  --color-stage-soft: #49361b;
+  --color-info: #8db0ff;
+  --color-info-soft: #1d2b4a;
+  --color-violet: #b39cff;
+  --color-violet-soft: #2c2447;
+
+  --shadow-panel: 0 1px 2px rgb(0 0 0 / 30%), 0 8px 24px -16px rgb(0 0 0 / 60%);
+  --shadow-float: 0 2px 6px rgb(0 0 0 / 40%), 0 24px 48px -24px rgb(0 0 0 / 70%);
+  color-scheme: dark;
+}

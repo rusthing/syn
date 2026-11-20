@@ -40,7 +40,7 @@ const queryClient = new QueryClient({
 });
 
 /** 切换数据源后必须清缓存，否则演示数据会混进实时视图 */
-function DataModeBridge() {
+export function DataModeBridge() {
   const client = useQueryClient();
   useEffect(
     () =>
@@ -52,33 +52,44 @@ function DataModeBridge() {
   return null;
 }
 
+/**
+ * 路由表本身与「Router 用哪种、挂在哪」无关，单独导出给联邦入口复用：
+ * 独立访问用 BrowserRouter/HashRouter，嵌进 uiam 时用 MemoryRouter，
+ * 两边只维护这一份页面清单。
+ */
+export function AppRoutes() {
+  return (
+    <Routes>
+      {/* 登录页放在登录门之外；主控制台统一走 adm 会话保护 */}
+      <Route path="login" element={<LoginPage />} />
+      <Route
+        element={
+          <AuthGate>
+            <AppShell />
+          </AuthGate>
+        }
+      >
+        <Route index element={<OverviewPage />} />
+        <Route path="topology" element={<TopologyPage />} />
+        <Route path="tasks" element={<TasksPage />} />
+        <Route path="sources" element={<SourcesPage />} />
+        <Route path="datasources" element={<DatasourcesPage />} />
+        <Route path="playground" element={<PlaygroundPage />} />
+        <Route path="deliveries" element={<DeliveriesPage />} />
+        <Route path="idem" element={<IdemPage />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Route>
+    </Routes>
+  );
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <Router basename={BASENAME || undefined}>
           <DataModeBridge />
-          <Routes>
-            {/* 登录页放在登录门之外；主控制台统一走 adm 会话保护 */}
-            <Route path="login" element={<LoginPage />} />
-            <Route
-              element={
-                <AuthGate>
-                  <AppShell />
-                </AuthGate>
-              }
-            >
-              <Route index element={<OverviewPage />} />
-              <Route path="topology" element={<TopologyPage />} />
-              <Route path="tasks" element={<TasksPage />} />
-              <Route path="sources" element={<SourcesPage />} />
-              <Route path="datasources" element={<DatasourcesPage />} />
-              <Route path="playground" element={<PlaygroundPage />} />
-              <Route path="deliveries" element={<DeliveriesPage />} />
-              <Route path="idem" element={<IdemPage />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Route>
-          </Routes>
+          <AppRoutes />
         </Router>
       </ToastProvider>
     </QueryClientProvider>
