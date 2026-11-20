@@ -10,10 +10,10 @@ profile = "dev"
 [db]
 url = "postgresql://syn:syn@localhost:5432/syn"
 
-# 本地固定端口：syn-web 的 vite 代理写死 9007。
+# 本地固定端口：syn-web 的 vite 代理写死 9008（与 adm-svr 的 9007 错开）。
 # 生产不配：端口由框架随机分配，真实端口登记在注册中心。
 [web]
-port = 9007
+port = 9008
 
 # [id-worker] 不配：node 由框架按实例自动分配并把结果记进注册中心的 `id-node`。
 # 只有「自动分配失败回退 0」时才需要显式指定。
@@ -43,8 +43,10 @@ port = 9007
 # url = "redis://:xxxxxxxx@localhost:6379"
 
 # 任务快照的刷新信号走 NATS。没配时多副本「改了任务只有写的那台生效」。
-# [nats]
-# servers = ["nats://localhost:4222"]
+[nats]
+servers = ["nats://nats:4222"]
+user = "ruser"
+password = "********"
 
 # DB 直写下场：`target.kind = db` 的 `target.datasource` 就是这里的键。
 #

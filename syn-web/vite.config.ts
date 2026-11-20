@@ -27,10 +27,10 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
-      port: 5181,
+      port: 5182,
       proxy: {
         "/api": {
-          target: env.VITE_PROXY_TARGET?.trim() || "http://127.0.0.1:9007",
+          target: env.VITE_PROXY_TARGET?.trim() || "http://127.0.0.1:9008",
           changeOrigin: true,
           rewrite: (path) => path.replace(/^\/api/, ""),
         },
