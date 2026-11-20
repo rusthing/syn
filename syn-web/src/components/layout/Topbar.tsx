@@ -96,6 +96,7 @@ export function Topbar() {
         <span
           className="hidden h-8 items-center gap-1.5 rounded-lg border border-line bg-surface pl-1.5 pr-2 text-[12px] font-medium text-ink-soft sm:flex"
           title={`当前登录账号：${displayName}（写操作的 X-User-Id: ${userId}）`}
+          data-federated-hide-user
         >
           <CircleUser className="size-4 text-muted" strokeWidth={1.7} />
           <span className="tnum">{displayName}</span>
@@ -107,6 +108,7 @@ export function Topbar() {
             onClick={() => void signOut()}
             title="登出并作废当前令牌（七个控制台共用登录态）"
             aria-label="登出"
+            data-federated-hide-user
             className="flex size-8 items-center justify-center rounded-lg border border-line bg-surface text-muted transition-colors hover:border-line-strong hover:text-ink"
           >
             <LogOut className="size-3.5" strokeWidth={1.8} />

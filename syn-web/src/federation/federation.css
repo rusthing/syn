@@ -43,3 +43,6 @@
   --shadow-float: 0 2px 6px rgb(0 0 0 / 40%), 0 24px 48px -24px rgb(0 0 0 / 70%);
   color-scheme: dark;
 }
+
+/* 联邦窗口下用户信息与登出统一由 uiam 宿主顶栏承载，隐藏子应用自己的账号入口 */
+.syn-federated [data-federated-hide-user] { display: none !important; }
