@@ -78,6 +78,11 @@
     -webkit-font-smoothing: antialiased;
   }
 
+  /* 弹层 Portal 容器：需要 .syn-federated 命中工具类作用域，自身不生成盒子。 */
+  .syn-overlay-portal {
+    display: contents;
+  }
+
   ::selection {
     background: #cfe8de;
     color: var(--color-accent-strong);

@@ -2,8 +2,8 @@
  * 联邦模式的暗色令牌。
  *
  * syn 独立站只有亮色；嵌进 uiam 后宿主会传 theme，这里只在联邦根节点上
- * 覆盖 @theme 的变量，不影响独立站。Portal 出去的 toast 挂在 document.body，
- * 拿不到这层作用域，仍走亮色——POC 阶段接受这个已知差异。
+ * 覆盖 @theme 的变量，不影响独立站。Portal 弹层改挂在同作用域的隐形容器上
+ * （见 components/ui/portal.ts），并复制 data-theme，暗色下令牌与页面一致。
  */
 .syn-federated {
   /* 宿主给的是固定高度的窗口内容区：根节点必须给出确定高度，
