@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { federation } from "@module-federation/vite";
 import { fileURLToPath, URL } from "node:url";
+import { scopeUtilities } from "./vite-plugin-scope-utilities.mjs";
 
 /**
  * 开发期把 `/api` 反代到 syn 服务端（默认 127.0.0.1:9007，见 syn-svr.toml 的 web.port），
@@ -45,6 +46,8 @@ export default defineConfig(({ mode }) => {
       }),
       react(),
       tailwindcss(),
+      // 把工具类作用域限制在 .syn-federated 内，避免多联邦应用同名类互相覆盖
+      scopeUtilities(".syn-federated"),
     ],
     resolve: {
       alias: {
