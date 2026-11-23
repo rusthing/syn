@@ -62,6 +62,14 @@
     scrollbar-gutter: stable;
   }
 
+  /* 外壳按容器高度铺满，滚动交给内容区：侧栏固定满高，不随右侧内容滚走。
+     联邦窗口的容器是宿主给的 .syn-federated（height:100%），独立站则是 #root。 */
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
   body {
     background-color: var(--color-canvas);
     color: var(--color-ink);

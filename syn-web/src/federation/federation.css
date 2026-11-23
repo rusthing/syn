@@ -6,6 +6,9 @@
  * 拿不到这层作用域，仍走亮色——POC 阶段接受这个已知差异。
  */
 .syn-federated {
+  /* 宿主给的是固定高度的窗口内容区：根节点必须给出确定高度，
+     否则外壳的 h-full 落不到窗口上，侧栏会按视口高度铺开。 */
+  height: 100%;
   min-height: 100%;
   background: var(--color-canvas);
   color: var(--color-ink);
