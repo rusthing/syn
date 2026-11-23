@@ -19,7 +19,7 @@ export function AppShell() {
             "w-full flex-1 px-4 pt-5 lg:px-8",
             fullBleed
               ? "flex min-h-0 flex-col overflow-hidden pb-0"
-              : "mx-auto max-w-[1440px] min-h-0 overflow-y-auto pb-12",
+              : "mx-auto max-w-[1680px] min-h-0 overflow-y-auto pb-12",
           )}
         >
           <Outlet />
