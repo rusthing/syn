@@ -147,7 +147,7 @@ export function TrialPanel({
         <button
           type="button"
           onClick={run}
-          className="h-8 rounded-md border border-accent bg-accent px-3 text-[11px] font-medium text-white transition-colors hover:bg-accent-strong"
+          className="h-8 rounded-md border border-accent bg-accent px-3 text-[11px] font-medium text-on-accent transition-colors hover:bg-accent-strong"
         >
           试跑
         </button>

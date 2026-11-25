@@ -321,11 +321,11 @@ function ModeButton({
       onClick={onClick}
       className={cn(
         "rounded-md px-2.5 py-1 text-left transition-colors",
-        active ? "bg-accent text-white" : "text-ink-soft hover:bg-ink/[0.04]",
+        active ? "bg-accent text-on-accent" : "text-ink-soft hover:bg-ink/[0.04]",
       )}
     >
       <span className="block text-[12px] font-medium leading-tight">{title}</span>
-      <span className={cn("block text-[10.5px] leading-tight", active ? "text-white/80" : "text-muted")}>
+      <span className={cn("block text-[10.5px] leading-tight", active ? "text-on-accent/80" : "text-muted")}>
         {hint}
       </span>
     </button>

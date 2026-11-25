@@ -86,7 +86,7 @@ export function Topbar() {
           onClick={() => reload.mutate()}
           disabled={reload.isPending}
           title="让执行器重新读取 syn_task 里的配置（不重启进程）"
-          className="flex h-8 items-center gap-1.5 rounded-lg border border-accent/25 bg-accent-soft px-2.5 text-[12px] font-medium text-accent-strong transition-colors hover:bg-[#d9ebe3] disabled:opacity-50"
+          className="flex h-8 items-center gap-1.5 rounded-lg border border-accent/25 bg-accent-soft px-2.5 text-[12px] font-medium text-accent-strong transition-colors hover:bg-accent/15 disabled:opacity-50"
         >
           <Zap className="size-3.5" strokeWidth={2} />
           重载快照

@@ -109,7 +109,7 @@ function StageRow({
       </span>
       {issues > 0 && (
         <span
-          className="flex size-4 shrink-0 items-center justify-center rounded-full bg-danger text-[9.5px] font-semibold text-white"
+          className="flex size-4 shrink-0 items-center justify-center rounded-full bg-danger text-[9.5px] font-semibold text-on-danger"
           title={`${issues} 处待修`}
         >
           {issues}

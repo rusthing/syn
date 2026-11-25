@@ -296,7 +296,7 @@ function ThroughputChart({ series }: { series: Array<{ hour_ms: number; success:
             x2={W}
             y1={padTop + plotH * (1 - t)}
             y2={padTop + plotH * (1 - t)}
-            stroke="#e4e6df"
+            stroke="var(--color-line)"
             strokeWidth={1}
             strokeDasharray={t === 1 ? undefined : "3 4"}
           />
@@ -318,7 +318,7 @@ function ThroughputChart({ series }: { series: Array<{ hour_ms: number; success:
                 y={base - hSuccess}
                 width={barW}
                 height={Math.max(1, hSuccess)}
-                fill="#17794a"
+                fill="var(--color-success)"
                 opacity={0.85}
                 rx={1.5}
               />
@@ -327,7 +327,7 @@ function ThroughputChart({ series }: { series: Array<{ hour_ms: number; success:
                 y={yRetriable}
                 width={barW}
                 height={Math.max(0.8, hRetriable)}
-                fill="#a2670a"
+                fill="var(--color-warn)"
                 opacity={0.9}
                 rx={1}
               />
@@ -336,18 +336,18 @@ function ThroughputChart({ series }: { series: Array<{ hour_ms: number; success:
                 y={yFatal}
                 width={barW}
                 height={Math.max(0.8, hFatal)}
-                fill="#b3392e"
+                fill="var(--color-danger)"
                 opacity={0.9}
                 rx={1}
               />
-              {total === 0 && <rect x={x} y={base - 1} width={barW} height={1} fill="#cdd2c6" />}
+              {total === 0 && <rect x={x} y={base - 1} width={barW} height={1} fill="var(--color-line-strong)" />}
               {i % 4 === 0 && (
                 <text
                   x={x + barW / 2}
                   y={H - 4}
                   textAnchor="middle"
                   fontSize={9}
-                  fill="#7b8175"
+                  fill="var(--color-muted)"
                   fontFamily="ui-monospace, monospace"
                 >
                   {formatTime(s.hour_ms, false)}
@@ -356,7 +356,7 @@ function ThroughputChart({ series }: { series: Array<{ hour_ms: number; success:
             </g>
           );
         })}
-        <line x1={0} x2={W} y1={padTop + plotH} y2={padTop + plotH} stroke="#cdd2c6" strokeWidth={1} />
+        <line x1={0} x2={W} y1={padTop + plotH} y2={padTop + plotH} stroke="var(--color-line-strong)" strokeWidth={1} />
       </svg>
       <div className="mt-1 flex items-center justify-between text-[10px] text-muted">
         <span className="flex items-center gap-3">

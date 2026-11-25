@@ -7,12 +7,12 @@ type Size = "xs" | "sm" | "md";
 
 const VARIANTS: Record<Variant, string> = {
   primary:
-    "bg-accent text-white border border-accent-strong/20 shadow-[0_1px_0_rgb(255_255_255/0.12)_inset,0_1px_2px_rgb(12_74_60/0.28)] hover:bg-accent-strong",
+    "bg-accent text-on-accent border border-accent-strong/20 shadow-[0_1px_0_rgb(255_255_255/0.12)_inset,0_1px_2px_rgb(12_74_60/0.28)] hover:bg-accent-strong",
   secondary:
     "bg-surface text-ink border border-line hover:border-line-strong hover:bg-sunken shadow-[0_1px_1px_rgb(25_27_22/0.03)]",
   ghost: "bg-transparent text-ink-soft border border-transparent hover:bg-ink/[0.05] hover:text-ink",
   danger: "bg-transparent text-danger border border-transparent hover:bg-danger-soft",
-  subtle: "bg-accent-soft text-accent-strong border border-transparent hover:bg-[#d9ebe3]",
+  subtle: "bg-accent-soft text-accent-strong border border-transparent hover:bg-accent/15",
 };
 
 const SIZES: Record<Size, string> = {

@@ -547,7 +547,7 @@ function SegmentChip({
         {segment.detail}
       </span>
       {segment.issues > 0 && (
-        <span className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full bg-danger text-[10px] font-medium text-white">
+        <span className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full bg-danger text-[10px] font-medium text-on-danger">
           {segment.issues}
         </span>
       )}
